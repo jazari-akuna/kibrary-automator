@@ -3,7 +3,9 @@ import os, sys, shutil, json, zipfile, subprocess, re
 
 ROOT       = os.getcwd()
 LIB_SUFFIX = "_KSL"   # change this if needed
-GH_USER = "jazari-akuna"
+GH_USER    = "jazari-akuna"
+# Environment variable for 3D-model root
+ENV_VAR    = "${KSL_ROOT}"
 
 def run_jlc(parts):
     cmd = ["JLC2KiCadLib"] + parts + [
@@ -29,6 +31,24 @@ def update_paths(sym_file, lib_name, fp_dir, model_dir):
         base3d = os.path.basename(model_dir)
         t = t.replace('3dshapes/', f'{base3d}/')
     open(sym_file, "w").write(t)
+
+def update_footprint_3d_paths(fp_dir, model_dir):
+    """In each .kicad_mod, rewrite model path to use ${KSL_ROOT}/<lib>/<3dshapes>/<file>."""
+    if not model_dir or not os.path.isdir(fp_dir):
+        return
+    lib_folder = os.path.basename(os.path.dirname(model_dir))
+    base3d     = os.path.basename(model_dir)
+    for fn in os.listdir(fp_dir):
+        if not fn.endswith(".kicad_mod"):
+            continue
+        path = os.path.join(fp_dir, fn)
+        text = open(path).read()
+        # replace the first token after "(model "
+        def repl(m):
+            filename = m.group(1)
+            return f'(model {ENV_VAR}/{lib_folder}/{base3d}/{filename}'
+        text = re.sub(r'\(model\s+[./\\]*([^"\s)]+)', repl, text)
+        open(path, "w").write(text)
 
 def edit_symbol_description(sym_file):
     import re
@@ -106,15 +126,8 @@ def edit_symbol_description(sym_file):
 
     # 6) splice it in just before the closing line of the symbol
     out = lines[:end] + block + lines[end:]
-
     open(sym_file, "w").write("\n".join(out) + "\n")
     print(f"→ Description set to: {ans}")
-
-
-    # 4) write back
-    open(sym_file, "w").write("\n".join(out) + "\n")
-    print(f"→ Description set to: {ans}")
-
 
 def set_default_designator(sym_file):
     lines = open(sym_file).read().splitlines()
@@ -145,7 +158,6 @@ def find_local_component():
     return None
 
 def check_duplicate(comp):
-    # extract symbol name
     lines = open(comp["sym"]).read().splitlines()
     name = next((re.match(r'\(symbol\s+"([^"]+)"', ln.lstrip()).group(1)
                  for ln in lines if ln.lstrip().startswith("(symbol ")), None)
@@ -161,31 +173,25 @@ def check_duplicate(comp):
             return
 
 def choose_library():
-    # find existing libraries
     libs = [
         d for d in os.listdir(ROOT)
         if os.path.isdir(os.path.join(ROOT, d))
         and os.path.isfile(os.path.join(ROOT, d, f"{d}.kicad_sym"))
     ]
-
-    # build menu
     choices = ["Create new library"] + libs
     print("\nAdd to an existing library or create a new one:")
     for i, name in enumerate(choices, 1):
         print(f" {i} - {name}")
-
     sel = input(f"Select [1]: ").strip()
     if not sel or not sel.isdigit():
-        return None   # default = new
+        return None
     idx = int(sel)
     if idx < 1 or idx > len(choices):
         print("Invalid choice → defaulting to create new")
         return None
     if idx == 1:
         return None
-    # map back to libs list
     return libs[idx - 2]
-
 
 def merge_into(lib, comp):
     print(f"Merging '{comp['sym']}' into '{lib}'")
@@ -199,17 +205,21 @@ def merge_into(lib, comp):
     inner  = new[start:-1]
     merged = header + [""] + ["  "+ln for ln in inner] + [")"]
     open(lib_sym, "w").write("\n".join(merged) + "\n")
+
     dst_fp = os.path.join(lib, f"{lib}.pretty")
     for fn in os.listdir(comp["pretty"]):
         if fn.endswith(".kicad_mod"):
             shutil.copy(os.path.join(comp["pretty"], fn), dst_fp)
+
     dst_3d = None
     if comp.get("models"):
         dst_3d = os.path.join(lib, f"{lib}.3dshapes")
         os.makedirs(dst_3d, exist_ok=True)
         for fn in os.listdir(comp["models"]):
             shutil.copy(os.path.join(comp["models"], fn), dst_3d)
+
     update_paths(lib_sym, lib, dst_fp, dst_3d)
+    update_footprint_3d_paths(dst_fp, dst_3d)
     print("→ Merge done.")
 
 def create_library(comp):
@@ -232,6 +242,7 @@ def create_library(comp):
         shutil.move(comp["models"], dst_models)
 
     update_paths(dst_sym, name, dst_fp, dst_models)
+    update_footprint_3d_paths(dst_fp, dst_models)
 
     lib_desc = input(f"Library description [{name}]: ").strip() or name
     meta = {
@@ -302,4 +313,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
