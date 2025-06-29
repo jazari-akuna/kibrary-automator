@@ -31,20 +31,90 @@ def update_paths(sym_file, lib_name, fp_dir, model_dir):
     open(sym_file, "w").write(t)
 
 def edit_symbol_description(sym_file):
+    import re
+
     lines = open(sym_file).read().splitlines()
-    curr = next((m.group(1)
-                 for ln in lines
-                 if (m := re.match(r'\s*\(property\s+"Description"\s+"([^"]*)"', ln))),
-                "")
-    ans  = input(f"Component description [{curr}]: ").strip() or curr
-    out  = []
-    for ln in lines:
-        if '(property "Description"' in ln:
-            ln = re.sub(r'\(property\s+"Description"\s+"[^"]*"',
-                        f'(property "Description" "{ans}"', ln)
-        out.append(ln)
+
+    # 1) read current
+    curr = next(
+        (m.group(1)
+         for ln in lines
+         if (m := re.match(r'\s*\(property\s+"Description"\s+"([^"]*)"', ln))),
+        ""
+    )
+    ans = input(f"Component description [{curr}]: ").strip() or curr
+
+    # 2) if exists, just replace
+    if any('(property "Description"' in ln for ln in lines):
+        out = []
+        for ln in lines:
+            if '(property "Description"' in ln:
+                ln = re.sub(
+                    r'\(property\s+"Description"\s+"[^"]*"',
+                    f'(property "Description" "{ans}"',
+                    ln
+                )
+            out.append(ln)
+        open(sym_file, "w").write("\n".join(out) + "\n")
+        print(f"→ Description set to: {ans}")
+        return
+
+    # 3) find the first (symbol …) block and its closing line
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith("(symbol "):
+            start = i
+            break
+    if start is None:
+        sys.exit("Cannot find a symbol block to insert Description into.")
+
+    # track parentheses depth within that symbol
+    depth = lines[start].count("(") - lines[start].count(")")
+    end = None
+    for j in range(start + 1, len(lines)):
+        depth += lines[j].count("(") - lines[j].count(")")
+        if depth == 0:
+            end = j
+            break
+    if end is None:
+        sys.exit("Malformed symbol: unbalanced parentheses.")
+
+    # 4) detect indent from existing properties under symbol
+    prop_indent = ""
+    for ln in lines[start+1:end]:
+        m = re.match(r'^(\s*)\(property\s+"', ln)
+        if m:
+            prop_indent = m.group(1)
+            break
+    if not prop_indent:
+        # fallback: two spaces deeper than symbol line
+        sym_indent = re.match(r'^(\s*)', lines[start]).group(1)
+        prop_indent = sym_indent + "  "
+
+    # 5) build the block
+    i1 = prop_indent + "  "
+    i2 = prop_indent + "    "
+    block = [
+        f'{prop_indent}(property "Description" "{ans}"',
+        f'{i1}(at 0 0 0)',
+        f'{i1}(effects',
+        f'{i2}(font (size 1.27 1.27))',
+        f'{i2}(hide yes)',
+        f'{i1})',
+        f'{prop_indent})'
+    ]
+
+    # 6) splice it in just before the closing line of the symbol
+    out = lines[:end] + block + lines[end:]
+
     open(sym_file, "w").write("\n".join(out) + "\n")
     print(f"→ Description set to: {ans}")
+
+
+    # 4) write back
+    open(sym_file, "w").write("\n".join(out) + "\n")
+    print(f"→ Description set to: {ans}")
+
 
 def set_default_designator(sym_file):
     lines = open(sym_file).read().splitlines()
@@ -91,18 +161,31 @@ def check_duplicate(comp):
             return
 
 def choose_library():
-    libs = [d for d in os.listdir(ROOT)
-            if os.path.isdir(os.path.join(ROOT, d))
-            and os.path.isfile(os.path.join(ROOT, d, f"{d}.kicad_sym"))]
-    if not libs:
+    # find existing libraries
+    libs = [
+        d for d in os.listdir(ROOT)
+        if os.path.isdir(os.path.join(ROOT, d))
+        and os.path.isfile(os.path.join(ROOT, d, f"{d}.kicad_sym"))
+    ]
+
+    # build menu
+    choices = ["Create new library"] + libs
+    print("\nAdd to an existing library or create a new one:")
+    for i, name in enumerate(choices, 1):
+        print(f" {i} - {name}")
+
+    sel = input(f"Select [1]: ").strip()
+    if not sel or not sel.isdigit():
+        return None   # default = new
+    idx = int(sel)
+    if idx < 1 or idx > len(choices):
+        print("Invalid choice → defaulting to create new")
         return None
-    print("Existing libraries:")
-    for i, l in enumerate(libs, 1):
-        print(f" {i}) {l}")
-    sel = input("Merge into which? [enter to make new]: ").strip()
-    if sel.isdigit() and 1 <= int(sel) <= len(libs):
-        return libs[int(sel)-1]
-    return None
+    if idx == 1:
+        return None
+    # map back to libs list
+    return libs[idx - 2]
+
 
 def merge_into(lib, comp):
     print(f"Merging '{comp['sym']}' into '{lib}'")
