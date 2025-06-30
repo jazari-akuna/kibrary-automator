@@ -33,7 +33,6 @@ def update_paths(sym_file, lib_name, fp_dir, model_dir):
     open(sym_file, "w").write(t)
 
 def update_footprint_3d_paths(fp_dir, model_dir):
-    """In each .kicad_mod, rewrite model path to use ${KSL_ROOT}/<lib>/<3dshapes>/<file>."""
     if not model_dir or not os.path.isdir(fp_dir):
         return
     lib_folder = os.path.basename(os.path.dirname(model_dir))
@@ -42,13 +41,16 @@ def update_footprint_3d_paths(fp_dir, model_dir):
         if not fn.endswith(".kicad_mod"):
             continue
         path = os.path.join(fp_dir, fn)
-        text = open(path).read()
-        # replace the first token after "(model "
-        def repl(m):
-            filename = m.group(1)
-            return f'(model {ENV_VAR}/{lib_folder}/{base3d}/{filename}'
-        text = re.sub(r'\(model\s+[./\\]*([^"\s)]+)', repl, text)
-        open(path, "w").write(text)
+        out = []
+        for ln in open(path):
+            if ln.lstrip().startswith("(model ") and ENV_VAR not in ln:
+                m = re.match(r'\s*\(model\s+[./\\]*([^"\s)]+)', ln)
+                if m:
+                    fn3d = m.group(1)
+                    ln = f"(model {ENV_VAR}/{lib_folder}/{base3d}/{fn3d}\n"
+            out.append(ln)
+        open(path,"w").writelines(out)
+
 
 def edit_symbol_description(sym_file):
     import re
