@@ -280,6 +280,154 @@ def cleanup_downloads(comp):
     if comp.get("models") and os.path.isdir(comp["models"]):
         shutil.rmtree(comp["models"])
 
+def detect_kicad_installation():
+    """Detect KiCad installation and return configuration paths."""
+    kicad_configs = []
+    
+    # Check for Flatpak installation
+    flatpak_config = os.path.expanduser("~/.var/app/org.kicad.KiCad/config/kicad")
+    if os.path.isdir(flatpak_config):
+        versions = [d for d in os.listdir(flatpak_config) if os.path.isdir(os.path.join(flatpak_config, d))]
+        for version in sorted(versions, reverse=True):  # Latest version first
+            version_path = os.path.join(flatpak_config, version)
+            sym_table = os.path.join(version_path, "sym-lib-table")
+            fp_table = os.path.join(version_path, "fp-lib-table")
+            if os.path.isfile(sym_table) and os.path.isfile(fp_table):
+                kicad_configs.append({
+                    "type": "Flatpak",
+                    "version": version,
+                    "config_dir": version_path,
+                    "sym_table": sym_table,
+                    "fp_table": fp_table
+                })
+    
+    # Check for regular installation
+    regular_config = os.path.expanduser("~/.config/kicad")
+    if os.path.isdir(regular_config):
+        versions = [d for d in os.listdir(regular_config) if os.path.isdir(os.path.join(regular_config, d))]
+        for version in sorted(versions, reverse=True):  # Latest version first
+            version_path = os.path.join(regular_config, version)
+            sym_table = os.path.join(version_path, "sym-lib-table")
+            fp_table = os.path.join(version_path, "fp-lib-table")
+            if os.path.isfile(sym_table) and os.path.isfile(fp_table):
+                kicad_configs.append({
+                    "type": "Regular",
+                    "version": version,
+                    "config_dir": version_path,
+                    "sym_table": sym_table,
+                    "fp_table": fp_table
+                })
+    
+    return kicad_configs
+
+def backup_library_table(table_path):
+    """Create a backup of the library table file."""
+    backup_path = table_path + ".backup"
+    if not os.path.exists(backup_path):
+        shutil.copy2(table_path, backup_path)
+        print(f"→ Backup created: {backup_path}")
+    return backup_path
+
+def add_library_to_table(table_path, lib_name, lib_type, lib_uri, lib_desc=""):
+    """Add a library entry to sym-lib-table or fp-lib-table."""
+    backup_library_table(table_path)
+    
+    # Read current table
+    with open(table_path, 'r') as f:
+        lines = f.readlines()
+    
+    # Check if library already exists
+    for line in lines:
+        if f'(name "{lib_name}")' in line:
+            print(f"→ Library '{lib_name}' already exists in {os.path.basename(table_path)}")
+            return False
+    
+    # Find the closing parenthesis (last line)
+    if lines and lines[-1].strip() == ")":
+        # Insert new library entry before the closing parenthesis
+        new_entry = f'  (lib (name "{lib_name}")(type "{lib_type}")(uri "{lib_uri}")(options "")(descr "{lib_desc}"))\n'
+        lines.insert(-1, new_entry)
+        
+        # Write back to file
+        with open(table_path, 'w') as f:
+            f.writelines(lines)
+        
+        print(f"→ Added '{lib_name}' to {os.path.basename(table_path)}")
+        return True
+    else:
+        print(f"→ Error: Malformed {os.path.basename(table_path)} file")
+        return False
+
+def install_libraries_to_kicad():
+    """Install all local libraries to KiCad installation."""
+    kicad_configs = detect_kicad_installation()
+    
+    if not kicad_configs:
+        print("→ No KiCad installation detected.")
+        return
+    
+    # Show detected installations
+    print("\nDetected KiCad installations:")
+    for i, config in enumerate(kicad_configs, 1):
+        print(f" {i} - {config['type']} KiCad {config['version']} ({config['config_dir']})")
+    
+    # Get user choice
+    if len(kicad_configs) == 1:
+        choice = 1
+        ans = input(f"Install libraries to {kicad_configs[0]['type']} KiCad {kicad_configs[0]['version']}? [Y/n]: ").lower()
+        if ans and ans != "y":
+            print("→ Installation cancelled.")
+            return
+    else:
+        choice_input = input(f"Select installation [1]: ").strip()
+        if not choice_input:
+            choice = 1
+        elif choice_input.isdigit():
+            choice = int(choice_input)
+        else:
+            print("→ Invalid choice")
+            return
+    
+    if choice < 1 or choice > len(kicad_configs):
+        print("→ Invalid choice")
+        return
+    
+    selected_config = kicad_configs[choice - 1]
+    print(f"→ Installing to {selected_config['type']} KiCad {selected_config['version']}")
+    
+    # Find all local libraries
+    libs = [
+        d for d in os.listdir(ROOT)
+        if os.path.isdir(os.path.join(ROOT, d))
+        and os.path.isfile(os.path.join(ROOT, d, f"{d}.kicad_sym"))
+    ]
+    
+    if not libs:
+        print("→ No libraries found in current directory")
+        return
+    
+    print(f"→ Found {len(libs)} libraries: {', '.join(libs)}")
+    
+    installed_count = 0
+    
+    for lib in libs:
+        lib_path = os.path.join(ROOT, lib)
+        
+        # Add symbol library
+        sym_uri = os.path.join(lib_path, f"{lib}.kicad_sym")
+        sym_desc = f"Local library: {lib}"
+        if add_library_to_table(selected_config['sym_table'], lib, "KiCad", sym_uri, sym_desc):
+            installed_count += 1
+        
+        # Add footprint library if it exists
+        fp_dir = os.path.join(lib_path, f"{lib}.pretty")
+        if os.path.isdir(fp_dir):
+            fp_desc = f"Local footprint library: {lib}"
+            add_library_to_table(selected_config['fp_table'], lib, "KiCad", fp_dir, fp_desc)
+    
+    print(f"→ Installation complete! Added {installed_count} libraries to KiCad.")
+    print("→ Restart KiCad to see the new libraries.")
+
 def package_repo():
     out = os.path.basename(ROOT) + ".zip"
     print(f"Zipping repo → {out}")
@@ -293,14 +441,35 @@ def package_repo():
     print("→ Done.")
 
 def main():
+    # Check if user wants to install libraries to KiCad
+    if len(sys.argv) > 1 and sys.argv[1] == "install":
+        install_libraries_to_kicad()
+        return
+    
+    # Show menu if no components found
     comp = find_local_component()
     if not comp:
-        parts = input("Multiple/no components found. Enter JLCPCB part#s: ").split()
-        run_jlc(parts)
-        wrap_assets()
-        comp = find_local_component()
-        if not comp:
-            sys.exit("Error: no component.")
+        print("\nNo local components found. Choose an option:")
+        print(" 1 - Download JLCPCB parts and create library")
+        print(" 2 - Install existing libraries to KiCad")
+        choice = input("Select [1]: ").strip()
+        
+        if choice == "2":
+            install_libraries_to_kicad()
+            return
+        elif choice == "" or choice == "1":
+            parts = input("Enter JLCPCB part#s: ").split()
+            if not parts:
+                sys.exit("No parts specified.")
+            run_jlc(parts)
+            wrap_assets()
+            comp = find_local_component()
+            if not comp:
+                sys.exit("Error: no component.")
+        else:
+            sys.exit("Invalid choice.")
+    
+    # Process component
     edit_symbol_description(comp["sym"])
     set_default_designator(comp["sym"])
     check_duplicate(comp)
@@ -310,6 +479,11 @@ def main():
     else:
         create_library(comp)
     cleanup_downloads(comp)
+    
+    # Ask about additional actions
+    print("\nAdditional actions:")
+    if input("Install libraries to KiCad? [y/N]: ").lower() == "y":
+        install_libraries_to_kicad()
     if input("Create GitHub-release zip now? [y/N]: ").lower() == "y":
         package_repo()
 
