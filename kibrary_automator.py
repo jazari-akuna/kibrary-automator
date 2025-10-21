@@ -7,8 +7,124 @@ GH_USER    = "jazari-akuna"
 # Environment variable for 3D-model root
 ENV_VAR    = "${KSL_ROOT}"
 
-def run_jlc(parts):
-    cmd = ["JLC2KiCadLib"] + parts + [
+def check_jlc2kicadlib_installed():
+    """Check if JLC2KiCadLib is installed in local venv.
+
+    Returns the path to JLC2KiCadLib executable if found, None otherwise.
+    Only checks the local .jlc_venv directory.
+    """
+    venv_path = os.path.join(ROOT, ".jlc_venv", "bin", "JLC2KiCadLib")
+
+    if os.path.isfile(venv_path):
+        try:
+            result = subprocess.run(
+                [venv_path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return venv_path
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    return None
+
+def install_jlc2kicadlib():
+    """Install JLC2KiCadLib into a local venv.
+
+    Creates a .jlc_venv directory and installs JLC2KiCadLib into it.
+    This avoids 'externally managed environment' errors.
+    """
+    venv_dir = os.path.join(ROOT, ".jlc_venv")
+    python_path = os.path.join(venv_dir, "bin", "python")
+
+    print("\n→ JLC2KiCadLib not found. Installing into local venv...")
+
+    try:
+        # Create venv if it doesn't exist
+        if not os.path.isdir(venv_dir):
+            print(f"→ Creating virtual environment at {venv_dir}...")
+            result = subprocess.run(
+                [sys.executable, "-m", "venv", venv_dir],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                print(f"→ Error creating venv:")
+                print(result.stderr)
+                return False
+            print("→ Virtual environment created successfully!")
+
+        # Ensure python is available in venv
+        if not os.path.isfile(python_path):
+            print(f"→ Error: python not found at {python_path}")
+            print(f"→ Venv may be corrupted. Try deleting {venv_dir} and running again.")
+            return False
+
+        # Ensure pip is installed using ensurepip
+        print("→ Ensuring pip is available...")
+        result = subprocess.run(
+            [python_path, "-m", "ensurepip", "--upgrade"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            print(f"→ Warning: ensurepip failed, trying to continue anyway")
+            print(result.stderr)
+
+        print("→ Installing JLC2KiCadLib (this may take a minute)...")
+        result = subprocess.run(
+            [python_path, "-m", "pip", "install", "JLC2KiCadLib"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            print(f"→ Error installing JLC2KiCadLib:")
+            print(result.stderr)
+            return False
+
+        print("→ JLC2KiCadLib installed successfully!")
+        return True
+    except Exception as e:
+        print(f"→ Unexpected error during installation: {e}")
+        print("→ You may need to manually install python3-venv package:")
+        print(f"→   sudo apt install python3-venv python3-pip")
+        print("→ Then try running this script again.")
+        return False
+
+def ensure_jlc2kicadlib():
+    """Ensure JLC2KiCadLib is installed, install if necessary.
+
+    Returns the path to the JLC2KiCadLib executable.
+    """
+    jlc_path = check_jlc2kicadlib_installed()
+    if not jlc_path:
+        print("→ JLC2KiCadLib is required but not installed.")
+        ans = input("→ Install JLC2KiCadLib now? [Y/n]: ").lower()
+        if ans and ans != "y":
+            print("→ Cannot proceed without JLC2KiCadLib. Exiting.")
+            sys.exit(1)
+        if not install_jlc2kicadlib():
+            sys.exit(1)
+        # Verify installation
+        jlc_path = check_jlc2kicadlib_installed()
+        if not jlc_path:
+            print("→ Installation verification failed. Please check the venv setup.")
+            sys.exit(1)
+        print(f"→ JLC2KiCadLib is now installed at: {jlc_path}")
+    else:
+        print(f"→ JLC2KiCadLib is installed at: {jlc_path}")
+    return jlc_path
+
+def run_jlc(parts, jlc_path="JLC2KiCadLib"):
+    """Run JLC2KiCadLib with the specified parts.
+
+    Args:
+        parts: List of JLCPCB part numbers to download
+        jlc_path: Path to JLC2KiCadLib executable (default: "JLC2KiCadLib")
+    """
+    cmd = [jlc_path] + parts + [
         "-dir", ".", "-symbol_lib_dir", ".", "-footprint_lib", ".", "-model_dir", "."
     ]
     subprocess.check_call(cmd)
@@ -445,7 +561,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "install":
         install_libraries_to_kicad()
         return
-    
+
     # Show menu if no components found
     comp = find_local_component()
     if not comp:
@@ -453,15 +569,17 @@ def main():
         print(" 1 - Download JLCPCB parts and create library")
         print(" 2 - Install existing libraries to KiCad")
         choice = input("Select [1]: ").strip()
-        
+
         if choice == "2":
             install_libraries_to_kicad()
             return
         elif choice == "" or choice == "1":
+            # Ensure JLC2KiCadLib is installed before downloading parts
+            jlc_path = ensure_jlc2kicadlib()
             parts = input("Enter JLCPCB part#s: ").split()
             if not parts:
                 sys.exit("No parts specified.")
-            run_jlc(parts)
+            run_jlc(parts, jlc_path)
             wrap_assets()
             comp = find_local_component()
             if not comp:
