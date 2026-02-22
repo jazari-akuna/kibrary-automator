@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, shutil, json, zipfile, subprocess, re
+import os, sys, shutil, json, zipfile, subprocess, re, time
 
 ROOT       = os.getcwd()
 LIB_SUFFIX = "_KSL"   # change this if needed
@@ -117,17 +117,40 @@ def ensure_jlc2kicadlib():
         print(f"→ JLC2KiCadLib is installed at: {jlc_path}")
     return jlc_path
 
-def run_jlc(parts, jlc_path="JLC2KiCadLib"):
-    """Run JLC2KiCadLib with the specified parts.
+def run_jlc(parts, jlc_path="JLC2KiCadLib", retries=3, delay=2):
+    """Run JLC2KiCadLib for each part individually with retry logic.
 
     Args:
         parts: List of JLCPCB part numbers to download
         jlc_path: Path to JLC2KiCadLib executable (default: "JLC2KiCadLib")
+        retries: Number of attempts per part (default: 3)
+        delay: Seconds to wait between retries (default: 2)
+
+    Returns:
+        Tuple of (succeeded, failed) where each is a list of part numbers.
     """
-    cmd = [jlc_path] + parts + [
-        "-dir", ".", "-symbol_lib_dir", ".", "-footprint_lib", ".", "-model_dir", "."
-    ]
-    subprocess.check_call(cmd)
+    succeeded = []
+    failed = []
+    for part in parts:
+        cmd = [jlc_path, part,
+               "-dir", ".", "-symbol_lib_dir", ".", "-footprint_lib", ".", "-model_dir", "."]
+        ok = False
+        for attempt in range(1, retries + 1):
+            try:
+                subprocess.check_call(cmd)
+                ok = True
+                break
+            except subprocess.CalledProcessError:
+                if attempt < retries:
+                    print(f"→ {part}: attempt {attempt}/{retries} failed, retrying in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    print(f"→ {part}: all {retries} attempts failed (JLC2KiCadLib API error)")
+        if ok:
+            succeeded.append(part)
+        else:
+            failed.append(part)
+    return succeeded, failed
 
 def wrap_assets():
     for fn in os.listdir("."):
@@ -579,7 +602,13 @@ def main():
             parts = input("Enter JLCPCB part#s: ").split()
             if not parts:
                 sys.exit("No parts specified.")
-            run_jlc(parts, jlc_path)
+            succeeded, failed = run_jlc(parts, jlc_path)
+            if failed:
+                print(f"→ Failed to download: {', '.join(failed)}")
+            if not succeeded:
+                sys.exit("Error: all parts failed to download.")
+            if failed:
+                print(f"→ Continuing with successfully downloaded parts: {', '.join(succeeded)}")
             wrap_assets()
             comp = find_local_component()
             if not comp:
