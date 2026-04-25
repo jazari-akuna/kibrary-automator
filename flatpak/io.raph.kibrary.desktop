@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Kibrary
+GenericName=KiCad Library Automator
+Comment=Turn JLCPCB part numbers into committed KiCad libraries
+Exec=kibrary
+Terminal=false
+Type=Application
+Icon=io.raph.kibrary
+Categories=Development;Electronics;
+Keywords=KiCad;EDA;PCB;JLCPCB;LCSC;
+StartupWMClass=Kibrary

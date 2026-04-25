@@ -24,15 +24,19 @@ Library Management room + sidecar bootstrap + STEP browse/replace + GitHub-relea
 
 These steps require maintainer credentials and cannot be automated:
 
-### Tauri updater Ed25519 signing key
-```bash
-cargo tauri signer generate -w ~/.tauri/kibrary.key
-# Note the printed public key
-```
+### Tauri updater Ed25519 signing key — **DONE**
+- [x] Generated at `keys/kibrary-updater.key` (private, gitignored) + `keys/kibrary-updater.key.pub` (public, in repo).
+- [x] Public key already pasted into `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`.
+- [ ] **Add to GitHub repo secrets** (one-time, in the GH UI):
+  - `TAURI_SIGNING_PRIVATE_KEY` = full contents of `keys/kibrary-updater.key`
+  - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` = empty string (key has no passphrase)
 
-- [ ] Paste the public key into `src-tauri/tauri.conf.json` → `plugins.updater.pubkey` (replace the `REPLACE_WITH_TAURI_SIGNER_GENERATE_OUTPUT` placeholder)
-- [ ] Add `~/.tauri/kibrary.key` content as GitHub repo secret `TAURI_SIGNING_PRIVATE_KEY`
-- [ ] If the key has a passphrase, also add `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+### GPG key for AppImage signing — **DONE**
+- [x] Generated at `keys/appimage-signing-private.asc` (private, gitignored) + `keys/appimage-signing-public.asc` (public, in repo).
+- [x] Identity: `Kibrary Release Signing <raphaelcasimir.inge@gmail.com>`, fingerprint `ED37847C4ED3376CA28546538E0FDC9F2E542C63`, no passphrase, 2-year expiry.
+- [ ] **Add to GitHub repo secrets**:
+  - `GPG_PRIVATE_KEY` = full contents of `keys/appimage-signing-private.asc`
+  - `GPG_PASSPHRASE` = empty string
 
 ### macOS signing — none required (ad-hoc)
 - [x] `tauri.conf.json` already has `bundle.macOS.signingIdentity: "-"` (ad-hoc).
@@ -46,10 +50,16 @@ cargo tauri signer generate -w ~/.tauri/kibrary.key
 - [ ] Once approved, add the SignPath GitHub Action to `.github/workflows/release.yml` (replace the basic Windows signing step). See SignPath's docs for the exact action snippet.
 - [ ] Alternative if SignPath is too slow: Azure Trusted Signing (~$120/yr) — see `docs/SIGNING.md` for config.
 
-### Linux distribution
-- [ ] Generate a GPG key for AppImage signing if you don't have one: `gpg --full-generate-key`
-- [ ] Set `SIGN=1`, `SIGN_KEY=<your-key-id>`, `APPIMAGETOOL_SIGN_PASSPHRASE`, `APPIMAGETOOL_FORCE_SIGN=1` in `release.yml` env. Add `GPG_PRIVATE_KEY` as a secret (export with `gpg --export-secret-keys --armor`).
-- [ ] Optionally submit a Flathub manifest for one-click install on GNOME/KDE.
+### Linux distribution — Flatpak manifest **DONE**
+- [x] Flatpak manifest at `flatpak/io.raph.kibrary.yml` with permissions: home filesystem (workspaces), network (search.raph.io / JLC2KiCadLib), wayland/x11/dri (display), `org.freedesktop.secrets` (keychain), `org.freedesktop.Flatpak` (KiCad handoff via flatpak-spawn).
+- [x] Companion `.desktop` and `.metainfo.xml` files written.
+- [ ] Build locally to test:
+  ```bash
+  flatpak install --user flathub org.gnome.Platform//47 org.gnome.Sdk//47
+  flatpak-builder --user --force-clean --install build-dir flatpak/io.raph.kibrary.yml
+  flatpak run io.raph.kibrary
+  ```
+- [ ] (Optional) Submit to Flathub for one-click install on GNOME/KDE — see https://docs.flathub.org/docs/for-app-authors/submission.
 
 ### CI workflow
 - [ ] Copy the workflow template back into `.github/workflows/`:

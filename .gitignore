@@ -143,3 +143,8 @@ test-results/
 
 # Kibrary P2 additions
 src-tauri/resources/*.whl
+
+# Kibrary release-signing private keys — NEVER commit
+keys/*.key
+keys/*.gpg
+keys/*-private.asc
