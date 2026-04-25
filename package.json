@@ -22,12 +22,18 @@
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.7.0",
-    "solid-js": "^1.9.0"
+    "solid-js": "^1.9.0",
+    "three": "^0.169.0",
+    "three-stdlib": "^2.35.0"
+  },
+  "bundledAssets": {
+    "kicanvas": "https://kicanvas.org/kicanvas/kicanvas.js (bundled in public/kicanvas.js — not on npm)"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/node": "^22.0.0",
+    "@types/three": "^0.169.0",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.0.0",
     "postcss": "^8.4.47",

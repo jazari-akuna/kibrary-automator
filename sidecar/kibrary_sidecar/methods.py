@@ -9,7 +9,11 @@ from kibrary_sidecar import symfile
 from kibrary_sidecar import category_map
 from kibrary_sidecar import library
 from kibrary_sidecar import git_ops
+from kibrary_sidecar import git_undo
 from kibrary_sidecar import search_client
+from kibrary_sidecar import files
+from kibrary_sidecar import kicad_install
+from kibrary_sidecar import kicad_register
 
 
 def system_ping(_: dict) -> dict:
@@ -42,8 +46,7 @@ def parts_parse_input(p: dict) -> dict:
 
 
 def parts_read_meta(p: dict) -> dict:
-    meta = staging.read_meta(Path(p["staging_dir"]) / p["lcsc"])
-    return {"meta": meta}
+    return {"meta": staging.read_meta(Path(p["staging_dir"]) / p["lcsc"])}
 
 
 def parts_write_meta(p: dict) -> dict:
@@ -58,6 +61,16 @@ def parts_read_props(p: dict) -> dict:
 def parts_write_props(p: dict) -> dict:
     symfile.write_properties(Path(p["sym_path"]), p["edits"])
     return {"ok": True}
+
+
+def parts_read_file(p: dict) -> dict:
+    content = files.read_part_file(Path(p["staging_dir"]), p["lcsc"], p["kind"])
+    return {"content": content}
+
+
+def parts_list_dir(p: dict) -> dict:
+    items = files.list_part_dir(Path(p["staging_dir"]), p["lcsc"], p.get("subdir", ""))
+    return {"files": items}
 
 
 def library_suggest(p: dict) -> dict:
@@ -109,6 +122,31 @@ def git_is_safe(p: dict) -> dict:
     return {"safe": safe, "reason": reason}
 
 
+def git_undo_last(p: dict) -> dict:
+    return git_undo.undo_last_commit(Path(p["workspace"]), p["expected_sha"])
+
+
+def kicad_detect(_: dict) -> dict:
+    return {"installs": kicad_install.cached_installs()}
+
+
+def kicad_refresh(_: dict) -> dict:
+    return {"installs": kicad_install.refresh_cache()}
+
+
+def kicad_register_lib(p: dict) -> dict:
+    install = p["install"]
+    return kicad_register.register_library(install, p["lib_name"], Path(p["lib_dir"]))
+
+
+def kicad_unregister_lib(p: dict) -> dict:
+    return kicad_register.unregister_library(p["install"], p["lib_name"])
+
+
+def kicad_list_registered(p: dict) -> dict:
+    return {"libraries": kicad_register.list_registered(p["install"])}
+
+
 def _search_settings() -> tuple[str, str]:
     s = st.read_settings().get("search_raph_io", {})
     return s.get("api_key", ""), s.get("base_url", "https://search.raph.io")
@@ -137,10 +175,18 @@ REGISTRY = {
     "parts.write_meta": parts_write_meta,
     "parts.read_props": parts_read_props,
     "parts.write_props": parts_write_props,
+    "parts.read_file": parts_read_file,
+    "parts.list_dir": parts_list_dir,
     "library.suggest": library_suggest,
     "library.commit": library_commit,
     "git.init": git_init,
     "git.is_safe": git_is_safe,
+    "git.undo_last": git_undo_last,
+    "kicad.detect": kicad_detect,
+    "kicad.refresh": kicad_refresh,
+    "kicad.register": kicad_register_lib,
+    "kicad.unregister": kicad_unregister_lib,
+    "kicad.list_registered": kicad_list_registered,
     "search.query": search_query,
     "search.get_part": search_get_part,
 }

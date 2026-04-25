@@ -3,6 +3,7 @@ import LeftRail from './LeftRail';
 import Header from './Header';
 import { room } from '~/state/room';
 import BlockHost from './BlockHost';
+import ToastHost from './ToastHost';
 
 export default function Shell() {
   return (
@@ -24,6 +25,7 @@ export default function Shell() {
           </Switch>
         </main>
       </div>
+      <ToastHost />
     </div>
   );
 }
