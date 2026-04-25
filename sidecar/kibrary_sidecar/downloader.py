@@ -8,10 +8,14 @@ rpc.py imports:
 """
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from kibrary_sidecar import jlc
+from kibrary_sidecar import icons
+
+log = logging.getLogger(__name__)
 
 EmitFn = Callable[[dict], Awaitable[None]]
 DlFn = Callable[[str, Path], Awaitable[tuple[bool, str | None]]]
@@ -53,6 +57,14 @@ async def run_batch(
                 )
             ok, err = await dl_fn(lcsc, staging / lcsc)
             results[lcsc] = {"ok": ok, "error": err}
+
+            # Best-effort icon render — never fails the download
+            if ok:
+                try:
+                    await asyncio.to_thread(icons.render_for_part, staging / lcsc, lcsc)
+                except Exception as exc:
+                    log.warning("Icon render error for %s (non-fatal): %s", lcsc, exc)
+
             if emit:
                 await emit(
                     {

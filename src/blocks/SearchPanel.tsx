@@ -5,7 +5,8 @@
  * Gracefully hides when no API key is configured.
  *
  * Behaviour (spec §8):
- *  - On mount: fetch settings. If search_raph_io.api_key is empty → render null.
+ *  - On mount: fetch api_key from OS keychain and base_url from settings.
+ *    If api_key is empty → render null.
  *  - Debounced (250 ms) text input calls sidecar_call('search.query', { q }).
  *  - Results rendered as scrollable card list with thumbnail, description, MPN,
  *    and "+ Add" button that calls enqueue().
@@ -22,7 +23,7 @@ import { enqueue } from '~/state/queue';
 
 interface Settings {
   theme: string;
-  search_raph_io: { enabled: boolean; base_url: string; api_key: string };
+  search_raph_io: { enabled: boolean; base_url: string };
   concurrency: number;
 }
 
@@ -53,13 +54,20 @@ function photoUrl(baseUrl: string, lcsc: string): string {
 // ---------------------------------------------------------------------------
 
 export default function SearchPanel() {
-  // Load settings once on mount to check for API key.
+  // Load settings for base_url, and api_key separately from OS keychain.
   const [settingsData] = createResource<{ settings: Settings }>(() =>
     invoke<{ settings: Settings }>('sidecar_call', { method: 'settings.get', params: {} }),
   );
 
-  // Reactive derived values from settings.
-  const apiKey = () => settingsData()?.settings?.search_raph_io?.api_key ?? '';
+  const [apiKeyData] = createResource<{ value: string }>(() =>
+    invoke<{ value: string }>('sidecar_call', {
+      method: 'secrets.get',
+      params: { name: 'search_raph_io_api_key' },
+    }),
+  );
+
+  // Reactive derived values.
+  const apiKey = () => apiKeyData()?.value ?? '';
   const baseUrl = () =>
     settingsData()?.settings?.search_raph_io?.base_url?.replace(/\/$/, '') ||
     'https://search.raph.io';
@@ -117,9 +125,9 @@ export default function SearchPanel() {
   // Render
   // ---------------------------------------------------------------------------
 
-  // While settings are still loading, render nothing to avoid flash.
+  // While settings / keychain are still loading, render nothing to avoid flash.
   return (
-    <Show when={!settingsData.loading}>
+    <Show when={!settingsData.loading && !apiKeyData.loading}>
       {/* If no API key is set, degrade gracefully — render nothing. */}
       <Show when={apiKey() !== ''}>
         <div class="space-y-2">

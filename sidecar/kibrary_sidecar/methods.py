@@ -20,6 +20,8 @@ from kibrary_sidecar import lib_ops
 from kibrary_sidecar import sexpr_diff
 from kibrary_sidecar import model3d_ops
 from kibrary_sidecar import bootstrap
+from kibrary_sidecar import secrets
+from kibrary_sidecar import icons as icons_mod
 
 
 def system_ping(_: dict) -> dict:
@@ -291,7 +293,8 @@ def bootstrap_install(p: dict) -> dict:
 
 def _search_settings() -> tuple[str, str]:
     s = st.read_settings().get("search_raph_io", {})
-    return s.get("api_key", ""), s.get("base_url", "https://search.raph.io")
+    api_key = secrets.get_secret("search_raph_io_api_key")
+    return api_key, s.get("base_url", "https://search.raph.io")
 
 
 def search_query(p: dict) -> dict:
@@ -303,6 +306,38 @@ def search_get_part(p: dict) -> dict:
     api_key, base_url = _search_settings()
     part = search_client.get_part(p["lcsc"], api_key=api_key, base_url=base_url)
     return {"part": part}
+
+
+def secrets_get(p: dict) -> dict:
+    return {"value": secrets.get_secret(p["name"])}
+
+
+def secrets_set(p: dict) -> dict:
+    secrets.set_secret(p["name"], p["value"])
+    return {"ok": True}
+
+
+def secrets_delete(p: dict) -> dict:
+    secrets.delete_secret(p["name"])
+    return {"ok": True}
+
+
+def parts_get_icon(p: dict) -> dict:
+    """SVG content for a staged part's icon."""
+    icon_path = Path(p["staging_dir"]) / p["lcsc"] / f"{p['lcsc']}.icon.svg"
+    return {"svg": icon_path.read_text() if icon_path.is_file() else None}
+
+
+def library_get_component_icon(p: dict) -> dict:
+    """SVG content for a committed component's icon."""
+    icons_dir = Path(p["lib_dir"]) / f"{Path(p['lib_dir']).name}.icons"
+    icon_path = icons_dir / f"{p['component_name']}.svg"
+    return {"svg": icon_path.read_text() if icon_path.is_file() else None}
+
+
+def library_backfill_icons(p: dict) -> dict:
+    """Walk workspace's _KSL libs and render missing icons."""
+    return icons_mod.backfill_icons(Path(p["workspace"]))
 
 
 REGISTRY = {
@@ -347,4 +382,10 @@ REGISTRY = {
     "bootstrap.install": bootstrap_install,
     "search.query": search_query,
     "search.get_part": search_get_part,
+    "secrets.get": secrets_get,
+    "secrets.set": secrets_set,
+    "secrets.delete": secrets_delete,
+    "parts.get_icon": parts_get_icon,
+    "library.get_component_icon": library_get_component_icon,
+    "library.backfill_icons": library_backfill_icons,
 }

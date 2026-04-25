@@ -7,6 +7,7 @@ regex hacks where possible.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -14,6 +15,8 @@ from pathlib import Path
 from kiutils.symbol import SymbolLib
 
 from kibrary_sidecar.symfile import write_properties
+
+log = logging.getLogger(__name__)
 
 # The ${KSL_ROOT} environment-variable convention used for 3D model paths.
 _KSL_ROOT = "${KSL_ROOT}"
@@ -116,6 +119,13 @@ def _create_new(
     if dst_3d is not None:
         _update_footprint_3d_paths(dst_pretty, target_lib, target_lib + ".3dshapes")
 
+    # --- render / copy icon ---
+    try:
+        component_name = SymbolLib().from_file(str(dst_sym)).symbols[0].entryName
+    except Exception:
+        component_name = lcsc
+    _copy_or_render_icon(staging_part, lcsc, lib_dir, target_lib, dst_pretty, component_name)
+
     # --- generate metadata.json (PCM format) ---
     _write_metadata(lib_dir, target_lib, has_3d=dst_3d is not None)
 
@@ -167,6 +177,15 @@ def _merge_into(
 
     # --- update footprint refs ---
     _update_symbol_footprint_refs(dst_sym, target_lib)
+
+    # --- render / copy icon ---
+    try:
+        # The newly merged symbol is the last one in the file
+        merged_lib = SymbolLib().from_file(str(dst_sym))
+        component_name = merged_lib.symbols[-1].entryName
+    except Exception:
+        component_name = lcsc
+    _copy_or_render_icon(staging_part, lcsc, lib_dir, target_lib, dst_pretty, component_name)
 
     # NOTE: repository.json is NOT re-appended on merge.
 
@@ -281,6 +300,42 @@ def _regex_rewrite_3d_paths(
                 ln = f"  (model {_KSL_ROOT}/{target_lib}/{shapes_dir_name}/{fn3d}\n"
         out.append(ln)
     mod_path.write_text("".join(out))
+
+
+def _copy_or_render_icon(
+    staging_part: Path,
+    lcsc: str,
+    lib_dir: Path,
+    target_lib: str,
+    dst_pretty: Path,
+    component_name: str,
+) -> None:
+    """Copy a pre-rendered staging icon, or render one now from the library .pretty.
+
+    Best-effort — never raises, logs failures.
+    """
+    try:
+        from kibrary_sidecar import icons  # local import avoids circular at module load
+
+        icons_dir = lib_dir / f"{target_lib}.icons"
+        icons_dir.mkdir(parents=True, exist_ok=True)
+        icon_dst = icons_dir / f"{component_name}.svg"
+
+        # Prefer the pre-rendered staging icon
+        staging_icon = staging_part / f"{lcsc}.icon.svg"
+        if staging_icon.is_file():
+            shutil.copy2(str(staging_icon), icon_dst)
+            log.debug("Copied staging icon %s → %s", staging_icon, icon_dst)
+            return
+
+        # Fall back: render now from the library's .pretty dir
+        mods = sorted(dst_pretty.glob("*.kicad_mod")) if dst_pretty.is_dir() else []
+        if mods:
+            footprint_name = mods[0].stem
+            icons.render_footprint_icon(dst_pretty, footprint_name, icon_dst)
+            log.info("Rendered icon for %s → %s", component_name, icon_dst)
+    except Exception as exc:
+        log.warning("Icon copy/render failed for %s (non-fatal): %s", component_name, exc)
 
 
 def _write_metadata(lib_dir: Path, target_lib: str, has_3d: bool) -> None:

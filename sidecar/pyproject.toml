@@ -7,7 +7,8 @@ dependencies = [
   "JLC2KiCadLib>=1.0.0",
   "httpx>=0.27.0",
   "pydantic>=2.9.0",
-  "GitPython>=3.1.43"
+  "GitPython>=3.1.43",
+  "keyring>=25.6.0"
 ]
 
 [project.optional-dependencies]

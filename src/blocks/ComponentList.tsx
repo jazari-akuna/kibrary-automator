@@ -158,9 +158,37 @@ interface ComponentListResult {
 
 type ModalKind = 'rename' | 'move' | 'delete' | null;
 
+// ---------------------------------------------------------------------------
+// Icon helpers
+// ---------------------------------------------------------------------------
+
+/** Generic component icon shown when no SVG thumbnail is available. */
+function DefaultIcon() {
+  return (
+    <svg
+      viewBox="0 0 32 32"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      class="w-full h-full"
+    >
+      {/* Body rectangle */}
+      <rect x="8" y="10" width="16" height="12" rx="1" stroke="#71717a" stroke-width="1.5" />
+      {/* Left lead */}
+      <line x1="4" y1="16" x2="8" y2="16" stroke="#71717a" stroke-width="1.5" stroke-linecap="round" />
+      {/* Right lead */}
+      <line x1="24" y1="16" x2="28" y2="16" stroke="#71717a" stroke-width="1.5" stroke-linecap="round" />
+    </svg>
+  );
+}
+
+interface IconGetResult {
+  svg: string | null;
+}
+
 export default function ComponentList() {
   const [search, setSearch] = createSignal('');
   const [reExporting, setReExporting] = createSignal(false);
+  const [backfilling, setBackfilling] = createSignal(false);
 
   // Modal state — single signal tracks which (if any) modal is open
   const [openModal, setOpenModal] = createSignal<ModalKind>(null);
@@ -297,6 +325,29 @@ export default function ComponentList() {
                   const isSelected = () => selectedComponent() === comp.name;
                   const isChecked = () => multiSelected().has(comp.name);
 
+                  // Fetch icon SVG — keyed on lib_dir + component_name
+                  const [iconData] = createResource<IconGetResult | null, string>(
+                    () => {
+                      const dir = libDir();
+                      if (!dir) return '';
+                      return `${dir}::${comp.name}`;
+                    },
+                    async (key) => {
+                      if (!key) return null;
+                      const [dir, name] = key.split('::');
+                      try {
+                        return await invoke<IconGetResult>('sidecar_call', {
+                          method: 'library.get_component_icon',
+                          params: { lib_dir: dir, component_name: name },
+                        });
+                      } catch {
+                        return null;
+                      }
+                    },
+                  );
+
+                  const icon = () => iconData()?.svg ?? null;
+
                   return (
                     <div
                       class={`group flex items-center gap-2 px-3 py-1.5 cursor-pointer transition-colors
@@ -316,6 +367,13 @@ export default function ComponentList() {
                         }}
                         class="flex-shrink-0 accent-zinc-400"
                       />
+
+                      {/* SVG thumbnail */}
+                      <div class="w-8 h-8 bg-zinc-800 rounded flex-shrink-0 flex items-center justify-center overflow-hidden">
+                        <Show when={icon()} fallback={<DefaultIcon />}>
+                          <div innerHTML={icon()!} class="w-full h-full" />
+                        </Show>
+                      </div>
 
                       {/* Name + description */}
                       <div class="flex-1 min-w-0">
@@ -411,6 +469,46 @@ export default function ComponentList() {
                 }}
               >
                 {reExporting() ? 'Exporting…' : 'Re-export'}
+              </button>
+              <button
+                class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors disabled:opacity-40"
+                disabled={backfilling()}
+                onClick={async () => {
+                  const ws = currentWorkspace();
+                  if (!ws) {
+                    pushToast({ kind: 'error', message: 'No workspace open.' });
+                    return;
+                  }
+                  setBackfilling(true);
+                  try {
+                    const result = await invoke<{
+                      libs_processed: number;
+                      icons_rendered: number;
+                      errors: string[];
+                    }>('sidecar_call', {
+                      method: 'library.backfill_icons',
+                      params: { workspace: ws.root },
+                    });
+                    if (result.errors.length > 0) {
+                      pushToast({
+                        kind: 'error',
+                        message: `Rendered ${result.icons_rendered} icons (${result.errors.length} errors)`,
+                      });
+                    } else {
+                      pushToast({
+                        kind: 'success',
+                        message: `Rendered ${result.icons_rendered} icons across ${result.libs_processed} libraries`,
+                      });
+                    }
+                    refetch();
+                  } catch (e) {
+                    pushToast({ kind: 'error', message: `Backfill failed: ${e}` });
+                  } finally {
+                    setBackfilling(false);
+                  }
+                }}
+              >
+                {backfilling() ? 'Rendering…' : 'Render missing icons'}
               </button>
               <Show when={multiSelected().size > 0}>
                 <button
