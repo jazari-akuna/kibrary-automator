@@ -3,6 +3,7 @@
 mod protocol;
 mod sidecar;
 mod commands;
+mod watcher;
 
 use std::sync::Arc;
 use once_cell::sync::OnceCell;
@@ -32,12 +33,15 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         })
         .manage(sc)
+        // Watcher state: starts inactive; activated by the `watch_workspace` command.
+        .manage(watcher::WatcherState::new())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::sidecar_ping,
             commands::sidecar_version,
             commands::sidecar_call,
             commands::workspace_open,
+            watcher::watch_workspace,
         ])
         .run(tauri::generate_context!())?;
     Ok(())

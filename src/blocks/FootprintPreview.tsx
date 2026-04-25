@@ -1,5 +1,6 @@
 import { createResource, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
+import { currentWorkspace } from '~/state/workspace';
 
 interface Props {
   stagingDir: string;
@@ -24,7 +25,18 @@ export default function FootprintPreview(props: Props) {
         <span class="text-sm font-medium text-zinc-300">Footprint Preview</span>
         <button
           class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
-          onClick={() => console.log('editor handoff — wired in T28')}
+          onClick={() => {
+            const ws = currentWorkspace();
+            if (!ws) return;
+            invoke('sidecar_call', {
+              method: 'editor.open',
+              params: {
+                staging_dir: props.stagingDir,
+                lcsc: props.lcsc,
+                kind: 'footprint',
+              },
+            }).catch((e) => console.error('[editor] open footprint failed:', e));
+          }}
         >
           ✎ Edit in KiCad
         </button>

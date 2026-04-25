@@ -31,6 +31,7 @@ def open_workspace(root: str) -> dict:
     (kdir / "staging").mkdir(exist_ok=True)
     (kdir / "cache").mkdir(exist_ok=True)
     sp = _settings_path(rp)
-    if not sp.is_file():
+    first_run = not sp.is_file()
+    if first_run:
         sp.write_text(json.dumps(DEFAULT_SETTINGS, indent=2))
-    return {"root": str(rp), "settings": json.loads(sp.read_text())}
+    return {"root": str(rp), "settings": json.loads(sp.read_text()), "first_run": first_run}

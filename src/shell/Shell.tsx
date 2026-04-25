@@ -1,9 +1,12 @@
-import { Switch, Match } from 'solid-js';
+import { Switch, Match, Show, lazy } from 'solid-js';
 import LeftRail from './LeftRail';
 import Header from './Header';
 import { room } from '~/state/room';
 import BlockHost from './BlockHost';
 import ToastHost from './ToastHost';
+import { firstRun } from '~/state/workspace';
+
+const FirstRunWizard = lazy(() => import('~/blocks/FirstRunWizard'));
 
 export default function Shell() {
   return (
@@ -26,6 +29,9 @@ export default function Shell() {
         </main>
       </div>
       <ToastHost />
+      <Show when={firstRun()}>
+        <FirstRunWizard />
+      </Show>
     </div>
   );
 }

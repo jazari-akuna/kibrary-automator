@@ -1,249 +1,261 @@
-# KiCad Library Automator
+# Kibrary
 
-**Transform JLCPCB parts into organized KiCad libraries with one command.**
+**A modern desktop app that turns JLCPCB part numbers into committed KiCad libraries.**
 
-A Python automation tool that converts JLCPCB component part numbers into properly structured KiCad libraries and seamlessly installs them into your KiCad installation.
+Paste a list of LCSC codes, watch them download in parallel, review/edit each one before commit, and have everything land in your library repo as one git commit per part — automatically registered with your KiCad install.
 
-## 🚀 Quick Start
+![Add room — paste, queue, review](docs/screenshot-add-room.png)
 
-### Prerequisites
-```bash
-# Install JLC2KiCadLib
-pip install JLC2KiCadLib
+---
 
-# Clone this repository
-git clone https://github.com/your-username/kibrary-automator.git
+## What it does
+
+| Stage | What you do | What the app does |
+|---|---|---|
+| **Import** | Paste LCSC codes — `C1525, 2\nC25804, 5` or `C1525, C25804, C99999` | Parses BOM-vs-list format, dedupes, queues each part |
+| **Download** | Hit "Download all" | Runs `JLC2KiCadLib` in parallel (4 by default), live status badges per part |
+| **Review** | Pick a mode: sequential (one-by-one), pick-from-list, or **bulk-assign** (just confirm target libs, skip review) | Renders read-only previews via `kicanvas`, in-app editor for description/reference/value/datasheet, "Edit in KiCad" button hands off to the real editors with file-watcher refresh |
+| **Commit** | Confirm target library | Merges into existing `_KSL` lib or creates a new one, writes `metadata.json`, **auto-commits to git** with a templated message |
+| **Install** | Optional during first-run | Registers each library in KiCad's `sym-lib-table` and `fp-lib-table` (Linux Flatpak/regular, macOS, Windows) |
+
+Everything that's app state lives in **human-readable JSON** under `<workspace>/.kibrary/` — no SQLite, no opaque blobs. Edit by hand if you want.
+
+---
+
+## Architecture in 30 seconds
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  Tauri app — single binary per OS, ~15-25 MB              │
+│                                                            │
+│   Frontend (SolidJS + Tailwind)                            │
+│         │   tauri.invoke()                                 │
+│         ▼                                                  │
+│   Rust core    ── window, FS, settings, sidecar lifecycle  │
+│         │   JSON-RPC over stdin/stdout                     │
+│         ▼                                                  │
+│   Python sidecar ── kiutils, JLC2KiCadLib, GitPython,      │
+│                     httpx (search.raph.io), notify watcher │
+└────────────────────────────────────────────────────────────┘
 ```
 
-### Create Your First Library
-```bash
-# Navigate to your library workspace
-cd /path/to/your/kicad-shared-libs/
+Why this stack: **fast cold-launch (~80ms target)** via Tauri (system webview, not Chromium), **Python sidecar** so we reuse the mature `kiutils` parser and `JLC2KiCadLib` CLI without rewriting them in Rust. See [`docs/superpowers/specs/2026-04-25-kibrary-redesign.md`](docs/superpowers/specs/2026-04-25-kibrary-redesign.md) for the full design.
 
-# Run the automator
-python3 /path/to/kibrary-automator/kibrary_automator.py
+---
 
-# When prompted, enter JLCPCB part numbers (space-separated)
-# Example: C1525 C25804 R25604
+## Features
 
-# Follow the interactive prompts to:
-# - Set component descriptions
-# - Choose reference designators  
-# - Create new library or merge into existing
-# - Install to KiCad automatically
+### 1. Paste once, queue many
+Single textarea handles two formats automatically:
+
+```
+C1525, 2          # BOM with quantities
+C25804, 5
+C9999             # qty defaults to 1
+
+— or —
+
+C1525, C25804, C9999    # plain comma-separated list
 ```
 
-### Install Existing Libraries to KiCad
-```bash
-# From your library directory
-python3 /path/to/kibrary-automator/kibrary_automator.py install
+Invalid tokens get highlighted; valid ones still queue. No all-or-nothing.
+
+### 2. Parallel downloads with live progress
+4 concurrent `JLC2KiCadLib` invocations by default (configurable per workspace). Each part stages in its own `<workspace>/.kibrary/staging/<LCSC>/` folder so failures are isolated. Failed parts get a one-click Retry.
+
+```
+C234324  ━━━━━━━━━━ ready    [Review] [Commit]
+C393943  ━━━━━━━━━╸  78%
+C12345   ━╸           queued
 ```
 
-## 🎯 What It Does
+### 3. Three review modes — pick what fits the batch
 
-### 1. **Component Generation**
-- Fetches JLCPCB parts using JLC2KiCadLib
-- Converts to KiCad symbols, footprints, and 3D models
-- Organizes files into proper KiCad library structure
+| Mode | When to use | Flow |
+|---|---|---|
+| **Sequential** | Mixed batch — careful review | One part fills the editor pane. Walk forward with `Commit & next` |
+| **Pick** | Cherry-pick — only some need attention | Grid of cards, click to edit in-place |
+| **Bulk assign** | Trusted parts (resistors, caps) — fast lane | Table view with auto-suggested target lib, one button to commit them all |
 
-### 2. **Smart Library Management**
-- Creates new libraries with proper naming (`ComponentType_KSL`)
-- Merges components into existing libraries
-- Handles duplicate detection
-- Generates KiCad Package Manager metadata
+### 4. Library auto-suggestion from LCSC category
+~40 JLCPCB categories map to ~18 sensible KSL libraries (Resistors, Capacitors, MCU, Connectors, Oscillators, …). Mapping ships as `~/.config/kibrary/category-map.json` — fully editable.
 
-### 3. **KiCad Integration**
-- Auto-detects KiCad installations (Flatpak, regular, multiple versions)
-- Adds libraries to symbol and footprint tables
-- Uses absolute paths for reliability
-- Creates automatic backups before modifications
+### 5. In-app properties + KiCad handoff for graphics
+Description, Reference, Value, Datasheet, Footprint name — all editable in-app with **debounced 400 ms autosave**. For symbol/footprint geometry or 3D model offsets, the **"Edit in KiCad" button spawns the real KiCad editor** pointed at the staged file. A file watcher detects the save and refreshes the in-app preview instantly.
 
-### 4. **3D Model Handling**
-- Configures 3D model paths with `${KSL_ROOT}` environment variable
-- Maintains proper model references across library structures
+### 6. One commit per part — automatic
+Workspace-level `git: { auto_commit: true }` flips on per-save commits with a templated message:
 
-## 📁 Generated Library Structure
+```
+Add C25804 (100nF 0402 X7R) to Capacitors_KSL
+```
+
+Toast notification shows up after each commit with an **Undo** button (`git reset --hard HEAD~1`, only valid for ~30s and only if HEAD still matches).
+
+Refuses to auto-commit if: not a git repo, dirty working tree outside the staged paths, mid-rebase/bisect/merge, detached HEAD.
+
+### 7. Optional `search.raph.io` integration
+If you have an account on [search.raph.io](https://search.raph.io) (a 3.5M-part JLCPCB/LCSC search engine), drop your API key into Settings and a search panel appears in the Add room with thumbnails and one-click `+ Add` to queue.
+
+The app works fully offline-friendly without it.
+
+---
+
+## Quick start
+
+### Run the legacy CLI (still works)
+
+The original `kibrary_automator.py` script lives at the repo root and is unchanged through the P1 milestone. See [the CLI section below](#legacy-cli) for details. Most users should use the new desktop app.
+
+### Run the desktop app (development build)
+
+The repo ships a Docker dev container that has every toolchain pinned (Node 20 / Rust stable / Python 3.12 / KiCad / Xvfb / Playwright + Chromium). Recommended for clean reproducibility:
+
+```bash
+git clone https://github.com/jazari-akuna/kibrary-automator.git
+cd kibrary-automator
+
+# Build the dev image once (10–20 minutes)
+docker compose -f docker-compose.dev.yml build dev
+
+# Drop into a shell inside the container
+docker compose -f docker-compose.dev.yml run --rm dev bash
+
+# Inside the container — install deps, run the app
+pnpm install
+cd sidecar && python3 -m venv .venv && .venv/bin/pip install -e .[dev] && cd ..
+pnpm tauri:dev:headless
+```
+
+Without the container, on a Linux/macOS host you need Node 20+, Rust 1.85+ (rustup), Python 3.12+, plus the Tauri 2 dev libs (`libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libssl-dev` on Debian/Ubuntu).
+
+### First-run wizard
+
+The first time you open a workspace, a 3-pane modal walks you through:
+
+1. **Pick library workspace** — your `kicad-shared-libs/` folder
+2. **Detect KiCad install** — the app auto-detects Flatpak / regular / macOS / Windows installs and lets you pick the target
+3. **Git tracking** — auto-commit each save (default), track without auto-commit, or disable git tracking entirely
+
+Settings re-editable any time from the Settings room.
+
+---
+
+## Examples
+
+### Example A — bulk-assign 5 trusted parts in 30 seconds
+
+1. Copy LCSC codes from JLCPCB cart: `C25804,C1525,C19920,C2040,C5446`
+2. Paste into Kibrary's import box, hit **Detect** → "List, 5 valid"
+3. **Queue all** → all 5 download in parallel (~5s total)
+4. Switch review mode to **Bulk assign**, every row's suggested library is right (Capacitors_KSL, Resistors_KSL, Diodes_KSL, etc.)
+5. Click **Save all 5 to libraries** → 5 git commits land in your repo, libraries auto-registered with KiCad
+
+### Example B — careful review of one new MCU
+
+1. Paste single LCSC: `C2040`
+2. Download → status `ready`
+3. **Sequential** review mode opens the symbol/footprint/3D previews + property editor
+4. Set Description: "STM32G030F6P6 ARM Cortex-M0+ 32KB Flash 8KB SRAM"
+5. Set Reference to `U?`
+6. Hit **✎ Edit in KiCad** on the symbol preview → KiCad's Symbol Editor opens with the staged file → tweak pin labels → save → in-app preview re-renders instantly
+7. Target library: pre-suggested `MCU_KSL`, accept
+8. **Commit & next →** → one git commit, library registered, MCU available in KiCad
+
+### Example C — paste a CSV BOM with quantities
+
+```
+# Cart export from JLCPCB
+C1525, 100
+C25804, 200
+C19920, 50
+```
+
+Lines with `#` are comments. The `qty` field is preserved in `meta.json` for downstream tooling (BOM exports come in P3); for the commit-to-library flow only the LCSC matters.
+
+---
+
+## Project status & roadmap
+
+**Currently shipped (P1 — MVP):** everything the screenshots show — paste import, parallel download, three review modes, in-app property editor + kicanvas previews + KiCad handoff, library commit + git auto-commit, KiCad install detection + table registration, first-run wizard, optional search.raph.io.
+
+**Next (P2 — Library management):** browse / rename / move / delete components in already-committed libraries, library-level metadata editor, S-expression-aware diff preview before commit.
+
+**Later (P3 — Polish):** signed installers (mac/win), auto-update, BOM block, JLC stock-check block, light/dark theme, search.raph.io batch endpoint, full STEP rendering.
+
+Per-phase implementation plans live under [`docs/superpowers/plans/`](docs/superpowers/plans/).
+
+---
+
+## Library structure
+
+Each `_KSL` library follows the KiCad PCM convention:
 
 ```
 YourLibrary_KSL/
 ├── YourLibrary_KSL.kicad_sym          # Symbol definitions
 ├── YourLibrary_KSL.pretty/            # Footprint files
-│   ├── Component1.kicad_mod
-│   └── Component2.kicad_mod
+│   └── *.kicad_mod
 ├── YourLibrary_KSL.3dshapes/          # 3D models
-│   ├── Component1.step
-│   └── Component2.wrl
-├── metadata.json                       # Package manager data
-└── icon.png                          # Library icon
+│   ├── *.step
+│   └── *.wrl
+└── metadata.json                      # PCM metadata
 ```
 
-## 🔧 Usage Scenarios
+3D model paths inside footprints use `${KSL_ROOT}/<lib>/<lib>.3dshapes/<file>` so the same library moves between machines without breaking. Set `KSL_ROOT` once in your KiCad path-substitutions to point at your library workspace.
 
-### Creating a New Component Library
-1. Start in your library workspace directory
-2. Run `kibrary_automator.py`
-3. Enter JLCPCB part numbers when prompted
-4. Follow interactive setup for descriptions and references
-5. Choose "Create new library"
-6. Optionally install to KiCad immediately
+---
 
-### Adding to Existing Library
-1. Run `kibrary_automator.py` with new components
-2. Choose existing library from the list
-3. Components are merged automatically
+## Headless screenshots
 
-### Installing Libraries
-```bash
-# Install all libraries in current directory
-python3 kibrary_automator.py install
-
-# The script will:
-# ✓ Detect your KiCad installation
-# ✓ Show installation details for confirmation  
-# ✓ Add libraries to sym-lib-table and fp-lib-table
-# ✓ Create backups of your configuration
-# ✓ Skip already installed libraries
-```
-
-### Batch Operations
-```bash
-# Multiple part numbers in one go
-# Input: C1525 C25804 R25604 L5819 D4878
-
-# Creates organized library with:
-# - Capacitors, resistors, inductors, diodes
-# - Proper categorization
-# - Complete 3D models
-# - Ready for KiCad use
-```
-
-## 🖥️ Supported KiCad Installations
-
-| Installation Type | Configuration Path | Status |
-|------------------|-------------------|---------|
-| **Flatpak** | `~/.var/app/org.kicad.KiCad/config/kicad/` | ✅ Supported |
-| **Regular Install** | `~/.config/kicad/` | ✅ Supported |
-| **Multiple Versions** | Auto-detected | ✅ Choose target |
-| **Windows** | `%APPDATA%\kicad\` | 🔄 Planned |
-| **macOS** | `~/Library/Preferences/kicad/` | 🔄 Planned |
-
-## 🎛️ Configuration
-
-Edit these variables in `kibrary_automator.py`:
-
-```python
-LIB_SUFFIX = "_KSL"           # Library name suffix
-GH_USER    = "your-username"  # GitHub username for metadata
-ENV_VAR    = "${KSL_ROOT}"    # 3D model path variable
-```
-
-## 🔍 Interactive Features
-
-### Smart Menus
-- **No components found**: Choose between downloading new parts or installing existing libraries
-- **Multiple KiCad installs**: Select target installation
-- **Library selection**: Create new or merge into existing
-
-### Safety Features
-- **Backup creation**: Automatic backups of library tables
-- **Duplicate detection**: Prevents conflicts with existing components
-- **Path validation**: Ensures library files exist before installation
-- **User confirmation**: Clear prompts for destructive operations
-
-### Progress Feedback
-```
-→ Found 5 libraries: LED_KSL, MCU_KSL, Connector_KSL...
-→ Installing to Flatpak KiCad 9.0
-→ Backup created: sym-lib-table.backup
-→ Added 'LED_KSL' to sym-lib-table
-→ Installation complete! Added 5 libraries to KiCad.
-→ Restart KiCad to see the new libraries.
-```
-
-## 🔄 Workflow Examples
-
-### Electronics Engineer Workflow
-```bash
-# 1. Research components on JLCPCB
-# 2. Copy part numbers: C1525 C25804 R25604
-
-# 3. Generate library
-cd ~/kicad-libraries/
-python3 ~/tools/kibrary_automator.py
-# Enter: C1525 C25804 R25604
-
-# 4. Components automatically:
-#    - Downloaded and converted
-#    - Organized into library
-#    - Installed to KiCad
-#    - Ready for schematic design
-```
-
-### Team Library Management
-```bash
-# Centralized library repository
-git clone https://github.com/team/kicad-shared-libs.git
-cd kicad-shared-libs/
-
-# Install all team libraries
-python3 ../tools/kibrary_automator.py install
-
-# Add new components
-python3 ../tools/kibrary_automator.py
-# Merge into existing team libraries
-
-# Share updates
-git add . && git commit -m "Add new components"
-git push
-```
-
-## 🛠️ Dependencies
-
-- **Python 3.6+**
-- **JLC2KiCadLib**: Component conversion tool
-- **KiCad**: Target installation for libraries
-
-## Headless Screenshots
-
-Take a PNG screenshot of any frontend route while the Vite dev server is running:
+Capture any frontend route to PNG without ever opening a browser:
 
 ```bash
-# Start the dev server in one terminal
-pnpm dev
-
-# In another terminal, set ROUTE and run the screenshot script
-ROUTE=/ pnpm screenshot          # -> screenshots/index.png
-ROUTE=/settings pnpm screenshot  # -> screenshots/settings.png
+pnpm dev                          # Vite dev server in one terminal
+ROUTE=/ pnpm screenshot           # → screenshots/index.png in another
 ```
 
-`ROUTE` defaults to `/` if unset. Output files land in `screenshots/` (gitignored).
-
-To screenshot a Storybook story (when Storybook is running on :6006):
+The repo also bundles a [Storybook](https://storybook.js.org) configuration for per-block visual development:
 
 ```bash
-STORY=shell-header--default pnpm screenshot:story
+pnpm storybook                                    # :6006
+STORY=blocks-import--default pnpm screenshot:story
 ```
 
-## Rust / Tauri Dev Environment
+---
 
-The Tauri backend (`src-tauri/`) requires **Rust 1.85 or newer**. Some Linux distros ship an older system `rustc` (e.g. Ubuntu's apt package is 1.85) alongside a newer rustup-managed toolchain. If `which cargo` points to `/usr/bin/cargo` rather than `~/.cargo/bin/cargo`, the system toolchain is active and `cargo check` / `cargo build` may fail or produce unexpected results.
+## Rust / Tauri dev environment
 
-To ensure the rustup-managed toolchain is used, prepend `~/.cargo/bin` to your PATH before any Rust or Tauri commands:
+The Tauri backend (`src-tauri/`) requires **Rust 1.85 or newer** because Tauri 2's transitive dependencies (`toml`, `toml_edit`) need `edition2024`. Some Linux distros ship an older system `rustc` (Ubuntu's apt package is 1.75) alongside a newer rustup-managed toolchain. If `which cargo` points to `/usr/bin/cargo` rather than `~/.cargo/bin/cargo`, the system toolchain is active and `cargo check` may fail with confusing edition2024 errors from inside transitive crates.
+
+Prepend `~/.cargo/bin` to your PATH to ensure rustup's toolchain is used:
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
-Add this line to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to make it permanent. You can verify the active toolchain with `cargo --version` — it should report 1.85 or higher.
+Add it to your shell profile to make it permanent.
 
-## 🤝 Contributing
+---
 
-This tool is designed to work with your specific KiCad library workflow. Contributions welcome for:
-- Additional KiCad installation types
-- Enhanced component organization
-- Integration improvements
-- Cross-platform compatibility
+## Legacy CLI
 
-## 📝 License
+The original `kibrary_automator.py` script remains at the repo root and works exactly as before. It will be removed at the end of P2 once the desktop app fully covers its workflows. Run it directly:
 
-This project follows the same license as your KiCad libraries.
+```bash
+cd /path/to/your/kicad-shared-libs/
+python3 /path/to/kibrary-automator/kibrary_automator.py
+# When prompted, enter JLCPCB part numbers (space-separated)
+# Example: C1525 C25804 R25604
+```
+
+```bash
+# Install all libraries in the current directory to KiCad
+python3 kibrary_automator.py install
+```
+
+---
+
+## License
+
+CC-BY-SA-4.0 — same as the kicad-shared-libs convention. See [`LICENSE.md`](LICENSE.md).

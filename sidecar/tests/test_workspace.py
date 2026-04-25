@@ -20,3 +20,16 @@ def test_open_workspace_idempotent(tmp_path: Path):
     (ws / ".kibrary" / "workspace.json").write_text(json.dumps(custom))
     info = open_workspace(str(ws))
     assert info["settings"]["concurrency"] == 8
+
+def test_open_workspace_first_run_true_when_new(tmp_path: Path):
+    ws = tmp_path / "brand_new"
+    ws.mkdir()
+    info = open_workspace(str(ws))
+    assert info["first_run"] is True
+
+def test_open_workspace_first_run_false_when_existing(tmp_path: Path):
+    ws = tmp_path / "existing"
+    ws.mkdir()
+    open_workspace(str(ws))  # creates workspace.json
+    info = open_workspace(str(ws))  # second call — not first run
+    assert info["first_run"] is False

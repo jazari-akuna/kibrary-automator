@@ -130,6 +130,42 @@ Append-only log of plan execution. Manager (main Claude session) reads this at t
 - **Plan ordering bug noted**: T6 step 6.4 needs screenshot infrastructure that T12 builds. After T12 lands, do a "screenshot pass" to capture baselines for T6 + T8 + T11 retroactively.
 - **`pnpm tauri dev` cannot be run on the host** without webkit2gtk-driver and friends — those live in the Docker image (T2). Until the image is built and used for runtime testing, all Tauri end-to-end verification has to wait. Consider building the image in T12 or as a separate dedicated milestone.
 
+## Tasks 7–34 — Foundation, Core Flow, Polish (parallelized waves)            2026-04-25
+**Outcome:** ✓ pass
+
+Switched to **parallel-dispatching waves** after user explicit request "Use more agents if it can speed things up." Tasks grouped into 5 waves where parallel-safe. Manager handled the wiring between waves (methods.py registry, frontend block registry, RoomAdd composition, cross-cutting concerns like the auto-commit hook integrating T23 + T24).
+
+### Wave summaries
+- **Foundation finish (T7-T12)**: 6 sequential dispatches with manager spot-check pattern. Block registry, three-room shell, workspace open/recents, global settings, settings UI, screenshot scripts.
+- **Core Flow Wave 1 (T13/T15/T18/T19/T22a)**: 5 parallel Python TDD modules — parser, jlc wrapper, staging meta, kiutils symfile, category map (+ default JSON shipped in package).
+- **Core Flow Wave 2 (T16/T23/T24/T31)**: 4 parallel — async downloader with Tauri notification routing, library commit (kiutils-based with regex fallback for 3D paths), git auto-commit with full edge-case coverage, search.raph.io HTTP client.
+- **Core Flow Wave 3 (T14/T17/T20/T22b)**: 4 parallel Solid blocks — Import (paste box), Queue (live status), PropertyEditor (debounced autosave), ReviewBulkAssign (one-button save-all). Manager fixed one shape mismatch (`{lib}` vs `{library}` from `library.suggest`).
+- **Polish Wave 4 (T25/T26/T27/T29/T32/T33)**: 6 parallel — kicanvas previews (vendored 475KB asset; not on npm), 3D preview (placeholder cube — full STEP rendering deferred to P3), KiCad install detection (cross-OS), KiCad library table register/unregister, search panel block, toasts + git undo.
+- **Final Wave 5 (T21/T28/T30)**: 3 parallel — Sequential review composing previews + property editor, KiCad editor spawn (POSIX/Windows detached subprocess) + Rust file watcher emitting `staging.changed`, first-run wizard (3-pane modal). Manager added missing `workspace.set_settings` RPC and patched wizard to write per-workspace settings rather than global.
+- **T34**: README rewrite with new screenshot, examples, full feature inventory.
+
+### Cross-cutting integration done by manager
+- **methods.py grew from 6 → 25 RPC endpoints** across the waves. Each wave added a batch of methods in one manager edit after worker subagents completed.
+- **library.commit RPC integrates T23 + T24**: after writing files via library.commit_to_library, the handler reads workspace.json's git config and calls git_ops.auto_commit if enabled. Single atomic operation from frontend's perspective.
+- **kicanvas vendoring**: kicanvas alpha is not on npm, distributed only as a downloadable bundle. Added to `public/kicanvas.js` (475KB) and loaded via `<script type="module">` in index.html. TS module augmentation in `src/kicanvas.d.ts` registers `<kicanvas-embed>` and `<kicanvas-source>` as JSX intrinsics.
+- **rpc.py refactor for async**: T16 introduced an ASYNC_REGISTRY pattern living in `downloader.py` (rather than methods.py per the "don't touch methods.py in workers" rule). rpc.py imports both REGISTRY (sync) and ASYNC_REGISTRY (async); async dispatch uses `asyncio.run` with a thread-safe stdout-write lock.
+
+### Lessons
+- **Parallel dispatching is a 4-5× speedup** when tasks touch isolated files. The manager-mediated wiring step (methods.py and registry.ts updates) is small enough to do inline between waves without bottlenecking.
+- **"Don't touch methods.py" rule for workers** prevented merge conflicts. Worth applying to any single-file central registries in future projects.
+- **Plan errors compound when not corrected mid-flight**: original plan called `JLC2KiCadLib>=2.5.0` (doesn't exist) and `rust-version=1.75` (Tauri 2 needs 1.85). Both surfaced in T1 reviews; manager updated the plan inline so subsequent workers didn't trip over the same wrong values.
+- **Manager-direct fixes vs fix-subagents**: for ≤30 line / ≤5 minute corrections, manager-direct is faster and uses fewer tokens. For broader changes, dispatch a fix subagent. This rule held across the whole P1 execution.
+- **kicanvas API needed an HTML host element (`<kicanvas-embed>`)** rather than a typical JS library — the worker auto-discovered this from kicanvas docs. Custom-element libraries need TS module augmentation for intrinsic JSX elements.
+
+### Commit chain (p1-mvp)
+T1 e4a904c · T2 8a38785 · T3 9c7c9c3 · T4 8c0fc8b · T5 e061966 · T6 71070be · T7 92088f0 · T8 8973397 · T9 55f061b · T10 8c84b5e · T11 f9cbd62 · T12 9fa1b67 · Wave1 b48ed9c · Wave2 ad61146 · Wave3 6a6e810 · Wave4 81d17bf · (final pending)
+
+### Test counts at end
+- Sidecar: 99 tests, 99 passing
+- Frontend: pnpm typecheck clean
+- Rust: cargo check clean
+- 25 RPC endpoints exposed
+
 
 
 

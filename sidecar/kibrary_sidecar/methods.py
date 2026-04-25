@@ -32,6 +32,11 @@ def workspace_settings(p: dict) -> dict:
     return {"settings": ws.read_workspace_settings(p["root"])}
 
 
+def workspace_set_settings(p: dict) -> dict:
+    ws.write_workspace_settings(p["root"], p["settings"])
+    return {"ok": True}
+
+
 def settings_get(_: dict) -> dict:
     return {"settings": st.read_settings()}
 
@@ -168,6 +173,7 @@ REGISTRY = {
     "system.version": system_version,
     "workspace.open": workspace_open,
     "workspace.settings": workspace_settings,
+    "workspace.set_settings": workspace_set_settings,
     "settings.get": settings_get,
     "settings.set": settings_set,
     "parts.parse_input": parts_parse_input,
