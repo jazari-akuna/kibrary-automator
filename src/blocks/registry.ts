@@ -5,6 +5,7 @@ export const blocks: Record<string, BlockDef> = {
   'room-add':             { id: 'room-add',             load: () => import('./RoomAdd') },
   'room-libraries-stub':  { id: 'room-libraries-stub',  load: () => import('./RoomLibrariesStub') },
   'room-settings-stub':   { id: 'room-settings-stub',   load: () => import('./RoomSettingsStub') },
+  'workspace-picker':     { id: 'workspace-picker',     load: () => import('./WorkspacePicker') },
 };
 
 export function getBlock(id: string): BlockDef | undefined {

@@ -22,9 +22,11 @@ async fn main() -> anyhow::Result<()> {
 
     tauri::Builder::default()
         .manage(sc)
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::sidecar_ping,
             commands::sidecar_version,
+            commands::workspace_open,
         ])
         .run(tauri::generate_context!())?;
     Ok(())
