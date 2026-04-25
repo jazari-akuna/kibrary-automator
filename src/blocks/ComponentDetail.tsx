@@ -18,8 +18,10 @@
 
 import { createResource, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { currentWorkspace } from '~/state/workspace';
 import { selectedLib, selectedComponent } from '~/state/librariesRoom';
+import { pushToast } from '~/state/toasts';
 import PropertyEditor from '~/blocks/PropertyEditor';
 import SymbolPreview from '~/blocks/SymbolPreview';
 import FootprintPreview from '~/blocks/FootprintPreview';
@@ -68,6 +70,39 @@ export default function ComponentDetail() {
     }
   );
 
+  // --------------------------------------------------------------------------
+  // Replace 3D model handler (library-room context)
+  // --------------------------------------------------------------------------
+
+  const handleReplace3D = async () => {
+    const dir = libDir();
+    const name = comp();
+    if (!dir || !name) return;
+
+    const picked = await openDialog({
+      title: 'Select 3D model',
+      filters: [{ name: '3D Models', extensions: ['step', 'stp', 'wrl', 'glb'] }],
+      multiple: false,
+    });
+    if (typeof picked !== 'string') return;
+
+    try {
+      const result = await invoke<{ path: string }>('sidecar_call', {
+        method: 'library.replace_3d',
+        params: {
+          lib_dir: dir,
+          component_name: name,
+          new_step_path: picked,
+        },
+      });
+      const filename = result.path.split('/').pop() ?? result.path;
+      pushToast({ kind: 'success', message: `Replaced 3D model: ${filename}` });
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      pushToast({ kind: 'error', message: `Replace failed: ${reason}` });
+    }
+  };
+
   return (
     <div class="flex flex-col h-full overflow-hidden">
       {/* Header */}
@@ -110,10 +145,21 @@ export default function ComponentDetail() {
           />
 
           {/* 3D Model Preview */}
-          <Model3DPreview
-            stagingDir={libDir()!}
-            lcsc={comp()!}
-          />
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-zinc-400">3D Model</span>
+              <button
+                onClick={handleReplace3D}
+                class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors"
+              >
+                Replace 3D model…
+              </button>
+            </div>
+            <Model3DPreview
+              stagingDir={libDir()!}
+              lcsc={comp()!}
+            />
+          </div>
 
           {/* Property Editor */}
           <div class="border-t border-zinc-700 pt-4">

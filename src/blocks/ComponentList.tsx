@@ -2,13 +2,17 @@
  * ComponentList — middle pane of the Libraries room.
  *
  * Shows a search bar + checkbox list of components in the selected library.
- * Each row has inline ✎ (edit) and 🗑 (delete) icon stubs.
- * Bulk action toolbar at the bottom (Move/Delete/Re-export stubs).
+ * Each row has inline ✎ (rename) and 🗑 (delete) icon buttons.
+ * Bulk action toolbar at the bottom (Move/Delete/Re-export).
+ *
+ * P6: Rename, Move, and Delete modals are wired up here.
+ *     Re-export is fully implemented (P9).
  */
 
 import { createResource, createSignal, For, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { currentWorkspace } from '~/state/workspace';
+import { pushToast } from '~/state/toasts';
 import {
   selectedLib,
   selectedComponent,
@@ -17,6 +21,128 @@ import {
   toggleSelect,
   setMultiSelected,
 } from '~/state/librariesRoom';
+import ComponentRenameModal from '~/blocks/ComponentRenameModal';
+import ComponentMoveModal from '~/blocks/ComponentMoveModal';
+import ComponentDeleteModal from '~/blocks/ComponentDeleteModal';
+
+// ---------------------------------------------------------------------------
+// Types used by the Re-export flow
+// ---------------------------------------------------------------------------
+
+interface KiCadInstall {
+  id: string;
+  type: string;
+  version: string;
+  config_dir: string;
+  sym_table: string;
+  fp_table: string;
+  kicad_bin: string | null;
+  eeschema_bin: string | null;
+  pcbnew_bin: string | null;
+}
+
+interface LibraryInfo {
+  name: string;
+  /** Absolute path to the library directory (returned as a string by the sidecar). */
+  path: string;
+}
+
+// ---------------------------------------------------------------------------
+// Re-export helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-export one or more libraries to the workspace's configured KiCad install.
+ *
+ * Scoping rules (P9 spec):
+ *   - If `multiSelected` has items → export only the currently selected lib
+ *   - Otherwise                   → export ALL libs in the workspace
+ */
+async function reExportLibraries(
+  wsRoot: string,
+  kicadTarget: string | null | undefined,
+  currentLib: string | null,
+  selectedComponents: Set<string>,
+): Promise<void> {
+  // Guard: no KiCad target configured
+  if (!kicadTarget) {
+    pushToast({ kind: 'error', message: 'No KiCad install configured. Set one in Settings.' });
+    return;
+  }
+
+  // Step 1: detect installs and find the matching one
+  let install: KiCadInstall | undefined;
+  try {
+    const detected = await invoke<{ installs: KiCadInstall[] }>('sidecar_call', {
+      method: 'kicad.detect',
+      params: {},
+    });
+    install = detected.installs.find((i) => i.id === kicadTarget);
+  } catch (e) {
+    pushToast({ kind: 'error', message: `KiCad detection failed: ${e}` });
+    return;
+  }
+
+  if (!install) {
+    pushToast({
+      kind: 'error',
+      message: `KiCad install "${kicadTarget}" not found. Try re-running the setup wizard.`,
+    });
+    return;
+  }
+
+  // Step 2: determine which libs to export
+  let libs: { name: string; path: string }[];
+
+  if (selectedComponents.size > 0 && currentLib) {
+    // Components are selected → export their parent lib only
+    libs = [{ name: currentLib, path: `${wsRoot}/${currentLib}` }];
+  } else {
+    // Nothing selected → export all libs in the workspace
+    try {
+      const result = await invoke<{ libraries: LibraryInfo[] }>('sidecar_call', {
+        method: 'library.list',
+        params: { workspace: wsRoot },
+      });
+      libs = result.libraries.map((l) => ({ name: l.name, path: String(l.path) }));
+    } catch (e) {
+      pushToast({ kind: 'error', message: `Failed to list libraries: ${e}` });
+      return;
+    }
+  }
+
+  if (libs.length === 0) {
+    pushToast({ kind: 'info', message: 'No libraries found to export.' });
+    return;
+  }
+
+  // Step 3: register each lib, collecting failures
+  const failures: string[] = [];
+  for (const lib of libs) {
+    try {
+      await invoke('sidecar_call', {
+        method: 'kicad.register',
+        params: { install, lib_name: lib.name, lib_dir: lib.path },
+      });
+    } catch (e) {
+      failures.push(`${lib.name}: ${e}`);
+    }
+  }
+
+  // Step 4: report results
+  const successCount = libs.length - failures.length;
+  if (failures.length > 0) {
+    pushToast({
+      kind: 'error',
+      message: `Re-exported ${successCount}/${libs.length} libraries. Failures: ${failures.join('; ')}`,
+    });
+  } else {
+    pushToast({
+      kind: 'success',
+      message: `Re-exported ${successCount} ${successCount === 1 ? 'library' : 'libraries'} to KiCad`,
+    });
+  }
+}
 
 interface ComponentInfo {
   name: string;
@@ -30,10 +156,18 @@ interface ComponentListResult {
   components: ComponentInfo[];
 }
 
+type ModalKind = 'rename' | 'move' | 'delete' | null;
+
 export default function ComponentList() {
   const [search, setSearch] = createSignal('');
+  const [reExporting, setReExporting] = createSignal(false);
 
-  const [components] = createResource<ComponentListResult | null, string | null>(
+  // Modal state — single signal tracks which (if any) modal is open
+  const [openModal, setOpenModal] = createSignal<ModalKind>(null);
+  // For inline (single-component) actions; null means bulk selection is the scope
+  const [modalTarget, setModalTarget] = createSignal<string | null>(null);
+
+  const [components, { refetch }] = createResource<ComponentListResult | null, string | null>(
     () => {
       const ws = currentWorkspace();
       const lib = selectedLib();
@@ -64,6 +198,31 @@ export default function ComponentList() {
   };
 
   const lib = selectedLib;
+
+  // Absolute path for the currently selected library
+  const libDir = () => {
+    const ws = currentWorkspace();
+    const libName = lib();
+    if (!ws || !libName) return '';
+    return `${ws.root}/${libName}`;
+  };
+
+  // Components in the bulk selection
+  const bulkNames = () => Array.from(multiSelected());
+
+  // The names the open modal should operate on
+  const modalNames = (): string[] => {
+    const target = modalTarget();
+    if (target !== null) return [target];
+    return bulkNames();
+  };
+
+  // Close any modal and refetch the component list to stay current
+  const handleModalClose = () => {
+    setOpenModal(null);
+    setModalTarget(null);
+    refetch();
+  };
 
   return (
     <div class="flex flex-col h-full overflow-hidden">
@@ -169,21 +328,23 @@ export default function ComponentList() {
                       {/* Inline action icons — visible on hover or when selected */}
                       <div class={`flex items-center gap-1 flex-shrink-0 ${isSelected() ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
                         <button
-                          title="Rename component (P6)"
+                          title="Rename component"
                           class="px-1 py-0.5 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-600 text-sm"
                           onClick={(e) => {
                             e.stopPropagation();
-                            console.log('TODO P6');
+                            setModalTarget(comp.name);
+                            setOpenModal('rename');
                           }}
                         >
                           ✎
                         </button>
                         <button
-                          title="Delete component (P6)"
+                          title="Delete component"
                           class="px-1 py-0.5 rounded text-zinc-400 hover:text-red-400 hover:bg-zinc-600 text-sm"
                           onClick={(e) => {
                             e.stopPropagation();
-                            console.log('TODO P6');
+                            setModalTarget(comp.name);
+                            setOpenModal('delete');
                           }}
                         >
                           🗑
@@ -210,22 +371,46 @@ export default function ComponentList() {
               <button
                 class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors disabled:opacity-40"
                 disabled={multiSelected().size === 0}
-                onClick={() => console.log('TODO P6')}
+                onClick={() => {
+                  setModalTarget(null);
+                  setOpenModal('move');
+                }}
               >
                 Move…
               </button>
               <button
                 class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-red-700 text-zinc-300 transition-colors disabled:opacity-40"
                 disabled={multiSelected().size === 0}
-                onClick={() => console.log('TODO P6')}
+                onClick={() => {
+                  setModalTarget(null);
+                  setOpenModal('delete');
+                }}
               >
                 Delete
               </button>
               <button
-                class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors"
-                onClick={() => console.log('TODO P9')}
+                class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors disabled:opacity-40"
+                disabled={reExporting()}
+                onClick={async () => {
+                  const ws = currentWorkspace();
+                  if (!ws) {
+                    pushToast({ kind: 'error', message: 'No workspace open.' });
+                    return;
+                  }
+                  setReExporting(true);
+                  try {
+                    await reExportLibraries(
+                      ws.root,
+                      ws.settings?.kicad_target,
+                      selectedLib(),
+                      multiSelected(),
+                    );
+                  } finally {
+                    setReExporting(false);
+                  }
+                }}
               >
-                Re-export
+                {reExporting() ? 'Exporting…' : 'Re-export'}
               </button>
               <Show when={multiSelected().size > 0}>
                 <button
@@ -239,6 +424,39 @@ export default function ComponentList() {
           </div>
         </Show>
       </Show>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Modals — rendered at root level so they float above all content     */}
+      {/* ------------------------------------------------------------------ */}
+
+      {/* Rename — single-component scope only */}
+      <ComponentRenameModal
+        open={openModal() === 'rename'}
+        onClose={handleModalClose}
+        libDir={libDir()}
+        libName={lib() ?? ''}
+        componentName={modalNames()[0]}
+      />
+
+      {/* Move — single or bulk */}
+      <ComponentMoveModal
+        open={openModal() === 'move'}
+        onClose={handleModalClose}
+        libDir={libDir()}
+        libName={lib() ?? ''}
+        componentName={modalTarget() !== null ? modalTarget()! : undefined}
+        componentNames={modalTarget() === null ? bulkNames() : undefined}
+      />
+
+      {/* Delete — single or bulk */}
+      <ComponentDeleteModal
+        open={openModal() === 'delete'}
+        onClose={handleModalClose}
+        libDir={libDir()}
+        libName={lib() ?? ''}
+        componentName={modalTarget() !== null ? modalTarget()! : undefined}
+        componentNames={modalTarget() === null ? bulkNames() : undefined}
+      />
     </div>
   );
 }

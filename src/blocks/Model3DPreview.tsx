@@ -25,10 +25,12 @@
 
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import * as THREE from 'three';
 import { OrbitControls } from 'three-stdlib';
 import { findModel3DFile } from '~/utils/load3d';
 import { currentWorkspace } from '~/state/workspace';
+import { pushToast } from '~/state/toasts';
 
 interface Props {
   stagingDir: string;
@@ -176,6 +178,44 @@ export default function Model3DPreview(props: Props) {
   };
 
   // --------------------------------------------------------------------------
+  // Replace / Add 3D model button handler
+  // --------------------------------------------------------------------------
+
+  const handleReplace3D = async () => {
+    const picked = await openDialog({
+      title: 'Select 3D model',
+      filters: [{ name: '3D Models', extensions: ['step', 'stp', 'wrl', 'glb'] }],
+      multiple: false,
+    });
+    if (typeof picked !== 'string') return;
+
+    // The staging layout mirrors the library layout, so lib_dir = stagingDir/lcsc
+    const libDir = `${props.stagingDir}/${props.lcsc}`;
+    try {
+      const result = await invoke<{ path: string }>('sidecar_call', {
+        method: 'library.replace_3d',
+        params: {
+          lib_dir: libDir,
+          component_name: props.lcsc,
+          new_step_path: picked,
+        },
+      });
+      const filename = result.path.split('/').pop() ?? result.path;
+      pushToast({ kind: 'success', message: `Replaced 3D model: ${filename}` });
+      // Refresh model file display
+      setScanDone(false);
+      setModelFile(null);
+      findModel3DFile(props.stagingDir, props.lcsc)
+        .then((file) => setModelFile(file ? file.filename : null))
+        .catch(() => setModelFile(null))
+        .finally(() => setScanDone(true));
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      pushToast({ kind: 'error', message: `Replace failed: ${reason}` });
+    }
+  };
+
+  // --------------------------------------------------------------------------
   // Render
   // --------------------------------------------------------------------------
 
@@ -186,12 +226,20 @@ export default function Model3DPreview(props: Props) {
         <span class="text-sm font-medium text-zinc-300">
           3D Preview — {props.lcsc}
         </span>
-        <button
-          onClick={handleEdit}
-          class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors"
-        >
-          Open in KiCad
-        </button>
+        <div class="flex items-center gap-1">
+          <button
+            onClick={handleReplace3D}
+            class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors"
+          >
+            Replace 3D model…
+          </button>
+          <button
+            onClick={handleEdit}
+            class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors"
+          >
+            Open in KiCad
+          </button>
+        </div>
       </div>
 
       {/* Canvas */}

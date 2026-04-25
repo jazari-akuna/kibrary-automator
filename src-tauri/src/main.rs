@@ -23,40 +23,67 @@ async fn main() -> anyhow::Result<()> {
     //   3. python3 on PATH
     //   4. python on PATH
     //
-    // If none of these work we panic with an actionable message.
-    // Task P12 will replace the panic with a real bootstrap UI window.
+    // P12: instead of panicking when no sidecar is found, we store the
+    // Option<BootstrapResult> as managed state.  The frontend reads
+    // `bootstrap_status` on mount and renders <Bootstrap /> when the sidecar
+    // is missing.  The panic message is preserved as a log line so users who
+    // run from a terminal get an actionable hint.
     let env_override = std::env::var("KIBRARY_SIDECAR_PYTHON").ok();
-    let bootstrap_result =
-        bootstrap::try_resolve_sidecar(env_override.as_deref()).unwrap_or_else(|| {
-            panic!(
-                "kibrary_sidecar not found — set KIBRARY_SIDECAR_PYTHON or install per the README"
+    let bootstrap_result = bootstrap::try_resolve_sidecar(env_override.as_deref());
+
+    if bootstrap_result.is_none() {
+        eprintln!(
+            "[bootstrap] kibrary_sidecar not found — set KIBRARY_SIDECAR_PYTHON or \
+             install via: python3 -m pip install kibrary-sidecar\n\
+             The app will open the setup screen so you can install it from the UI."
+        );
+    }
+
+    // Spawn the sidecar only when bootstrap succeeded.
+    let sidecar_opt: Option<Arc<sidecar::Sidecar>> = match &bootstrap_result {
+        Some(r) => {
+            eprintln!(
+                "[bootstrap] using python={:?} sidecar_version={}",
+                r.python_path, r.sidecar_version
             );
-        });
+            match sidecar::Sidecar::spawn(&r.python_path, "kibrary_sidecar").await {
+                Ok(sc) => Some(Arc::new(sc)),
+                Err(e) => {
+                    eprintln!("[bootstrap] sidecar spawn failed: {e}");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
 
-    let python_path = bootstrap_result.python_path;
-    eprintln!(
-        "[bootstrap] using python={python_path:?} sidecar_version={}",
-        bootstrap_result.sidecar_version
-    );
+    let bootstrap_state = bootstrap::BootstrapState { result: bootstrap_result };
 
-    let sc = Arc::new(sidecar::Sidecar::spawn(&python_path, "kibrary_sidecar").await?);
-
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .setup(|app| {
             APP_HANDLE.set(app.handle().clone()).unwrap();
             Ok(())
         })
-        .manage(sc)
+        .manage(bootstrap_state)
         // Watcher state: starts inactive; activated by the `watch_workspace` command.
         .manage(watcher::WatcherState::new())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+
+    // Manage the sidecar only when it was successfully spawned.
+    if let Some(sc) = sidecar_opt {
+        builder = builder.manage(sc);
+    }
+
+    builder
         .invoke_handler(tauri::generate_handler![
             commands::sidecar_ping,
             commands::sidecar_version,
             commands::sidecar_call,
             commands::workspace_open,
             watcher::watch_workspace,
+            bootstrap::bootstrap_status,
+            bootstrap::bootstrap_install_direct,
         ])
         .run(tauri::generate_context!())?;
     Ok(())

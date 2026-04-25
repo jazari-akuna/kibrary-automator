@@ -17,6 +17,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
+use tauri::State;
 
 const PROBE: &str = "import kibrary_sidecar; print(kibrary_sidecar.__version__)";
 
@@ -219,4 +220,50 @@ pub fn try_resolve_sidecar(env_override: Option<&str>) -> Option<BootstrapResult
     }
 
     None
+}
+
+// ---------------------------------------------------------------------------
+// Tauri managed state
+// ---------------------------------------------------------------------------
+
+/// Held in Tauri's state map so that `bootstrap_status` can read it from any
+/// command handler.
+pub struct BootstrapState {
+    pub result: Option<BootstrapResult>,
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands
+// ---------------------------------------------------------------------------
+
+/// Returns whether the sidecar was resolved at startup and, if so, its version.
+///
+/// The frontend calls this on mount to decide whether to show `<Shell />` or
+/// `<Bootstrap />`.
+#[tauri::command]
+pub fn bootstrap_status(state: State<'_, BootstrapState>) -> serde_json::Value {
+    match &state.result {
+        Some(r) => serde_json::json!({
+            "python_resolved": true,
+            "sidecar_version": r.sidecar_version,
+        }),
+        None => serde_json::json!({
+            "python_resolved": false,
+            "sidecar_version": null,
+        }),
+    }
+}
+
+/// Attempt to install the bundled wheel by shelling out directly to pip.
+///
+/// **P2 stub** — returns an error.  The Bootstrap UI displays a friendly
+/// "manual install required" message on this error, which is the intended
+/// P2 behaviour.  A real implementation will be wired in P3.
+#[tauri::command]
+pub fn bootstrap_install_direct(
+    _python_path: String,
+    _wheel_path: String,
+) -> Result<(), String> {
+    Err("Automatic install is not yet implemented in this build. \
+         Please install manually: python3 -m pip install kibrary-sidecar".to_string())
 }

@@ -5,6 +5,7 @@ import { room } from '~/state/room';
 import BlockHost from './BlockHost';
 import ToastHost from './ToastHost';
 import { firstRun } from '~/state/workspace';
+import UpdatePrompt from '~/blocks/UpdatePrompt';
 
 const FirstRunWizard = lazy(() => import('~/blocks/FirstRunWizard'));
 
@@ -28,6 +29,7 @@ export default function Shell() {
           </Switch>
         </main>
       </div>
+      <UpdatePrompt />
       <ToastHost />
       <Show when={firstRun()}>
         <FirstRunWizard />
