@@ -4,7 +4,19 @@
 
 Paste a list of LCSC codes, watch them download in parallel, review/edit each one before commit, and have everything land in your library repo as one git commit per part — automatically registered with your KiCad install.
 
+### The three rooms
+
+**Add** — paste LCSCs, queue, parallel download, review, commit:
+
 ![Add room — paste, queue, review](docs/screenshot-add-room.png)
+
+**Libraries** (P2) — browse / edit / move / rename / delete already-committed components:
+
+![Libraries room — tree, component list, detail](docs/screenshot-libraries-room.png)
+
+**Settings** — workspace + global preferences (concurrency, search.raph.io API key, KiCad target):
+
+![Settings room — concurrency + API key](docs/screenshot-settings-room.png)
 
 ---
 
