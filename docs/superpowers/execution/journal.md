@@ -106,6 +106,20 @@ Append-only log of plan execution. Manager (main Claude session) reads this at t
 - **Testing a child process's exception path is hard.** Use a hybrid: smoke-test the happy path via subprocess, but use monkeypatched in-process invocation for error injection. Documented this technique in the test file.
 - **Manager-direct fixes for ≤30 lines / ≤5 min** are more efficient than a fix subagent dispatch when the change is mechanical. Already noted in T1 lessons; reaffirmed here.
 
+## Task 5 — Rust sidecar lifecycle manager            2026-04-25
+**Outcome:** ✓ pass (single iteration, manager spot-check only)
+
+### Loop 1
+- Worker briefing: full Task 5 + path env var hint (`KIBRARY_SIDECAR_PYTHON` for dev override of system python3) + cargo PATH note
+- Worker output: DONE. 3 new files (`sidecar.rs`, `commands/mod.rs`, `commands/system.rs`) + `main.rs` modifications. `cargo build` produced 175 MB binary in 49s. One pre-existing warning about Notification fields (will be used in T16).
+- Manager spot-check: read sidecar.rs, confirmed: oneshot channels for response correlation, tokio reader task, env-var override added per suggestion. Minor: `stdin.lock()` taken twice for write + flush — could be one acquire but tokio Mutex is fair, not blocking.
+
+### Lessons
+- **Build-once tasks** (cargo build that succeeds) for verbatim-from-plan code don't need a formal QA pass. The `cargo check` + `cargo build` is the verification.
+- **Env var overrides for dev paths** (`KIBRARY_SIDECAR_PYTHON`) are a clean way to handle system-python vs venv-python without forking the code. Pattern worth reusing for KiCad path overrides later.
+- **Bundle Python sidecar properly in P3** — for end users without `kibrary_sidecar` on their system python, the app will fail to start. Production fix: bundle a frozen sidecar binary via PyInstaller and point at it. Defer to P3 per spec §14.
+
+
 
 
 
