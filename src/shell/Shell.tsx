@@ -19,7 +19,7 @@ export default function Shell() {
               <BlockHost id="room-libraries-stub" />
             </Match>
             <Match when={room() === 'settings'}>
-              <BlockHost id="room-settings-stub" />
+              <BlockHost id="room-settings" />
             </Match>
           </Switch>
         </main>

@@ -26,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
         .invoke_handler(tauri::generate_handler![
             commands::sidecar_ping,
             commands::sidecar_version,
+            commands::sidecar_call,
             commands::workspace_open,
         ])
         .run(tauri::generate_context!())?;
