@@ -20,7 +20,23 @@
     "targets": "all",
     "icon": ["icons/icon.png"],
     "resources": ["resources/*.whl"],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": null,
+      "providerShortName": null,
+      "entitlements": null
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.comodoca.com",
+      "wix": { "language": "en-US" },
+      "nsis": { "languages": ["English"] }
+    },
+    "linux": {
+      "appimage": { "bundleMediaFramework": false }
+    }
   },
   "plugins": {
     "updater": {
