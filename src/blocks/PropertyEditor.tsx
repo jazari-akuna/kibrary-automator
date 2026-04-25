@@ -89,12 +89,12 @@ export default function PropertyEditor(props: Props) {
   return (
     <Show
       when={!propsData.loading && !metaData.loading}
-      fallback={<p class="text-sm text-zinc-400">Loading properties…</p>}
+      fallback={<p class="text-sm text-zinc-600 dark:text-zinc-400">Loading properties…</p>}
     >
       <div class="space-y-4 max-w-xl">
         <div class="flex items-center justify-between">
-          <h2 class="text-base font-medium text-zinc-200">{props.lcsc}</h2>
-          <span class="text-xs text-zinc-400">
+          <h2 class="text-base font-medium text-zinc-700 dark:text-zinc-200">{props.lcsc}</h2>
+          <span class="text-xs text-zinc-600 dark:text-zinc-400">
             {saveStatus() === 'saving' && 'Saving…'}
             {saveStatus() === 'saved' && 'Saved ✓'}
             {typeof saveStatus() === 'object' &&
@@ -104,12 +104,12 @@ export default function PropertyEditor(props: Props) {
 
         {EDITABLE_FIELDS.map(({ key, label }) => (
           <label class="block">
-            <span class="text-sm text-zinc-400">{label}</span>
+            <span class="text-sm text-zinc-600 dark:text-zinc-400">{label}</span>
             <input
               type="text"
               value={currentValue(key)}
               onInput={(e) => handleInput(key, e.currentTarget.value)}
-              class="block w-full bg-zinc-800 px-2 py-1 rounded mt-1 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+              class="block w-full bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded mt-1 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500"
             />
           </label>
         ))}

@@ -1,5 +1,6 @@
 import { createResource, createSignal, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
+import { theme, setTheme, type Theme } from '~/state/theme';
 
 interface Settings {
   theme: string;
@@ -45,15 +46,23 @@ export default function RoomSettings() {
         <div class="max-w-xl space-y-4">
           <h2 class="text-xl">Settings</h2>
           <label class="block">
-            <span class="text-sm text-zinc-400">Concurrency</span>
+            <span class="text-sm">Theme</span>
+            <select value={theme()} onChange={(e) => setTheme(e.currentTarget.value as Theme)}
+              class="block bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded mt-1">
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-sm text-zinc-600 dark:text-zinc-400">Concurrency</span>
             <input type="number" min="1" max="16" value={s.concurrency}
-              class="block bg-zinc-800 px-2 py-1 rounded mt-1"
+              class="block bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded mt-1"
               onChange={(e) => save({ ...s, concurrency: +e.currentTarget.value })}/>
           </label>
           <label class="block">
-            <span class="text-sm text-zinc-400">search.raph.io API key</span>
+            <span class="text-sm text-zinc-600 dark:text-zinc-400">search.raph.io API key</span>
             <input type="password" value={apiKey()}
-              class="block bg-zinc-800 px-2 py-1 rounded mt-1 w-96"
+              class="block bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded mt-1 w-96"
               onChange={(e) => saveApiKey(e.currentTarget.value)}/>
             <span class="text-xs text-zinc-500 mt-1 block">
               Stored in OS keychain (not in plain config).

@@ -106,26 +106,26 @@ export default function ComponentDetail() {
   return (
     <div class="flex flex-col h-full overflow-hidden">
       {/* Header */}
-      <div class="px-3 py-2 border-b border-zinc-700 flex-shrink-0">
+      <div class="px-3 py-2 border-b border-zinc-300 dark:border-zinc-700 flex-shrink-0">
         <Show
           when={comp()}
-          fallback={<span class="text-sm font-medium text-zinc-300">Detail</span>}
+          fallback={<span class="text-sm font-medium text-zinc-700 dark:text-zinc-300">Detail</span>}
         >
-          <span class="text-sm font-medium text-zinc-300">{comp()}</span>
+          <span class="text-sm font-medium text-zinc-700 dark:text-zinc-300">{comp()}</span>
         </Show>
       </div>
 
       {/* No workspace */}
       <Show when={!currentWorkspace()}>
         <div class="flex-1 flex items-center justify-center px-3">
-          <span class="text-xs text-zinc-500">Open a workspace first</span>
+          <span class="text-xs text-zinc-400 dark:text-zinc-500">Open a workspace first</span>
         </div>
       </Show>
 
       {/* No selection */}
       <Show when={currentWorkspace() && !comp()}>
         <div class="flex-1 flex items-center justify-center px-3">
-          <span class="text-xs text-zinc-500">Select a component</span>
+          <span class="text-xs text-zinc-400 dark:text-zinc-500">Select a component</span>
         </div>
       </Show>
 
@@ -147,10 +147,10 @@ export default function ComponentDetail() {
           {/* 3D Model Preview */}
           <div class="flex flex-col gap-1">
             <div class="flex items-center justify-between">
-              <span class="text-xs text-zinc-400">3D Model</span>
+              <span class="text-xs text-zinc-600 dark:text-zinc-400">3D Model</span>
               <button
                 onClick={handleReplace3D}
-                class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors"
+                class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 transition-colors"
               >
                 Replace 3D model…
               </button>
@@ -162,7 +162,7 @@ export default function ComponentDetail() {
           </div>
 
           {/* Property Editor */}
-          <div class="border-t border-zinc-700 pt-4">
+          <div class="border-t border-zinc-300 dark:border-zinc-700 pt-4">
             <PropertyEditor
               stagingDir={libDir()!}
               lcsc={comp()!}

@@ -49,7 +49,7 @@ export default function Import() {
   return (
     <div class="space-y-2">
       <textarea
-        class="w-full h-32 bg-zinc-800 p-2 rounded font-mono text-sm resize-y"
+        class="w-full h-32 bg-zinc-100 dark:bg-zinc-800 p-2 rounded font-mono text-sm resize-y"
         placeholder={'C1525, 2\nC25804, 5'}
         value={text()}
         onInput={(e) => {
@@ -60,7 +60,7 @@ export default function Import() {
       />
       <div class="flex items-center gap-2 flex-wrap">
         <button
-          class="px-3 py-1 bg-zinc-700 rounded text-sm hover:bg-zinc-600 disabled:opacity-50"
+          class="px-3 py-1 bg-zinc-200 dark:bg-zinc-700 rounded text-sm hover:bg-zinc-300 dark:hover:bg-zinc-600 disabled:opacity-50"
           onClick={onDetect}
           disabled={loading() || text().trim() === ''}
         >
@@ -69,7 +69,7 @@ export default function Import() {
         <Show when={parsed()}>
           {(p) => (
             <>
-              <span class="text-sm text-zinc-400">
+              <span class="text-sm text-zinc-600 dark:text-zinc-400">
                 {p().format === 'bom' ? 'BOM' : 'List'} —{' '}
                 {p().rows.filter((r) => r.ok).length} valid /{' '}
                 {p().rows.filter((r) => !r.ok).length} invalid

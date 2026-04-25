@@ -136,7 +136,7 @@ export default function SearchPanel() {
           {/* Search input */}
           <input
             type="text"
-            class="w-full bg-zinc-800 px-3 py-1.5 rounded text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500"
+            class="w-full bg-zinc-100 dark:bg-zinc-800 px-3 py-1.5 rounded text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500"
             placeholder="MPN, description, LCSC…"
             value={query()}
             onInput={(e) => onInput(e.currentTarget.value)}
@@ -144,7 +144,7 @@ export default function SearchPanel() {
 
           {/* Searching indicator */}
           <Show when={searching()}>
-            <p class="text-xs text-zinc-500 italic">Searching…</p>
+            <p class="text-xs text-zinc-400 dark:text-zinc-500 italic">Searching…</p>
           </Show>
 
           {/* Error banner */}
@@ -156,7 +156,7 @@ export default function SearchPanel() {
 
           {/* No matches */}
           <Show when={!searching() && !searchError() && query().trim() !== '' && results().length === 0}>
-            <p class="text-xs text-zinc-500 italic">No matches.</p>
+            <p class="text-xs text-zinc-400 dark:text-zinc-500 italic">No matches.</p>
           </Show>
 
           {/* Result cards — scrollable list, ~6 cards visible */}
@@ -167,9 +167,9 @@ export default function SearchPanel() {
             >
               <For each={results()}>
                 {(result) => (
-                  <li class="flex items-center gap-3 bg-zinc-800 rounded px-3 py-2 min-h-[80px]">
+                  <li class="flex items-center gap-3 bg-zinc-100 dark:bg-zinc-800 rounded px-3 py-2 min-h-[80px]">
                     {/* Thumbnail */}
-                    <div class="flex-shrink-0 w-14 h-14 bg-zinc-700 rounded overflow-hidden flex items-center justify-center">
+                    <div class="flex-shrink-0 w-14 h-14 bg-zinc-200 dark:bg-zinc-700 rounded overflow-hidden flex items-center justify-center">
                       <img
                         src={result.photo_url ?? photoUrl(baseUrl(), result.lcsc)}
                         alt={result.lcsc}
@@ -183,18 +183,18 @@ export default function SearchPanel() {
 
                     {/* Part info */}
                     <div class="flex-1 min-w-0 space-y-0.5">
-                      <p class="text-sm font-medium text-zinc-100 truncate" title={result.mpn}>
+                      <p class="text-sm font-medium text-zinc-900 dark:text-zinc-100 truncate" title={result.mpn}>
                         {result.mpn || result.lcsc}
                       </p>
-                      <p class="text-xs text-zinc-400 line-clamp-2" title={result.description}>
+                      <p class="text-xs text-zinc-600 dark:text-zinc-400 line-clamp-2" title={result.description}>
                         {result.description || <span class="italic text-zinc-600">No description</span>}
                       </p>
-                      <p class="text-xs text-zinc-600 font-mono">{result.lcsc}</p>
+                      <p class="text-xs text-zinc-500 dark:text-zinc-600 font-mono">{result.lcsc}</p>
                     </div>
 
                     {/* Add button */}
                     <button
-                      class="flex-shrink-0 px-2.5 py-1 bg-zinc-700 hover:bg-emerald-600 rounded text-xs font-medium text-zinc-200 hover:text-white transition-colors"
+                      class="flex-shrink-0 px-2.5 py-1 bg-zinc-200 dark:bg-zinc-700 hover:bg-emerald-600 rounded text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:text-white transition-colors"
                       onClick={() => addToQueue(result)}
                     >
                       + Add

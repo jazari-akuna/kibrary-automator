@@ -4,42 +4,50 @@ Reference for the per-platform signing setup. Tasks P18-P21 (in `docs/superpower
 
 ## Recommended setup (one-liner per platform)
 
-- **macOS**: Apple Developer Program ($99/yr) — Developer ID Application + notarization via App Store Connect API. No viable free alternative since macOS Sequoia 15.1.
+- **macOS**: **Ad-hoc signing** (`signingIdentity: "-"`). Free, no Apple Developer Program. End users must right-click → Open the first time (one-time per machine). Documented in the install instructions; no maintainer cost. We will NOT publish to the Mac App Store.
 - **Windows**: SignPath Foundation (free for OSS) — application/approval required, manual per-release approval, OV-equivalent SmartScreen behavior. Fallback: Azure Trusted Signing (~$120/yr) if SignPath approval is too slow.
 - **Linux**: AppImage + .deb + .rpm direct to GitHub Releases via `cargo tauri build`. GPG-sign the AppImage with `SIGN=1`. No further infra; add Flathub later if user demand warrants.
 - **Auto-update**: `tauri-plugin-updater` with `createUpdaterArtifacts: true` + `tauri-apps/tauri-action@v0` (`includeUpdaterJson: true`) pointing at `https://github.com/<owner>/<repo>/releases/latest/download/latest.json`.
 
 ---
 
-## macOS
+## macOS — ad-hoc signing (free, chosen path)
 
-### Why $99/yr is the only realistic path
-macOS Sequoia 15.1 broke Gatekeeper bypass for unsigned apps — they show "app is damaged" and require a Terminal `xattr` invocation per machine. Ad-hoc signing (`signingIdentity: "-"`) still works for personal/internal builds but requires every user to allow it in System Settings → Privacy & Security → Open Anyway.
+**Decision:** Kibrary uses ad-hoc signing (`signingIdentity: "-"`). The trade-off: end users see a "cannot be opened because Apple cannot check it for malicious software" warning on first launch and must right-click → Open once. After that, the OS remembers the approval and the app launches normally. No annual fee, no Mac App Store, no Apple Developer Program.
 
 ### tauri.conf.json
 ```json
 {
   "bundle": {
     "macOS": {
-      "signingIdentity": "Developer ID Application: Your Name (TEAM_ID)"
+      "signingIdentity": "-",
+      "minimumSystemVersion": "10.15"
     }
   }
 }
 ```
 
-### Required CI secrets
-```
-APPLE_CERTIFICATE          # base64-encoded .p12
-APPLE_CERTIFICATE_PASSWORD
-KEYCHAIN_PASSWORD
-APPLE_SIGNING_IDENTITY     # "Developer ID Application: Name (TEAMID)"
-# Notarization via App Store Connect API:
-APPLE_API_ISSUER
-APPLE_API_KEY
-APPLE_API_KEY_PATH
+No CI secrets required for macOS.
+
+### User-facing first-launch instructions (put in README + release notes)
+
+```markdown
+**macOS first-launch:** Because Kibrary isn't notarized by Apple,
+the first time you open it macOS will say "Kibrary cannot be opened
+because Apple cannot check it for malicious software." Workaround:
+right-click (or Control-click) the Kibrary app and choose **Open**
+from the context menu. Confirm "Open" in the dialog. The OS remembers
+this approval and future launches work normally.
+
+If macOS instead says "Kibrary is damaged and can't be opened" (rare,
+sometimes happens after AirDrop or browser quarantine), open Terminal
+and run:
+    xattr -d com.apple.quarantine /Applications/Kibrary.app
+Then double-click Kibrary normally.
 ```
 
-`cargo tauri build` invokes `notarytool` automatically when these env vars are present.
+### If you ever change your mind and DO want Apple notarization
+The full path costs $99/yr (Apple Developer Program) plus the cert/notarization setup. See [Tauri's macOS signing docs](https://v2.tauri.app/distribute/sign/macos/) for the env vars. Not used by this project.
 
 ---
 

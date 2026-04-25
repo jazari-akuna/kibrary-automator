@@ -6,18 +6,29 @@
  * bootstrap_status).
  *
  * The "Install automatically" option calls `bootstrap_install_direct` on the
- * Rust side.  In P2 that command is stubbed and returns an error, so we show
- * a friendly "manual install required" message.
+ * Rust side.  On success it shows a confirmation message and reloads; on error
+ * it surfaces a real error toast so the user knows what went wrong.
  */
 
-import { createSignal, Show, For } from 'solid-js';
+import { createSignal, Show, For, onCleanup } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 type InstallMode = 'auto' | 'manual' | 'specify';
+
+interface BootstrapResult {
+  python_path: string;
+  sidecar_version: string;
+}
+
+interface BootstrapProgress {
+  step: string;
+  message: string;
+}
 
 interface Props {
   onResolved: () => void;
@@ -101,6 +112,18 @@ export default function Bootstrap(props: Props) {
   const [busy, setBusy] = createSignal(false);
   const [statusMsg, setStatusMsg] = createSignal<string | null>(null);
   const [isError, setIsError] = createSignal(false);
+  const [installedVersion, setInstalledVersion] = createSignal<string | null>(null);
+
+  // Subscribe to live progress events emitted by bootstrap_install_direct.
+  // The unlisten handle is cleaned up when this component is unmounted.
+  let unlistenProgress: (() => void) | undefined;
+  listen<BootstrapProgress>('bootstrap.progress', (event) => {
+    setStatusMsg(event.payload.message);
+    setIsError(false);
+  }).then((unlisten) => {
+    unlistenProgress = unlisten;
+  });
+  onCleanup(() => unlistenProgress?.());
 
   const options: { value: InstallMode; label: string; hint: string }[] = [
     {
@@ -168,22 +191,30 @@ export default function Bootstrap(props: Props) {
 
     // mode === 'auto'
     setBusy(true);
-    setStatusMsg('Attempting automatic install…');
+    setStatusMsg('Starting automatic install…');
+    setInstalledVersion(null);
     try {
-      await invoke<void>('bootstrap_install_direct', {
+      // python_path defaults to 'python3'; the Rust side will use it to create
+      // the venv.  wheel_filename is omitted so Rust auto-detects the bundled
+      // wheel from the resource directory.
+      const result = await invoke<BootstrapResult>('bootstrap_install_direct', {
         pythonPath: 'python3',
-        wheelPath: '',
+        wheelFilename: null,
       });
-      setStatusMsg('Install complete — reloading…');
-      setTimeout(() => props.onResolved(), 800);
+      setInstalledVersion(result.sidecar_version);
+      // Cache the resolved python path as a localStorage hint (the canonical
+      // cache is already written on disk by the Rust side).
+      try {
+        localStorage.setItem('kibrary.python_path', result.python_path);
+      } catch {
+        // localStorage may be unavailable in some Tauri configurations.
+      }
+      setStatusMsg(`Installed v${result.sidecar_version} — reloading…`);
+      setIsError(false);
+      setTimeout(() => props.onResolved(), 1200);
     } catch (e) {
-      // P2 stub returns "not implemented in P2" — show friendly message
-      setStatusMsg(
-        'Automatic install is not yet available in this build. ' +
-        'Please use the manual option below.',
-      );
+      setStatusMsg(`Install failed: ${e}`);
       setIsError(true);
-      setMode('manual');
     } finally {
       setBusy(false);
     }
@@ -251,6 +282,8 @@ export default function Bootstrap(props: Props) {
           <div class={`mx-6 mb-2 px-3 py-2 rounded text-sm ${
             isError()
               ? 'bg-red-50 text-red-700 border border-red-200'
+              : installedVersion()
+              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
               : 'bg-blue-50 text-blue-700 border border-blue-200'
           }`}>
             {statusMsg()}

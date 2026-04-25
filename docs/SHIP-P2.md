@@ -34,13 +34,11 @@ cargo tauri signer generate -w ~/.tauri/kibrary.key
 - [ ] Add `~/.tauri/kibrary.key` content as GitHub repo secret `TAURI_SIGNING_PRIVATE_KEY`
 - [ ] If the key has a passphrase, also add `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 
-### macOS signing
-- [ ] Enroll in Apple Developer Program ($99/yr)
-- [ ] Generate Developer ID Application certificate from Apple Developer portal
-- [ ] Export as `.p12`; base64-encode and add as GitHub secret `APPLE_CERTIFICATE`
-- [ ] Add `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_SIGNING_IDENTITY` (`"Developer ID Application: NAME (TEAMID)"`)
-- [ ] Generate App Store Connect API key for notarization; add `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`
-- [ ] Update `tauri.conf.json` → `bundle.macOS.signingIdentity` to the same string as `APPLE_SIGNING_IDENTITY`
+### macOS signing — none required (ad-hoc)
+- [x] `tauri.conf.json` already has `bundle.macOS.signingIdentity: "-"` (ad-hoc).
+- [x] No Apple Developer Program enrollment needed; no annual fee.
+- [ ] Document the user-facing first-launch step in release notes: "right-click → Open" the first time, OR `xattr -d com.apple.quarantine` for browser-downloaded copies.
+- See `docs/SIGNING.md` for the full rationale.
 
 ### Windows signing (recommended path: SignPath Foundation, free for OSS)
 - [ ] Apply at https://signpath.io/solutions/open-source-community
@@ -71,7 +69,11 @@ cargo tauri signer generate -w ~/.tauri/kibrary.key
 ## Build & release
 
 - [ ] `pnpm install` (refresh lockfile)
-- [ ] `bash scripts/build-wheel.sh` (bundle the sidecar wheel)
+- [ ] `bash sidecar/build-binary.sh` (compile the PyInstaller sidecar binary)
+  - Verify the binary exists at `sidecar/dist/kibrary-sidecar-<triple>` before proceeding
+  - Smoke-test: `echo '{"id":1,"method":"system.ping","params":{}}' | ./sidecar/dist/kibrary-sidecar-<triple>` should print `{"id":1,"ok":true,"result":{"pong":true}}`
+  - Expected size: 30–80 MB single file
+- [ ] `bash scripts/build-wheel.sh` (bundle the sidecar wheel — still needed for the Python fallback bootstrap path)
 - [ ] Locally test `pnpm tauri build` per OS to catch issues before CI
 - [ ] Tag `v0.2.0` on `main` and push — release workflow drafts the GitHub Release with all platform binaries + `latest.json`
 - [ ] Edit the draft release notes (see template in this doc, below)
@@ -108,11 +110,8 @@ libraries — every action a single git commit, undoable.
 
 ### Limitations
 
-- Bootstrap auto-install path is stubbed for v0.2.0; the in-app option
-  shows a friendly "manual install required" message and points at the
-  pip command. Direct Rust→pip install is planned for v0.3.0.
-- 3D STEP rendering inside the app is still a placeholder cube; use
-  KiCad's footprint editor for real 3D viewing/positioning.
+- macOS users see a one-time "right-click → Open" prompt on first launch
+  (we use ad-hoc signing rather than the $99/yr Apple Developer path).
 
 See `docs/superpowers/specs/2026-04-25-kibrary-redesign.md` for the design
 and `docs/superpowers/plans/2026-04-26-p2-extras.md` for the implementation
@@ -122,4 +121,4 @@ plan executed in this release.
 ## Post-release
 
 - [ ] Update README "Project status" — P2 → released, P3 → planned
-- [ ] Open milestone for v0.3.0 with remaining items: bootstrap auto-install, STEP rendering, BOM block (if requested), Flathub manifest
+- [ ] Open milestone for v0.3.0 with remaining items: Flathub manifest, light/dark theme polish, additional QoL — feature-complete after P3.

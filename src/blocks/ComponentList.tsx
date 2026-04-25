@@ -255,12 +255,12 @@ export default function ComponentList() {
   return (
     <div class="flex flex-col h-full overflow-hidden">
       {/* Header */}
-      <div class="px-3 py-2 border-b border-zinc-700 flex-shrink-0">
+      <div class="px-3 py-2 border-b border-zinc-300 dark:border-zinc-700 flex-shrink-0">
         <Show
           when={lib()}
-          fallback={<span class="text-sm font-medium text-zinc-300">Components</span>}
+          fallback={<span class="text-sm font-medium text-zinc-700 dark:text-zinc-300">Components</span>}
         >
-          <span class="text-sm font-medium text-zinc-300">
+          <span class="text-sm font-medium text-zinc-700 dark:text-zinc-300">
             {lib()} ({components()?.components.length ?? '…'})
           </span>
         </Show>
@@ -269,28 +269,28 @@ export default function ComponentList() {
       {/* No workspace */}
       <Show when={!currentWorkspace()}>
         <div class="flex-1 flex items-center justify-center px-3">
-          <span class="text-xs text-zinc-500">Open a workspace first</span>
+          <span class="text-xs text-zinc-400 dark:text-zinc-500">Open a workspace first</span>
         </div>
       </Show>
 
       {/* No lib selected */}
       <Show when={currentWorkspace() && !lib()}>
         <div class="flex-1 flex items-center justify-center px-3">
-          <span class="text-xs text-zinc-500">Select a library</span>
+          <span class="text-xs text-zinc-400 dark:text-zinc-500">Select a library</span>
         </div>
       </Show>
 
       <Show when={currentWorkspace() && lib()}>
         {/* Search bar */}
-        <div class="px-3 py-2 border-b border-zinc-700 flex-shrink-0">
+        <div class="px-3 py-2 border-b border-zinc-300 dark:border-zinc-700 flex-shrink-0">
           <div class="flex items-center gap-2">
-            <span class="text-xs text-zinc-500 flex-shrink-0">Search:</span>
+            <span class="text-xs text-zinc-400 dark:text-zinc-500 flex-shrink-0">Search:</span>
             <input
               type="text"
               value={search()}
               onInput={(e) => setSearch(e.currentTarget.value)}
               placeholder="Filter components…"
-              class="flex-1 bg-zinc-800 px-2 py-1 rounded text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-500 placeholder-zinc-600"
+              class="flex-1 bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500 placeholder-zinc-400 dark:placeholder-zinc-600"
             />
           </div>
         </div>
@@ -298,7 +298,7 @@ export default function ComponentList() {
         {/* Loading */}
         <Show when={components.loading}>
           <div class="flex-1 flex items-center justify-center px-3">
-            <span class="text-xs text-zinc-400">Loading components…</span>
+            <span class="text-xs text-zinc-600 dark:text-zinc-400">Loading components…</span>
           </div>
         </Show>
 
@@ -316,7 +316,7 @@ export default function ComponentList() {
               when={filtered().length > 0}
               fallback={
                 <div class="flex items-center justify-center h-16">
-                  <span class="text-xs text-zinc-500">No components found</span>
+                  <span class="text-xs text-zinc-400 dark:text-zinc-500">No components found</span>
                 </div>
               }
             >
@@ -352,8 +352,8 @@ export default function ComponentList() {
                     <div
                       class={`group flex items-center gap-2 px-3 py-1.5 cursor-pointer transition-colors
                         ${isSelected()
-                          ? 'bg-zinc-600'
-                          : 'hover:bg-zinc-700'
+                          ? 'bg-zinc-300 dark:bg-zinc-600'
+                          : 'hover:bg-zinc-200 dark:hover:bg-zinc-700'
                         }`}
                       onClick={() => setSelectedComponent(comp.name)}
                     >
@@ -369,7 +369,7 @@ export default function ComponentList() {
                       />
 
                       {/* SVG thumbnail */}
-                      <div class="w-8 h-8 bg-zinc-800 rounded flex-shrink-0 flex items-center justify-center overflow-hidden">
+                      <div class="w-8 h-8 bg-zinc-200 dark:bg-zinc-800 rounded flex-shrink-0 flex items-center justify-center overflow-hidden">
                         <Show when={icon()} fallback={<DefaultIcon />}>
                           <div innerHTML={icon()!} class="w-full h-full" />
                         </Show>
@@ -377,9 +377,9 @@ export default function ComponentList() {
 
                       {/* Name + description */}
                       <div class="flex-1 min-w-0">
-                        <span class="text-sm text-zinc-200 truncate block">{comp.name}</span>
+                        <span class="text-sm text-zinc-800 dark:text-zinc-200 truncate block">{comp.name}</span>
                         <Show when={comp.description}>
-                          <span class="text-xs text-zinc-500 truncate block">{comp.description}</span>
+                          <span class="text-xs text-zinc-500 dark:text-zinc-500 truncate block">{comp.description}</span>
                         </Show>
                       </div>
 
@@ -387,7 +387,7 @@ export default function ComponentList() {
                       <div class={`flex items-center gap-1 flex-shrink-0 ${isSelected() ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
                         <button
                           title="Rename component"
-                          class="px-1 py-0.5 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-600 text-sm"
+                          class="px-1 py-0.5 rounded text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-sm"
                           onClick={(e) => {
                             e.stopPropagation();
                             setModalTarget(comp.name);
@@ -398,7 +398,7 @@ export default function ComponentList() {
                         </button>
                         <button
                           title="Delete component"
-                          class="px-1 py-0.5 rounded text-zinc-400 hover:text-red-400 hover:bg-zinc-600 text-sm"
+                          class="px-1 py-0.5 rounded text-zinc-500 dark:text-zinc-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-sm"
                           onClick={(e) => {
                             e.stopPropagation();
                             setModalTarget(comp.name);
@@ -416,18 +416,18 @@ export default function ComponentList() {
           </div>
 
           {/* Bulk actions toolbar */}
-          <div class="flex-shrink-0 border-t border-zinc-700 px-3 py-2">
+          <div class="flex-shrink-0 border-t border-zinc-300 dark:border-zinc-700 px-3 py-2">
             <div class="flex items-center gap-2">
               <Show when={multiSelected().size > 0}>
-                <span class="text-xs text-zinc-400 flex-shrink-0">
+                <span class="text-xs text-zinc-600 dark:text-zinc-400 flex-shrink-0">
                   {multiSelected().size} selected
                 </span>
               </Show>
               <Show when={multiSelected().size === 0}>
-                <span class="text-xs text-zinc-500 flex-shrink-0">Bulk:</span>
+                <span class="text-xs text-zinc-400 dark:text-zinc-500 flex-shrink-0">Bulk:</span>
               </Show>
               <button
-                class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors disabled:opacity-40"
+                class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-300 transition-colors disabled:opacity-40"
                 disabled={multiSelected().size === 0}
                 onClick={() => {
                   setModalTarget(null);
@@ -437,7 +437,7 @@ export default function ComponentList() {
                 Move…
               </button>
               <button
-                class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-red-700 text-zinc-300 transition-colors disabled:opacity-40"
+                class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-red-700 text-zinc-700 dark:text-zinc-300 hover:text-white transition-colors disabled:opacity-40"
                 disabled={multiSelected().size === 0}
                 onClick={() => {
                   setModalTarget(null);
@@ -447,7 +447,7 @@ export default function ComponentList() {
                 Delete
               </button>
               <button
-                class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors disabled:opacity-40"
+                class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-300 transition-colors disabled:opacity-40"
                 disabled={reExporting()}
                 onClick={async () => {
                   const ws = currentWorkspace();
@@ -471,7 +471,7 @@ export default function ComponentList() {
                 {reExporting() ? 'Exporting…' : 'Re-export'}
               </button>
               <button
-                class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300 transition-colors disabled:opacity-40"
+                class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-300 transition-colors disabled:opacity-40"
                 disabled={backfilling()}
                 onClick={async () => {
                   const ws = currentWorkspace();
@@ -512,7 +512,7 @@ export default function ComponentList() {
               </button>
               <Show when={multiSelected().size > 0}>
                 <button
-                  class="text-xs px-2 py-1 rounded text-zinc-500 hover:text-zinc-300 transition-colors ml-auto"
+                  class="text-xs px-2 py-1 rounded text-zinc-500 dark:text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300 transition-colors ml-auto"
                   onClick={() => setMultiSelected(new Set())}
                 >
                   Clear

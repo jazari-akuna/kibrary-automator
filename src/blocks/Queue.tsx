@@ -58,7 +58,7 @@ export default function Queue() {
         <div class="flex gap-2">
           <Show when={hasTerminal()}>
             <button
-              class="px-2 py-1 text-xs bg-zinc-700 hover:bg-zinc-600 rounded"
+              class="px-2 py-1 text-xs bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 rounded"
               onClick={clearDone}
             >
               Clear done
@@ -68,7 +68,7 @@ export default function Queue() {
             when={!hasWorkspace()}
             fallback={
               <button
-                class="px-2 py-1 text-xs bg-zinc-700 hover:bg-zinc-600 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+                class="px-2 py-1 text-xs bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 rounded disabled:opacity-40 disabled:cursor-not-allowed"
                 disabled={downloadAllDisabled()}
                 onClick={downloadAll}
               >
@@ -78,7 +78,7 @@ export default function Queue() {
           >
             <span title="Open a workspace first">
               <button
-                class="px-2 py-1 text-xs bg-zinc-700 rounded opacity-40 cursor-not-allowed"
+                class="px-2 py-1 text-xs bg-zinc-200 dark:bg-zinc-700 rounded opacity-40 cursor-not-allowed"
                 disabled
               >
                 Download all
@@ -91,7 +91,7 @@ export default function Queue() {
       {/* Queue rows */}
       <Show
         when={queueItems().length > 0}
-        fallback={<p class="text-xs text-zinc-500 italic">No items queued.</p>}
+        fallback={<p class="text-xs text-zinc-400 dark:text-zinc-500 italic">No items queued.</p>}
       >
         <ul class="font-mono text-sm space-y-1">
           <For each={queueItems()}>
@@ -103,7 +103,7 @@ export default function Queue() {
                 </span>
                 <Show when={q.status === 'failed'}>
                   <button
-                    class="text-xs underline text-zinc-400 hover:text-zinc-200"
+                    class="text-xs underline text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
                     onClick={() => retry(q.lcsc)}
                   >
                     retry

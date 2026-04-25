@@ -104,13 +104,13 @@ export default function Model3DPreview(props: Props) {
   // --------------------------------------------------------------------------
 
   return (
-    <div class="rounded border border-zinc-700 bg-zinc-900 p-3 space-y-3">
+    <div class="rounded border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 p-3 space-y-3">
       {/* Card header */}
       <div class="flex items-center justify-between">
-        <span class="text-sm font-medium text-zinc-300">3D Model</span>
+        <span class="text-sm font-medium text-zinc-700 dark:text-zinc-300">3D Model</span>
         <Show when={info()}>
           {(model) => (
-            <span class="text-xs font-mono uppercase tracking-wide px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-300">
+            <span class="text-xs font-mono uppercase tracking-wide px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300">
               {model().format}
             </span>
           )}
@@ -119,7 +119,7 @@ export default function Model3DPreview(props: Props) {
 
       {/* Loading state */}
       <Show when={info.loading}>
-        <p class="text-xs text-zinc-500">Loading…</p>
+        <p class="text-xs text-zinc-400 dark:text-zinc-500">Loading…</p>
       </Show>
 
       {/* Model found */}
@@ -127,31 +127,31 @@ export default function Model3DPreview(props: Props) {
         {(model) => (
           <div class="space-y-2">
             {/* Filename */}
-            <p class="text-sm text-zinc-100 font-mono truncate" title={model().filename}>
+            <p class="text-sm text-zinc-900 dark:text-zinc-100 font-mono truncate" title={model().filename}>
               {model().filename}
             </p>
 
             {/* Offset / Rotation / Scale table */}
             <div class="grid grid-cols-[auto_1fr_1fr_1fr] gap-x-3 gap-y-1 text-xs">
-              <span class="text-zinc-500 self-center">Offset</span>
-              <span class="font-mono text-zinc-300 text-right">{fmt(model().offset[0])} mm</span>
-              <span class="font-mono text-zinc-300 text-right">{fmt(model().offset[1])} mm</span>
-              <span class="font-mono text-zinc-300 text-right">{fmt(model().offset[2])} mm</span>
+              <span class="text-zinc-500 dark:text-zinc-500 self-center">Offset</span>
+              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().offset[0])} mm</span>
+              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().offset[1])} mm</span>
+              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().offset[2])} mm</span>
 
-              <span class="text-zinc-500 self-center">Rotation</span>
-              <span class="font-mono text-zinc-300 text-right">{fmt(model().rotation[0], 1)}°</span>
-              <span class="font-mono text-zinc-300 text-right">{fmt(model().rotation[1], 1)}°</span>
-              <span class="font-mono text-zinc-300 text-right">{fmt(model().rotation[2], 1)}°</span>
+              <span class="text-zinc-500 dark:text-zinc-500 self-center">Rotation</span>
+              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().rotation[0], 1)}°</span>
+              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().rotation[1], 1)}°</span>
+              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().rotation[2], 1)}°</span>
 
-              <span class="text-zinc-500 self-center">Scale</span>
-              <span class="font-mono text-zinc-300 text-right">{fmt(model().scale[0], 2)}</span>
-              <span class="font-mono text-zinc-300 text-right">{fmt(model().scale[1], 2)}</span>
-              <span class="font-mono text-zinc-300 text-right">{fmt(model().scale[2], 2)}</span>
+              <span class="text-zinc-500 dark:text-zinc-500 self-center">Scale</span>
+              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().scale[0], 2)}</span>
+              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().scale[1], 2)}</span>
+              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().scale[2], 2)}</span>
             </div>
 
             {/* Full path */}
             <p
-              class="text-xs font-mono text-zinc-500 truncate"
+              class="text-xs font-mono text-zinc-500 dark:text-zinc-500 truncate"
               title={model().model_path}
             >
               {model().model_path}
@@ -168,7 +168,7 @@ export default function Model3DPreview(props: Props) {
               </button>
               <button
                 onClick={handleReplace3D}
-                class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors"
+                class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 transition-colors"
               >
                 Replace 3D model…
               </button>
@@ -180,10 +180,10 @@ export default function Model3DPreview(props: Props) {
       {/* Empty state — no model block */}
       <Show when={!info.loading && info() === null}>
         <div class="space-y-2">
-          <p class="text-sm text-zinc-500">No 3D model attached.</p>
+          <p class="text-sm text-zinc-500 dark:text-zinc-500">No 3D model attached.</p>
           <button
             onClick={handleReplace3D}
-            class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors"
+            class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 transition-colors"
           >
             Add 3D model…
           </button>

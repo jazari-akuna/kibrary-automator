@@ -32,7 +32,7 @@ type Phase =
 function ProgressBar(props: { value: number }) {
   // value: 0–100 (or -1 for indeterminate)
   return (
-    <div class="w-full h-1.5 bg-zinc-700 rounded overflow-hidden">
+    <div class="w-full h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded overflow-hidden">
       <div
         class="h-full bg-green-500 transition-all duration-200"
         style={{ width: props.value < 0 ? '100%' : `${props.value}%` }}
@@ -115,7 +115,7 @@ export default function UpdatePrompt() {
   return (
     <Show when={phase() !== 'idle'}>
       <div
-        class="fixed top-0 left-0 right-0 z-50 bg-zinc-900 border-l-4 border-green-600 px-4 py-2 flex items-center gap-3 text-sm text-white shadow-lg"
+        class="fixed top-0 left-0 right-0 z-50 bg-zinc-100 dark:bg-zinc-900 border-l-4 border-green-600 px-4 py-2 flex items-center gap-3 text-sm text-zinc-900 dark:text-white shadow-lg"
         role="status"
         aria-live="polite"
       >
@@ -131,9 +131,9 @@ export default function UpdatePrompt() {
 
           <Show when={phase() === 'downloading'}>
             <div class="space-y-1">
-              <span class="text-zinc-300">
+              <span class="text-zinc-700 dark:text-zinc-300">
                 Downloading update v{update()?.version}…
-                {progress() >= 0 && <span class="ml-1 text-zinc-400">{progress()}%</span>}
+                {progress() >= 0 && <span class="ml-1 text-zinc-600 dark:text-zinc-400">{progress()}%</span>}
               </span>
               <ProgressBar value={progress()} />
             </div>
@@ -154,7 +154,7 @@ export default function UpdatePrompt() {
               Update now
             </button>
             <button
-              class="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-xs rounded transition-colors"
+              class="px-3 py-1 bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-300 text-xs rounded transition-colors"
               onClick={handleDismiss}
             >
               Later
@@ -175,7 +175,7 @@ export default function UpdatePrompt() {
         {/* Dismiss (×) — hide during active download */}
         <Show when={phase() !== 'downloading'}>
           <button
-            class="flex-shrink-0 text-zinc-400 hover:text-white text-lg leading-none ml-1"
+            class="flex-shrink-0 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white text-lg leading-none ml-1"
             aria-label="Dismiss update banner"
             onClick={handleDismiss}
           >

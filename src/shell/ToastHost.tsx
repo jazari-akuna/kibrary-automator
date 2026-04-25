@@ -88,7 +88,7 @@ function ToastCard(props: { toast: Toast }) {
 
   return (
     <div
-      class={`flex items-start gap-3 w-80 max-w-full bg-zinc-900 border-l-4 ${borderColor()} rounded shadow-lg p-3 text-sm text-white animate-fade-in`}
+      class={`flex items-start gap-3 w-80 max-w-full bg-zinc-100 dark:bg-zinc-900 border-l-4 ${borderColor()} rounded shadow-lg p-3 text-sm text-zinc-900 dark:text-white animate-fade-in`}
       role="alert"
     >
       <ToastIcon kind={props.toast.kind} />
@@ -110,7 +110,7 @@ function ToastCard(props: { toast: Toast }) {
       </div>
 
       <button
-        class="flex-shrink-0 text-zinc-400 hover:text-white leading-none"
+        class="flex-shrink-0 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white leading-none"
         aria-label="Dismiss"
         onClick={() => dismissToast(props.toast.id)}
       >

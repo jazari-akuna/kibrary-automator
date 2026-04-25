@@ -1,14 +1,14 @@
 /// Sidecar bootstrap — run before the main window opens.
 ///
-/// Searches for a Python interpreter that has `kibrary_sidecar` installed,
-/// in this priority order:
+/// Resolution order:
 ///
+/// 0. Bundled PyInstaller binary in `resource_dir` (release builds only)
 /// 1. The value passed in `env_override` (i.e. `KIBRARY_SIDECAR_PYTHON`)
 /// 2. `~/.config/kibrary/python.json` cache (cross-platform)
 /// 3. `python3` on PATH
 /// 4. `python` on PATH
 ///
-/// For each candidate the probe command is:
+/// For each Python candidate the probe command is:
 ///   `<py> -c "import kibrary_sidecar; print(kibrary_sidecar.__version__)"`
 ///
 /// On the first success a [`BootstrapResult`] is returned and (when the
@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
-use tauri::State;
+use tauri::{Emitter, Manager, State};
 
 const PROBE: &str = "import kibrary_sidecar; print(kibrary_sidecar.__version__)";
 
@@ -162,6 +162,52 @@ fn probe_python(candidate: &str) -> Option<String> {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Check whether a PyInstaller-bundled `kibrary-sidecar` binary exists inside
+/// `resource_dir`.
+///
+/// Tauri bundles the binary as `kibrary-sidecar-<target-triple>` (from
+/// `externalBin` in `tauri.conf.json`), and at runtime exposes it in the app's
+/// resource directory.  We probe for the file with and without the target-triple
+/// suffix so that both the dev layout (after a manual `cp`) and the installed
+/// release layout are handled.
+///
+/// Returns the path to the executable if found and executable, `None` otherwise.
+pub fn try_find_bundled_binary(resource_dir: &std::path::Path) -> Option<PathBuf> {
+    // Tauri strips the `-<triple>` suffix when copying the sidecar into the
+    // resource dir on macOS/Windows AppBundles, but on Linux it may keep the
+    // full name.  We check both.
+    let candidates = [
+        // Plain name (Tauri strips the triple at install time for most platforms)
+        resource_dir.join("kibrary-sidecar"),
+        // With explicit host triple suffix (Linux AppImage / dev builds)
+        resource_dir.join(format!(
+            "kibrary-sidecar-{}",
+            std::env::consts::ARCH
+        )),
+    ];
+
+    for path in &candidates {
+        if path.exists() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(path) {
+                    if meta.permissions().mode() & 0o111 != 0 {
+                        eprintln!("[bootstrap] found bundled binary: {}", path.display());
+                        return Some(path.clone());
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("[bootstrap] found bundled binary: {}", path.display());
+                return Some(path.clone());
+            }
+        }
+    }
+    None
+}
+
 /// Try to find a Python interpreter that has `kibrary_sidecar` installed.
 ///
 /// `env_override` should be the value of the `KIBRARY_SIDECAR_PYTHON`
@@ -254,16 +300,246 @@ pub fn bootstrap_status(state: State<'_, BootstrapState>) -> serde_json::Value {
     }
 }
 
-/// Attempt to install the bundled wheel by shelling out directly to pip.
+// ---------------------------------------------------------------------------
+// bootstrap_install_direct helpers
+// ---------------------------------------------------------------------------
+
+/// Return the directory into which the managed venv will be created.
 ///
-/// **P2 stub** — returns an error.  The Bootstrap UI displays a friendly
-/// "manual install required" message on this error, which is the intended
-/// P2 behaviour.  A real implementation will be wired in P3.
+/// - Linux / macOS : `~/.local/share/kibrary`
+/// - Windows       : `%LOCALAPPDATA%\kibrary`
+///
+/// The choice mirrors the XDG Base Directory specification for Linux and the
+/// Windows convention for app-local data.
+fn venv_parent_dir() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs_home().join("AppData").join("Local"));
+        Ok(base.join("kibrary"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Honour XDG_DATA_HOME on Linux; macOS uses ~/.local/share as well
+        // (diverging from ~/Library for *data* dirs keeps it simple and
+        // consistent with the Python sidecar's expectations).
+        let base = std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs_home().join(".local").join("share"));
+        Ok(base.join("kibrary"))
+    }
+}
+
+/// Given a venv root, return the path to `pip`.
+fn venv_pip(venv: &PathBuf) -> PathBuf {
+    if cfg!(windows) {
+        venv.join("Scripts").join("pip.exe")
+    } else {
+        venv.join("bin").join("pip")
+    }
+}
+
+/// Given a venv root, return the path to `python`.
+fn venv_python(venv: &PathBuf) -> PathBuf {
+    if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    }
+}
+
+/// Scan `dir` for a file matching `kibrary_sidecar-*.whl` and return its path.
+fn find_wheel(dir: &PathBuf) -> Result<PathBuf, String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("Cannot read resource dir {}: {}", dir.display(), e))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with("kibrary_sidecar-") && name_str.ends_with(".whl") {
+            return Ok(entry.path());
+        }
+    }
+    Err(format!(
+        "No kibrary_sidecar-*.whl found in {}. \
+         Ensure the wheel is bundled with the application.",
+        dir.display()
+    ))
+}
+
+/// Progress event payload emitted as `bootstrap.progress`.
+#[derive(Serialize, Clone)]
+struct BootstrapProgress {
+    step: String,
+    message: String,
+}
+
+/// Run a blocking [`std::process::Command`] and return its stdout on success,
+/// or a combined stdout+stderr error string on failure.
+fn run_blocking(mut cmd: Command) -> Result<String, String> {
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to launch process: {}", e))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!(
+            "Process exited with status {}\nstdout: {}\nstderr: {}",
+            output.status, stdout, stderr
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Real bootstrap_install_direct
+// ---------------------------------------------------------------------------
+
+/// Install the bundled `kibrary_sidecar` wheel into a fresh managed venv.
+///
+/// Steps:
+///   1. Resolve the wheel from the app's resource directory.
+///   2. Determine the venv path (`~/.local/share/kibrary/venv` on Unix,
+///      `%LOCALAPPDATA%\kibrary\venv` on Windows).
+///   3. Create the venv: `<python_path> -m venv <venv>`.
+///   4. Install the wheel: `<venv>/bin/pip install <wheel>`.
+///   5. Probe the installed package version.
+///   6. Write the resolved Python path to the cache so subsequent launches
+///      skip the PATH scan.
+///   7. Return a [`BootstrapResult`].
+///
+/// Progress events (`bootstrap.progress`) are emitted at each step so the
+/// frontend can show live status.
+///
+/// # Platform notes
+/// - On Windows, pip/python live under `<venv>\Scripts\` instead of `<venv>/bin/`.
+/// - The install can take 30–60 seconds on a slow network/disk; the command is
+///   therefore `async` and the blocking subprocess runs on a dedicated thread
+///   via [`tokio::task::spawn_blocking`].
+///
+/// TODO: Verify end-to-end on each platform (Linux, macOS, Windows) in a
+/// full Tauri runtime environment. The resource_dir path may differ between
+/// dev (cargo tauri dev) and production builds.
 #[tauri::command]
-pub fn bootstrap_install_direct(
-    _python_path: String,
-    _wheel_path: String,
-) -> Result<(), String> {
-    Err("Automatic install is not yet implemented in this build. \
-         Please install manually: python3 -m pip install kibrary-sidecar".to_string())
+pub async fn bootstrap_install_direct(
+    app: tauri::AppHandle,
+    python_path: String,
+    wheel_filename: Option<String>,
+) -> Result<BootstrapResult, String> {
+    // -- 1. Resolve wheel path -----------------------------------------------
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Cannot resolve resource dir: {}", e))?;
+
+    let wheel_path = match wheel_filename {
+        Some(ref name) => {
+            let p = resource_dir.join(name);
+            if !p.exists() {
+                return Err(format!("Wheel not found: {}", p.display()));
+            }
+            p
+        }
+        None => find_wheel(&resource_dir)?,
+    };
+
+    let emit_progress = |step: &str, message: &str| {
+        let _ = app.emit(
+            "bootstrap.progress",
+            BootstrapProgress {
+                step: step.to_string(),
+                message: message.to_string(),
+            },
+        );
+    };
+
+    // -- 2. Resolve venv path -------------------------------------------------
+    let venv_dir = venv_parent_dir()?.join("venv");
+
+    emit_progress(
+        "creating_venv",
+        &format!("Creating virtual environment at {}", venv_dir.display()),
+    );
+
+    // -- 3. Create venv -------------------------------------------------------
+    // Clone the values we need to move into spawn_blocking.
+    let python_path_clone = python_path.clone();
+    let venv_dir_clone = venv_dir.clone();
+    let wheel_path_clone = wheel_path.clone();
+    let app_clone = app.clone();
+
+    tokio::task::spawn_blocking(move || -> Result<BootstrapResult, String> {
+        // 3a. Create the venv parent directory if needed.
+        if let Some(parent) = venv_dir_clone.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create venv parent dir: {}", e))?;
+        }
+
+        // 3b. python -m venv <venv>
+        let mut venv_cmd = Command::new(&python_path_clone);
+        venv_cmd.args(["-m", "venv", &venv_dir_clone.to_string_lossy()]);
+        run_blocking(venv_cmd).map_err(|e| format!("venv creation failed: {}", e))?;
+
+        let pip = venv_pip(&venv_dir_clone);
+        let venv_py = venv_python(&venv_dir_clone);
+
+        // -- 4. Install wheel -------------------------------------------------
+        let _ = app_clone.emit(
+            "bootstrap.progress",
+            BootstrapProgress {
+                step: "installing".to_string(),
+                message: format!("Installing {} …", wheel_path_clone.display()),
+            },
+        );
+
+        let mut pip_cmd = Command::new(&pip);
+        pip_cmd.args([
+            "install",
+            "--no-index",
+            "--find-links",
+            &wheel_path_clone
+                .parent()
+                .unwrap_or(&wheel_path_clone)
+                .to_string_lossy(),
+            &wheel_path_clone.to_string_lossy(),
+        ]);
+        run_blocking(pip_cmd).map_err(|e| format!("pip install failed: {}", e))?;
+
+        // -- 5. Probe installed version ---------------------------------------
+        let _ = app_clone.emit(
+            "bootstrap.progress",
+            BootstrapProgress {
+                step: "verifying".to_string(),
+                message: "Verifying installation…".to_string(),
+            },
+        );
+
+        let mut probe_cmd = Command::new(&venv_py);
+        probe_cmd.args(["-c", PROBE]);
+        let version = run_blocking(probe_cmd)
+            .map_err(|e| format!("Post-install probe failed: {}", e))?;
+
+        if version.is_empty() {
+            return Err(
+                "Post-install probe returned an empty version string. \
+                 The wheel may not have installed correctly."
+                    .to_string(),
+            );
+        }
+
+        let resolved_python = venv_py.to_string_lossy().to_string();
+
+        // -- 6. Write cache ---------------------------------------------------
+        let result = BootstrapResult {
+            python_path: resolved_python,
+            sidecar_version: version,
+        };
+        write_cache(&result);
+
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("Async task panicked: {}", e))?
 }

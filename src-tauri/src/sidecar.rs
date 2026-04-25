@@ -19,14 +19,11 @@ pub struct Sidecar {
 }
 
 impl Sidecar {
-    pub async fn spawn(python_path: &str, module: &str) -> Result<Self> {
-        let mut child = Command::new(python_path)
-            .args(["-m", module])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-
+    /// Wire up stdin/stdout I/O for an already-spawned child process.
+    ///
+    /// Shared by [`spawn_binary`] and [`spawn`] so the reader loop and
+    /// pending-map logic live in exactly one place.
+    fn wire(mut child: Child) -> Result<Self> {
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
 
@@ -56,6 +53,30 @@ impl Sidecar {
             next_id: AtomicU64::new(1),
             _child: child,
         })
+    }
+
+    /// Spawn the sidecar from a pre-built PyInstaller binary.
+    ///
+    /// The binary must accept JSON-RPC requests on stdin and emit responses on
+    /// stdout — identical protocol to the Python `-m kibrary_sidecar` path.
+    pub async fn spawn_binary(binary_path: &str) -> Result<Self> {
+        let child = Command::new(binary_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        Self::wire(child)
+    }
+
+    /// Spawn the sidecar via Python module invocation (development / fallback path).
+    pub async fn spawn(python_path: &str, module: &str) -> Result<Self> {
+        let child = Command::new(python_path)
+            .args(["-m", module])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        Self::wire(child)
     }
 
     pub async fn call(&self, method: &str, params: Value) -> Result<Value> {

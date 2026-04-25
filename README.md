@@ -119,6 +119,17 @@ The app works fully offline-friendly without it.
 
 The original `kibrary_automator.py` script lives at the repo root and is unchanged through the P1 milestone. See [the CLI section below](#legacy-cli) for details. Most users should use the new desktop app.
 
+### Release builds — no Python required
+
+On a release build the Python sidecar is compiled into a single self-contained
+binary (`kibrary-sidecar-<triple>`) by PyInstaller and bundled inside the
+installer.  End users **do not need Python, pip, or the `kibrary_sidecar`
+package** installed on their machine — everything is included.
+
+Developers and contributors still need the Python venv for running tests,
+iterating on sidecar logic, and building the binary themselves (see
+`sidecar/build-binary.sh`).
+
 ### Run the desktop app (development build)
 
 The repo ships a Docker dev container that has every toolchain pinned (Node 20 / Rust stable / Python 3.12 / KiCad / Xvfb / Playwright + Chromium). Recommended for clean reproducibility:

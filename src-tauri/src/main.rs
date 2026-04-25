@@ -8,7 +8,7 @@ mod watcher;
 
 use std::sync::Arc;
 use once_cell::sync::OnceCell;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 /// Global AppHandle — set once during `.setup()`, used by the sidecar reader
 /// task to emit Tauri events for incoming notifications.
@@ -28,6 +28,10 @@ async fn main() -> anyhow::Result<()> {
     // `bootstrap_status` on mount and renders <Bootstrap /> when the sidecar
     // is missing.  The panic message is preserved as a log line so users who
     // run from a terminal get an actionable hint.
+    //
+    // P-sidecar-bin: Before Python probing, .setup() checks for a bundled
+    // PyInstaller binary in resource_dir and uses it when found.  The python
+    // fallback path below only runs in dev or when no binary is bundled.
     let env_override = std::env::var("KIBRARY_SIDECAR_PYTHON").ok();
     let bootstrap_result = bootstrap::try_resolve_sidecar(env_override.as_deref());
 
@@ -39,29 +43,72 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // Spawn the sidecar only when bootstrap succeeded.
-    let sidecar_opt: Option<Arc<sidecar::Sidecar>> = match &bootstrap_result {
-        Some(r) => {
-            eprintln!(
-                "[bootstrap] using python={:?} sidecar_version={}",
-                r.python_path, r.sidecar_version
-            );
-            match sidecar::Sidecar::spawn(&r.python_path, "kibrary_sidecar").await {
-                Ok(sc) => Some(Arc::new(sc)),
-                Err(e) => {
-                    eprintln!("[bootstrap] sidecar spawn failed: {e}");
-                    None
-                }
-            }
-        }
-        None => None,
-    };
+    // Both the bundled binary check and the Python-fallback spawn happen inside
+    // .setup() where AppHandle (and therefore resource_dir) is available.
+    // tauri::async_runtime::block_on is used for the async spawn calls.
+    let bootstrap_state = bootstrap::BootstrapState { result: bootstrap_result.clone() };
+    let bootstrap_result_for_setup = bootstrap_result;
 
-    let bootstrap_state = bootstrap::BootstrapState { result: bootstrap_result };
-
-    let mut builder = tauri::Builder::default()
-        .setup(|app| {
+    let builder = tauri::Builder::default()
+        .setup(move |app| {
             APP_HANDLE.set(app.handle().clone()).unwrap();
+
+            // --- 0. Try bundled PyInstaller binary ---
+            let bundled: Option<Arc<sidecar::Sidecar>> =
+                if let Ok(res_dir) = app.path().resource_dir() {
+                    if let Some(bin_path) = bootstrap::try_find_bundled_binary(&res_dir) {
+                        eprintln!(
+                            "[bootstrap] spawning bundled binary: {}",
+                            bin_path.display()
+                        );
+                        let bin_str = bin_path.to_string_lossy().to_string();
+                        match tauri::async_runtime::block_on(
+                            sidecar::Sidecar::spawn_binary(&bin_str),
+                        ) {
+                            Ok(sc) => {
+                                eprintln!("[bootstrap] bundled binary spawned successfully");
+                                Some(Arc::new(sc))
+                            }
+                            Err(e) => {
+                                eprintln!("[bootstrap] bundled binary spawn failed: {e}");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            // --- 1-4. Python fallback (only when bundled binary was not found) ---
+            let sidecar_opt: Option<Arc<sidecar::Sidecar>> = if bundled.is_some() {
+                bundled
+            } else {
+                match &bootstrap_result_for_setup {
+                    Some(r) => {
+                        eprintln!(
+                            "[bootstrap] using python={:?} sidecar_version={}",
+                            r.python_path, r.sidecar_version
+                        );
+                        match tauri::async_runtime::block_on(
+                            sidecar::Sidecar::spawn(&r.python_path, "kibrary_sidecar"),
+                        ) {
+                            Ok(sc) => Some(Arc::new(sc)),
+                            Err(e) => {
+                                eprintln!("[bootstrap] python sidecar spawn failed: {e}");
+                                None
+                            }
+                        }
+                    }
+                    None => None,
+                }
+            };
+
+            if let Some(sc) = sidecar_opt {
+                app.manage(sc);
+            }
+
             Ok(())
         })
         .manage(bootstrap_state)
@@ -69,11 +116,6 @@ async fn main() -> anyhow::Result<()> {
         .manage(watcher::WatcherState::new())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build());
-
-    // Manage the sidecar only when it was successfully spawned.
-    if let Some(sc) = sidecar_opt {
-        builder = builder.manage(sc);
-    }
 
     builder
         .invoke_handler(tauri::generate_handler![

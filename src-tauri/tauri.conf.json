@@ -20,10 +20,11 @@
     "targets": "all",
     "icon": ["icons/icon.png"],
     "resources": ["resources/*.whl"],
+    "externalBin": ["../sidecar/dist/kibrary-sidecar"],
     "createUpdaterArtifacts": true,
     "macOS": {
       "minimumSystemVersion": "10.15",
-      "signingIdentity": null,
+      "signingIdentity": "-",
       "providerShortName": null,
       "entitlements": null
     },

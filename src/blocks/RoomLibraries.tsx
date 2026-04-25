@@ -20,7 +20,7 @@ export default function RoomLibraries() {
     <div class="flex h-full overflow-hidden gap-0">
       {/* Left pane — Library tree */}
       <div
-        class="flex-shrink-0 border-r border-zinc-700 bg-zinc-800 overflow-hidden"
+        class="flex-shrink-0 border-r border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 overflow-hidden"
         style={{ width: '220px' }}
       >
         <LibraryTree />
@@ -28,14 +28,14 @@ export default function RoomLibraries() {
 
       {/* Middle pane — Component list */}
       <div
-        class="flex-shrink-0 border-r border-zinc-700 bg-zinc-800 overflow-hidden"
+        class="flex-shrink-0 border-r border-zinc-300 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 overflow-hidden"
         style={{ width: '320px' }}
       >
         <ComponentList />
       </div>
 
       {/* Right pane — Component detail */}
-      <div class="flex-1 bg-zinc-900 overflow-hidden">
+      <div class="flex-1 bg-zinc-50 dark:bg-zinc-900 overflow-hidden">
         <ComponentDetail />
       </div>
     </div>

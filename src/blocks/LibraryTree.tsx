@@ -67,14 +67,14 @@ export default function LibraryTree() {
   return (
     <div class="flex flex-col h-full overflow-hidden">
       {/* Header */}
-      <div class="px-3 py-2 border-b border-zinc-700 flex-shrink-0">
+      <div class="px-3 py-2 border-b border-zinc-300 dark:border-zinc-700 flex-shrink-0">
         <Show
           when={!libs.loading && libs()}
           fallback={
-            <span class="text-sm font-medium text-zinc-300">Libraries</span>
+            <span class="text-sm font-medium text-zinc-700 dark:text-zinc-300">Libraries</span>
           }
         >
-          <span class="text-sm font-medium text-zinc-300">
+          <span class="text-sm font-medium text-zinc-700 dark:text-zinc-300">
             Libraries ({libs()?.libraries.length ?? 0})
           </span>
         </Show>
@@ -83,14 +83,14 @@ export default function LibraryTree() {
       {/* No workspace */}
       <Show when={!currentWorkspace()}>
         <div class="flex-1 flex items-center justify-center px-3">
-          <span class="text-xs text-zinc-500">Open a workspace first</span>
+          <span class="text-xs text-zinc-400 dark:text-zinc-500">Open a workspace first</span>
         </div>
       </Show>
 
       {/* Loading */}
       <Show when={currentWorkspace() && libs.loading}>
         <div class="flex-1 flex items-center justify-center px-3">
-          <span class="text-xs text-zinc-400">Loading libraries…</span>
+          <span class="text-xs text-zinc-600 dark:text-zinc-400">Loading libraries…</span>
         </div>
       </Show>
 
@@ -115,25 +115,25 @@ export default function LibraryTree() {
                   <button
                     class={`w-full flex items-center gap-1 px-3 py-1.5 text-sm text-left transition-colors
                       ${isSelected()
-                        ? 'bg-zinc-600 text-zinc-100'
-                        : 'text-zinc-300 hover:bg-zinc-700'
+                        ? 'bg-zinc-300 dark:bg-zinc-600 text-zinc-900 dark:text-zinc-100'
+                        : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700'
                       }`}
                     onClick={() => {
                       selectLib(lib.name);
                       toggleExpand(lib.name);
                     }}
                   >
-                    <span class="text-zinc-400 w-3 flex-shrink-0">
+                    <span class="text-zinc-500 dark:text-zinc-400 w-3 flex-shrink-0">
                       {isExpanded() ? '▾' : '▸'}
                     </span>
                     <span class="flex-1 truncate">{lib.name}</span>
-                    <span class="text-xs text-zinc-500 flex-shrink-0">{lib.component_count}</span>
+                    <span class="text-xs text-zinc-400 dark:text-zinc-500 flex-shrink-0">{lib.component_count}</span>
                   </button>
 
                   {/* Expanded sub-row (selected indicator) */}
                   <Show when={isExpanded() && isSelected()}>
                     <div class="pl-7 pr-3 py-0.5">
-                      <span class="text-xs text-zinc-500">
+                      <span class="text-xs text-zinc-400 dark:text-zinc-500">
                         {lib.component_count} component{lib.component_count !== 1 ? 's' : ''}
                         {lib.has_pretty ? ' · footprints' : ''}
                         {lib.has_3dshapes ? ' · 3D' : ''}
@@ -147,9 +147,9 @@ export default function LibraryTree() {
         </div>
 
         {/* + New library stub */}
-        <div class="flex-shrink-0 border-t border-zinc-700">
+        <div class="flex-shrink-0 border-t border-zinc-300 dark:border-zinc-700">
           <button
-            class="w-full px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 text-left transition-colors"
+            class="w-full px-3 py-2 text-sm text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 text-left transition-colors"
             onClick={() => console.log('TODO P6')}
           >
             + New library
