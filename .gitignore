@@ -123,3 +123,18 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Kibrary P1 additions
+node_modules/
+dist/
+.pnpm-store/
+src-tauri/target/
+src-tauri/gen/
+sidecar/.venv/
+sidecar/dist/
+sidecar/build/
+sidecar/*.egg-info/
+__pycache__/
+screenshots/
+.kibrary/
+*.log

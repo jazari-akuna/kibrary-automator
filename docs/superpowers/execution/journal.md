@@ -26,6 +26,40 @@ Append-only log of plan execution. Manager (main Claude session) reads this at t
 - 2nd escalation: dispatch an Expert agent (specialist matched to the failure domain).
 - Always journal both the symptom AND the resolution after escalation, so the pattern is recognizable next time.
 
+**Commit rule:** The implementer/worker subagent **does not commit**. Only the manager (main session) commits, and only at milestones — after both reviews pass and the journal entry is written. A milestone is one cleared task.
+
 ---
 
 <!-- Entries below this line, newest at the bottom. -->
+
+## Task 1 — Initialize project skeleton            2026-04-25
+**Outcome:** ✓ pass (after 1 fix iteration on QA findings + 1 manager-direct fix iteration)
+
+### Loop 1 — implementer
+- Worker briefing: full Task 1 text + "do not commit" override + permission to install missing tooling
+- Worker output: DONE_WITH_CONCERNS. Created all 19 files, installed pnpm 9.12 / rustup 1.95 / GTK+WebKit deps. Two acknowledged deviations: (a) `JLC2KiCadLib>=2.5.0` doesn't exist, used `>=1.0.0` (1.2.3 actual); (b) `pnpm dlx tailwindcss init -p` not supported for Tailwind v3, used local bin instead.
+- Spec QA verdict: ❌ NEEDS CHANGES. Three findings: BLOCKER `cargo check` failed (Cargo.lock pinned crates needing edition2024 against `rust-version=1.75`); MISSING `pnpm-workspace.yaml` (listed in plan, never created); MINOR extra comment lines in `.gitignore` (accepted as harmless).
+- Manager reasoning: BLOCKER is real — Tauri 2's transitive deps genuinely need Rust 1.85+. Bumped `rust-version` to 1.85 in both the plan and `Cargo.toml`. Dispatched fix subagent for the workspace file + cargo lock regen.
+
+### Loop 2 — fix subagent
+- Brief: regenerate `Cargo.lock` against rustup 1.95, create `pnpm-workspace.yaml`, document PATH requirement.
+- Output: DONE. Lock file regenerated, workspace.yaml created, README dev-env section added.
+- Manager skipped formal spec re-review (mechanical fixes, all three verifiable by re-running `cargo check` + checking file existence). **Skipping documented here for transparency.**
+
+### Loop 3 — manager-direct fixes from code-quality QA
+- Code QA verdict: NEEDS CHANGES. Three Important findings:
+  (1) README still said "Rust 1.75" while Cargo.toml said "1.85"
+  (2) `sidecar/kibrary_sidecar/__main__.py` imports `kibrary_sidecar.rpc` which doesn't exist yet — module crashes on `python -m kibrary_sidecar`
+  (3) `vite.config.ts` alias `'/src'` is treated as absolute filesystem path, not cross-platform
+- Manager reasoning: each is a 1-line edit; faster + cheaper to fix inline than spawn a fix subagent. **This pragmatic choice is journaled so future sessions can audit.** Edits made manually.
+- Code QA re-review (haiku, focused on just the 3 fixes): APPROVED.
+
+### Lessons
+- **Plans must verify external versions** — `JLC2KiCadLib>=2.5.0` and `rust-version=1.75` were both wrong in the original plan. For future task plans, ground version numbers against PyPI / crates.io / Tauri docs before writing.
+- **Tauri 2 → Rust 1.85+** because of edition2024 in `toml` / `toml_edit`. Note for any future Rust-toolchain decisions in this repo.
+- **`pnpm dlx tailwindcss init`** is broken in Tailwind v3 — use the local node_modules binary.
+- **Stub entry-point files** (like `__main__.py` whose dependencies arrive in a later task) must be at least importable. Wrap forward references in try/except with a friendly error message.
+- **`vite.config.ts` aliases** must use `fileURLToPath(new URL('./src', import.meta.url))`, never a bare `'/src'` string — the latter resolves to filesystem root.
+- **Worker shouldn't commit** worked smoothly — the "do not commit" override at the top of the prompt was respected. Keep it explicit in every dispatch.
+- **PATH for rustup-managed toolchains** — across subagent sessions, `~/.cargo/bin` may not be on PATH. Either prepend it explicitly in commands, or document it (we did the latter in README).
+

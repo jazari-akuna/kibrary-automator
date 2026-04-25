@@ -1,0 +1,40 @@
+{
+  "name": "kibrary",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:dev:headless": "xvfb-run -a tauri dev",
+    "tauri:build": "tauri build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "screenshot": "playwright test playwright/screenshot.spec.ts",
+    "storybook": "storybook dev -p 6006",
+    "screenshot:story": "playwright test playwright/storybook.spec.ts"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "solid-js": "^1.9.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.0.0",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0",
+    "vite-plugin-solid": "^2.10.2",
+    "vitest": "^2.1.0"
+  },
+  "packageManager": "pnpm@9.12.0"
+}

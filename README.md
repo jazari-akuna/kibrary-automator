@@ -203,6 +203,18 @@ git push
 - **JLC2KiCadLib**: Component conversion tool
 - **KiCad**: Target installation for libraries
 
+## Rust / Tauri Dev Environment
+
+The Tauri backend (`src-tauri/`) requires **Rust 1.85 or newer**. Some Linux distros ship an older system `rustc` (e.g. Ubuntu's apt package is 1.85) alongside a newer rustup-managed toolchain. If `which cargo` points to `/usr/bin/cargo` rather than `~/.cargo/bin/cargo`, the system toolchain is active and `cargo check` / `cargo build` may fail or produce unexpected results.
+
+To ensure the rustup-managed toolchain is used, prepend `~/.cargo/bin` to your PATH before any Rust or Tauri commands:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Add this line to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to make it permanent. You can verify the active toolchain with `cargo --version` — it should report 1.85 or higher.
+
 ## 🤝 Contributing
 
 This tool is designed to work with your specific KiCad library workflow. Contributions welcome for:
