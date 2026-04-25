@@ -203,6 +203,27 @@ git push
 - **JLC2KiCadLib**: Component conversion tool
 - **KiCad**: Target installation for libraries
 
+## Headless Screenshots
+
+Take a PNG screenshot of any frontend route while the Vite dev server is running:
+
+```bash
+# Start the dev server in one terminal
+pnpm dev
+
+# In another terminal, set ROUTE and run the screenshot script
+ROUTE=/ pnpm screenshot          # -> screenshots/index.png
+ROUTE=/settings pnpm screenshot  # -> screenshots/settings.png
+```
+
+`ROUTE` defaults to `/` if unset. Output files land in `screenshots/` (gitignored).
+
+To screenshot a Storybook story (when Storybook is running on :6006):
+
+```bash
+STORY=shell-header--default pnpm screenshot:story
+```
+
 ## Rust / Tauri Dev Environment
 
 The Tauri backend (`src-tauri/`) requires **Rust 1.85 or newer**. Some Linux distros ship an older system `rustc` (e.g. Ubuntu's apt package is 1.85) alongside a newer rustup-managed toolchain. If `which cargo` points to `/usr/bin/cargo` rather than `~/.cargo/bin/cargo`, the system toolchain is active and `cargo check` / `cargo build` may fail or produce unexpected results.
