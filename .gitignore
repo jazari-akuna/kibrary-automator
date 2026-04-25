@@ -137,4 +137,6 @@ sidecar/*.egg-info/
 __pycache__/
 screenshots/
 .kibrary/
+.vite/
+test-results/
 *.log
