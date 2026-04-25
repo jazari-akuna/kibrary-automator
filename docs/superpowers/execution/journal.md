@@ -119,6 +119,18 @@ Append-only log of plan execution. Manager (main Claude session) reads this at t
 - **Env var overrides for dev paths** (`KIBRARY_SIDECAR_PYTHON`) are a clean way to handle system-python vs venv-python without forking the code. Pattern worth reusing for KiCad path overrides later.
 - **Bundle Python sidecar properly in P3** — for end users without `kibrary_sidecar` on their system python, the app will fail to start. Production fix: bundle a frozen sidecar binary via PyInstaller and point at it. Defer to P3 per spec §14.
 
+## Task 6 — Frontend invoke wrapper + SidecarStatus            2026-04-25
+**Outcome:** ✓ pass (code-only mode, screenshot deferred)
+
+### Loop 1
+- Worker briefing: full T6 spec + **screenshot verification deferred to post-T12** (T12 supplies the screenshot scripts which T6 currently depends on — plan ordering bug).
+- Worker output: DONE. 3 files (api/sidecar.ts, blocks/SidecarStatus.tsx, App.tsx). `pnpm typecheck` passes.
+
+### Lessons
+- **Plan ordering bug noted**: T6 step 6.4 needs screenshot infrastructure that T12 builds. After T12 lands, do a "screenshot pass" to capture baselines for T6 + T8 + T11 retroactively.
+- **`pnpm tauri dev` cannot be run on the host** without webkit2gtk-driver and friends — those live in the Docker image (T2). Until the image is built and used for runtime testing, all Tauri end-to-end verification has to wait. Consider building the image in T12 or as a separate dedicated milestone.
+
+
 
 
 
