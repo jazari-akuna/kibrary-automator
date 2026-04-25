@@ -75,4 +75,16 @@ Append-only log of plan execution. Manager (main Claude session) reads this at t
 - **Mechanical config tasks** (writing a Dockerfile, a compose file, a .dockerignore) don't warrant the full implementer→spec QA→code QA loop. Manager spot-check + the worker's own validation command is sufficient. Apply same shortcut to other pure-config tasks (e.g. T12 playwright config) but NOT to anything with logic.
 - **Skip expensive verifications when reasonable** — full `docker compose build` was avoided in favor of `docker compose config` + `buildx --check`. Saved 10–20 minutes and several GB of disk for what is essentially syntax validation at this stage.
 
+## Task 3 — JSON-RPC contract docs + types            2026-04-25
+**Outcome:** ✓ pass (single iteration, no QA dispatched)
+
+### Loop 1
+- Worker briefing: full Task 3 + "do not commit" + plan reference for exact contents
+- Worker output: DONE. 3 files created (`docs/rpc-protocol.md`, `sidecar/.../protocol.py`, `src-tauri/src/protocol.rs`), 1 modified (`main.rs` + `pub mod protocol;`). All verifications passed (`pnpm typecheck`, Python import, `cargo check`).
+- Manager spot-check: confirmed all 6 Python pydantic classes present and Rust serde mirrors match. Field names align. Pure type/contract definitions, no logic — same shortcut as T2.
+
+### Lessons
+- **Type/contract definition tasks** (mirror types across language boundaries) follow the mechanical-task pattern: implementer + manager spot-check is sufficient. No business logic to review for correctness.
+
+
 
