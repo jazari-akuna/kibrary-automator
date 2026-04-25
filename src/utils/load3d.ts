@@ -33,13 +33,16 @@ export async function findModel3DFile(
 
   let entries: string[] = [];
   try {
-    const result = await invoke<{ entries: string[] }>('sidecar_call', {
+    const result = await invoke<{ files: string[] }>('sidecar_call', {
       method: 'parts.list_dir',
-      params: { path: shapesDir },
+      params: {
+        staging_dir: stagingDir,
+        lcsc,
+        subdir: `${lcsc}.3dshapes`,
+      },
     });
-    entries = result.entries ?? [];
+    entries = result.files ?? [];
   } catch {
-    // Directory doesn't exist or RPC not yet implemented — return null.
     return null;
   }
 

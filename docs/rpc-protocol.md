@@ -24,8 +24,16 @@ human-readable logs only.
    notifications: `download.progress`, `download.done`
 - `parts.read_meta(staging_dir: str, lcsc: str)` → `{ meta: ... }`
 - `parts.write_meta(staging_dir: str, lcsc: str, meta: ...)` → `{ ok: true }`
-- `library.commit(workspace: str, lcsc: str, target_lib: str, edits: ...)` → `{ committed_path: str }`
-- `git.commit(workspace: str, message: str, paths: list[str])` → `{ sha: str }`
-- `kicad.detect()` → `{ installs: [...] }`
-- `kicad.register(install_id: str, lib_name: str, lib_dir: str)` → `{ ok: true }`
-- `search.query(q: str)` → `{ results: [...] }` (P1: only if API key set)
+- `library.commit(workspace: str, lcsc: str, staging_dir: str, target_lib: str, edits: dict)` → `{ committed_path: str, git_sha: str | null }` — runs `git_ops.auto_commit` automatically when workspace.json's `git.auto_commit` is true; there is no separate `git.commit` RPC.
+- `parts.read_props(sym_path: str)` → `{ properties: { Reference, Value, Footprint, Datasheet, Description, ... } }`
+- `parts.write_props(sym_path: str, edits: dict)` → `{ ok: true }`
+- `parts.read_file(staging_dir, lcsc, kind)` → `{ content: str }` where kind ∈ {"sym","fp","3d"}
+- `parts.list_dir(staging_dir, lcsc, subdir?)` → `{ files: [str] }`
+- `library.suggest(category: str)` → `{ library: str }`
+- `git.init(workspace)` / `git.is_safe(workspace)` / `git.undo_last(workspace, expected_sha)`
+- `kicad.detect()` / `kicad.refresh()` → `{ installs: [...] }`
+- `kicad.register(install: dict, lib_name: str, lib_dir: str)` → `{ sym_added: bool, fp_added: bool, backup_path: str | None }`
+- `kicad.unregister(install, lib_name)` / `kicad.list_registered(install)`
+- `editor.open(workspace, staging_dir, lcsc, kind)` → `{ pid: int }` — kind ∈ {"symbol","footprint"}; resolves the active KiCad install and spawns the right editor binary
+- `workspace.set_settings(root, settings)` → `{ ok: true }`
+- `search.query(q: str)` / `search.get_part(lcsc)` (P1: only when search.raph.io API key is set)

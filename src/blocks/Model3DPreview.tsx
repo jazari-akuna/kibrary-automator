@@ -24,9 +24,11 @@
  */
 
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js';
+import { invoke } from '@tauri-apps/api/core';
 import * as THREE from 'three';
 import { OrbitControls } from 'three-stdlib';
 import { findModel3DFile } from '~/utils/load3d';
+import { currentWorkspace } from '~/state/workspace';
 
 interface Props {
   stagingDir: string;
@@ -160,7 +162,17 @@ export default function Model3DPreview(props: Props) {
   // --------------------------------------------------------------------------
 
   const handleEdit = () => {
-    console.log('3D editor handoff — wired in T28');
+    const ws = currentWorkspace();
+    invoke('sidecar_call', {
+      method: 'editor.open',
+      params: {
+        workspace: ws?.root,
+        staging_dir: props.stagingDir,
+        lcsc: props.lcsc,
+        // 3D model offset / rotation / scale is a footprint property in KiCad
+        kind: 'footprint',
+      },
+    }).catch((e: unknown) => console.error('[editor] open footprint (for 3D) failed:', e));
   };
 
   // --------------------------------------------------------------------------

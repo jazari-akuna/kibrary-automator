@@ -14,6 +14,7 @@ from kibrary_sidecar import search_client
 from kibrary_sidecar import files
 from kibrary_sidecar import kicad_install
 from kibrary_sidecar import kicad_register
+from kibrary_sidecar import editor as kicad_editor
 
 
 def system_ping(_: dict) -> dict:
@@ -152,6 +153,55 @@ def kicad_list_registered(p: dict) -> dict:
     return {"libraries": kicad_register.list_registered(p["install"])}
 
 
+def editor_open(p: dict) -> dict:
+    """Frontend-facing wrapper: resolves the active KiCad install + the staged
+    file path from {staging_dir, lcsc, kind}, then spawns the appropriate
+    editor binary.
+
+    kind: 'symbol'    → eeschema --symbol-editor on <staging>/<lcsc>/<lcsc>.kicad_sym
+    kind: 'footprint' → pcbnew  --footprint-editor on the first .kicad_mod
+                       in <staging>/<lcsc>/<lcsc>.pretty/.
+
+    The 3D model offset / rotation / scale lives in the footprint, so the
+    3D-preview block also calls this with kind='footprint'.
+    """
+    workspace_root = p.get("workspace")
+    kind = p["kind"]
+    staging_dir = Path(p["staging_dir"])
+    lcsc = p["lcsc"]
+    part_dir = staging_dir / lcsc
+
+    if kind == "symbol":
+        file_path = part_dir / f"{lcsc}.kicad_sym"
+    elif kind == "footprint":
+        pretty_dir = part_dir / f"{lcsc}.pretty"
+        mods = sorted(pretty_dir.glob("*.kicad_mod"))
+        if not mods:
+            raise FileNotFoundError(f"No .kicad_mod under {pretty_dir}")
+        file_path = mods[0]
+    else:
+        raise ValueError(f"Unsupported kind {kind!r}")
+
+    if not file_path.is_file():
+        raise FileNotFoundError(str(file_path))
+
+    install = None
+    if workspace_root:
+        ws_settings = ws.read_workspace_settings(workspace_root) or {}
+        target_id = ws_settings.get("kicad_target")
+        for inst in kicad_install.cached_installs():
+            if inst.get("id") == target_id:
+                install = inst
+                break
+    if install is None:
+        installs = kicad_install.cached_installs()
+        if not installs:
+            raise RuntimeError("No KiCad install detected — install KiCad first")
+        install = installs[0]
+
+    return kicad_editor.open_editor(install, kind, file_path)
+
+
 def _search_settings() -> tuple[str, str]:
     s = st.read_settings().get("search_raph_io", {})
     return s.get("api_key", ""), s.get("base_url", "https://search.raph.io")
@@ -193,6 +243,7 @@ REGISTRY = {
     "kicad.register": kicad_register_lib,
     "kicad.unregister": kicad_unregister_lib,
     "kicad.list_registered": kicad_list_registered,
+    "editor.open": editor_open,
     "search.query": search_query,
     "search.get_part": search_get_part,
 }

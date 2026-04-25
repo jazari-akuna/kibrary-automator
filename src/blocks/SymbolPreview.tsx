@@ -1,5 +1,6 @@
-import { createResource, Show } from 'solid-js';
+import { createResource, onCleanup, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { currentWorkspace } from '~/state/workspace';
 
 interface Props {
@@ -12,12 +13,19 @@ interface ReadFileResult {
 }
 
 export default function SymbolPreview(props: Props) {
-  const [file] = createResource<ReadFileResult>(() =>
+  const [file, { refetch }] = createResource<ReadFileResult>(() =>
     invoke<ReadFileResult>('sidecar_call', {
       method: 'parts.read_file',
       params: { staging_dir: props.stagingDir, lcsc: props.lcsc, kind: 'sym' },
     })
   );
+
+  // Refetch when KiCad's external editor saves changes to our file.
+  const symPath = () => `${props.stagingDir}/${props.lcsc}/${props.lcsc}.kicad_sym`;
+  const unlisten = listen<{ path: string; lcsc: string }>('staging.changed', (e) => {
+    if (e.payload.path === symPath() || e.payload.lcsc === props.lcsc) refetch();
+  });
+  onCleanup(() => { unlisten.then((fn) => fn()); });
 
   return (
     <div class="flex flex-col gap-2">
@@ -27,10 +35,10 @@ export default function SymbolPreview(props: Props) {
           class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
           onClick={() => {
             const ws = currentWorkspace();
-            if (!ws) return;
             invoke('sidecar_call', {
               method: 'editor.open',
               params: {
+                workspace: ws?.root,
                 staging_dir: props.stagingDir,
                 lcsc: props.lcsc,
                 kind: 'symbol',
