@@ -140,3 +140,6 @@ screenshots/
 .vite/
 test-results/
 *.log
+
+# Kibrary P2 additions
+src-tauri/resources/*.whl

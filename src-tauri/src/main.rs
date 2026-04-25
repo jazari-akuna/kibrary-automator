@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bootstrap;
 mod protocol;
 mod sidecar;
 mod commands;
@@ -15,15 +16,28 @@ pub static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // P1: rely on the user's `python3` on PATH. Bundling a frozen sidecar
-    // binary is a P3 concern (signed installers).
+    // P2 / Task P10 — resolve the Python interpreter *before* opening the
+    // main window.  Resolution order (see bootstrap::try_resolve_sidecar):
+    //   1. KIBRARY_SIDECAR_PYTHON env var
+    //   2. ~/.config/kibrary/python.json disk cache
+    //   3. python3 on PATH
+    //   4. python on PATH
     //
-    // Dev-time override: set KIBRARY_SIDECAR_PYTHON to a venv interpreter, e.g.:
-    //   export KIBRARY_SIDECAR_PYTHON=/path/to/.venv/bin/python3
-    // This is needed when kibrary_sidecar is installed in a virtualenv that
-    // is not the system python3.
-    let python_path = std::env::var("KIBRARY_SIDECAR_PYTHON")
-        .unwrap_or_else(|_| "python3".to_string());
+    // If none of these work we panic with an actionable message.
+    // Task P12 will replace the panic with a real bootstrap UI window.
+    let env_override = std::env::var("KIBRARY_SIDECAR_PYTHON").ok();
+    let bootstrap_result =
+        bootstrap::try_resolve_sidecar(env_override.as_deref()).unwrap_or_else(|| {
+            panic!(
+                "kibrary_sidecar not found — set KIBRARY_SIDECAR_PYTHON or install per the README"
+            );
+        });
+
+    let python_path = bootstrap_result.python_path;
+    eprintln!(
+        "[bootstrap] using python={python_path:?} sidecar_version={}",
+        bootstrap_result.sidecar_version
+    );
 
     let sc = Arc::new(sidecar::Sidecar::spawn(&python_path, "kibrary_sidecar").await?);
 
@@ -36,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
         // Watcher state: starts inactive; activated by the `watch_workspace` command.
         .manage(watcher::WatcherState::new())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::sidecar_ping,
             commands::sidecar_version,
