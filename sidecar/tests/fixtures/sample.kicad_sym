@@ -1,0 +1,8 @@
+(kicad_symbol_lib (version 20211014) (generator None)
+  (symbol "C25804" (in_bom yes) (on_board yes)
+    (property "Reference" "C" (id 0) (at 0.0 0.0 0))
+    (property "Value" "100nF 0402" (id 1) (at 0.0 0.0 0))
+    (property "Footprint" "" (id 2) (at 0.0 0.0 0))
+    (property "Datasheet" "" (id 3) (at 0.0 0.0 0))
+  )
+)
