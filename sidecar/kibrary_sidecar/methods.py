@@ -84,6 +84,20 @@ def parts_list_dir(p: dict) -> dict:
     return {"files": items}
 
 
+def library_get_3d_info(p: dict) -> dict:
+    """Returns the parsed (model ...) data from the part's first .kicad_mod,
+    or {info: null} if the footprint has no model block.
+    Accepts both staging-style (staging_dir + lcsc) and library-style
+    (lib_dir + component_name) parameters."""
+    if "lib_dir" in p:
+        info = files.get_3d_info(
+            lib_dir=Path(p["lib_dir"]), component_name=p["component_name"]
+        )
+    else:
+        info = files.get_3d_info(Path(p["staging_dir"]), p["lcsc"])
+    return {"info": info}
+
+
 def library_suggest(p: dict) -> dict:
     return {"library": category_map.suggest_library(p["category"])}
 
@@ -328,6 +342,7 @@ REGISTRY = {
     "library.diff": library_diff,
     "library.replace_3d": library_replace_3d,
     "library.add_3d": library_add_3d,
+    "library.get_3d_info": library_get_3d_info,
     "bootstrap.detect": bootstrap_detect,
     "bootstrap.install": bootstrap_install,
     "search.query": search_query,

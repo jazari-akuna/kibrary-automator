@@ -6,6 +6,8 @@ Supported kinds:
   "3d"  – first .step (or .wrl) found inside <staging_dir>/<lcsc>/<lcsc>.3dshapes/
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -64,6 +66,95 @@ def read_part_file(staging_dir: Path, lcsc: str, kind: str) -> str:
         raise FileNotFoundError(f"No 3D model files found in: {shapes_dir}")
 
     raise ValueError(f"Unsupported kind {kind!r}; expected 'sym', 'fp', or '3d'")
+
+
+def get_3d_info(
+    staging_dir: Path | None = None,
+    lcsc: str | None = None,
+    *,
+    lib_dir: Path | None = None,
+    component_name: str | None = None,
+) -> dict | None:
+    """Return parsed 3D model info from a footprint's ``(model ...)`` block.
+
+    Two calling conventions are supported:
+
+    *Staging layout* (used by the Review room)::
+
+        get_3d_info(staging_dir, lcsc)
+        # footprint is at: <staging_dir>/<lcsc>/<lcsc>.pretty/<first .kicad_mod>
+
+    *Library layout* (used by the Library room)::
+
+        get_3d_info(lib_dir=lib_dir, component_name=component_name)
+        # footprint is at: <lib_dir>/<lib_dir.name>.pretty/<component_name>.kicad_mod
+
+    Returns a dict::
+
+        {
+            "model_path": "${KSL_ROOT}/lib/lib.3dshapes/file.step",
+            "filename":   "file.step",
+            "format":     "step",           # lower-case, without leading dot
+            "offset":     [x, y, z],        # mm
+            "rotation":   [x, y, z],        # degrees
+            "scale":      [x, y, z],
+        }
+
+    Returns ``None`` when the footprint has no ``(model ...)`` block or when
+    the footprint file cannot be found / parsed.
+    """
+    from kiutils.footprint import Footprint
+
+    mod_path = _resolve_kicad_mod(staging_dir, lcsc, lib_dir, component_name)
+    if mod_path is None or not mod_path.is_file():
+        return None
+
+    try:
+        fp = Footprint().from_file(str(mod_path))
+    except Exception:
+        return None
+
+    if not fp.models:
+        return None
+
+    model = fp.models[0]
+    filename = Path(model.path.replace("\\", "/")).name
+    fmt = Path(filename).suffix.lstrip(".").lower()
+
+    return {
+        "model_path": model.path,
+        "filename": filename,
+        "format": fmt,
+        "offset": [model.pos.X, model.pos.Y, model.pos.Z],
+        "rotation": [model.rotate.X, model.rotate.Y, model.rotate.Z],
+        "scale": [model.scale.X, model.scale.Y, model.scale.Z],
+    }
+
+
+def _resolve_kicad_mod(
+    staging_dir: Path | None,
+    lcsc: str | None,
+    lib_dir: Path | None,
+    component_name: str | None,
+) -> Path | None:
+    """Resolve the path to the first ``.kicad_mod`` file.
+
+    Handles both calling conventions for :func:`get_3d_info`.
+    """
+    if staging_dir is not None and lcsc is not None:
+        pretty_dir = Path(staging_dir) / lcsc / f"{lcsc}.pretty"
+        if not pretty_dir.is_dir():
+            return None
+        mods = sorted(pretty_dir.glob("*.kicad_mod"))
+        return mods[0] if mods else None
+
+    if lib_dir is not None and component_name is not None:
+        lib_dir = Path(lib_dir)
+        pretty_dir = lib_dir / f"{lib_dir.name}.pretty"
+        mod_path = pretty_dir / f"{component_name}.kicad_mod"
+        return mod_path if mod_path.is_file() else None
+
+    return None
 
 
 def list_part_dir(staging_dir: Path, lcsc: str, subdir: str = "") -> list[str]:
