@@ -9,6 +9,7 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::protocol::{Notification, Request, Response};
+use crate::APP_HANDLE;
 
 pub struct Sidecar {
     stdin: Arc<Mutex<ChildStdin>>,
@@ -40,8 +41,11 @@ impl Sidecar {
                     if let Some(tx) = pending_for_reader.lock().await.remove(&resp.id) {
                         let _ = tx.send(resp);
                     }
-                } else if let Ok(_n) = serde_json::from_str::<Notification>(&line) {
-                    // Notifications handled in Task 16; no-op for now
+                } else if let Ok(n) = serde_json::from_str::<Notification>(&line) {
+                    if let Some(handle) = APP_HANDLE.get() {
+                        use tauri::Emitter;
+                        let _ = handle.emit(&n.event, n.params);
+                    }
                 }
             }
         });

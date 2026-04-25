@@ -5,6 +5,12 @@ mod sidecar;
 mod commands;
 
 use std::sync::Arc;
+use once_cell::sync::OnceCell;
+use tauri::AppHandle;
+
+/// Global AppHandle — set once during `.setup()`, used by the sidecar reader
+/// task to emit Tauri events for incoming notifications.
+pub static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,6 +27,10 @@ async fn main() -> anyhow::Result<()> {
     let sc = Arc::new(sidecar::Sidecar::spawn(&python_path, "kibrary_sidecar").await?);
 
     tauri::Builder::default()
+        .setup(|app| {
+            APP_HANDLE.set(app.handle().clone()).unwrap();
+            Ok(())
+        })
         .manage(sc)
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
