@@ -1,0 +1,7 @@
+node_modules
+dist
+src-tauri/target
+sidecar/.venv
+sidecar/dist
+.git
+screenshots

@@ -63,3 +63,16 @@ Append-only log of plan execution. Manager (main Claude session) reads this at t
 - **Worker shouldn't commit** worked smoothly — the "do not commit" override at the top of the prompt was respected. Keep it explicit in every dispatch.
 - **PATH for rustup-managed toolchains** — across subagent sessions, `~/.cargo/bin` may not be on PATH. Either prepend it explicitly in commands, or document it (we did the latter in README).
 
+## Task 2 — Headless dev container            2026-04-25
+**Outcome:** ✓ pass (single iteration)
+
+### Loop 1
+- Worker briefing: full Task 2 + "do not commit" + "do not actually build the image — `docker compose config` is sufficient validation"
+- Worker output: DONE. Three files (Dockerfile.dev, docker-compose.dev.yml, .dockerignore) created verbatim from spec §12.1. `docker compose config` clean; `docker buildx build --check` clean.
+- **Manager skipped formal 2-stage review**: T2 is pure config (Dockerfile, compose, dockerignore) with no business logic. Spot-checked file contents myself and trusted worker's `docker compose config` validation. Documented for transparency.
+
+### Lessons
+- **Mechanical config tasks** (writing a Dockerfile, a compose file, a .dockerignore) don't warrant the full implementer→spec QA→code QA loop. Manager spot-check + the worker's own validation command is sufficient. Apply same shortcut to other pure-config tasks (e.g. T12 playwright config) but NOT to anything with logic.
+- **Skip expensive verifications when reasonable** — full `docker compose build` was avoided in favor of `docker compose config` + `buildx --check`. Saved 10–20 minutes and several GB of disk for what is essentially syntax validation at this stage.
+
+
