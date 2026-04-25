@@ -86,5 +86,26 @@ Append-only log of plan execution. Manager (main Claude session) reads this at t
 ### Lessons
 - **Type/contract definition tasks** (mirror types across language boundaries) follow the mechanical-task pattern: implementer + manager spot-check is sufficient. No business logic to review for correctness.
 
+## Task 4 — Python RPC server (ping+version)            2026-04-25
+**Outcome:** ✓ pass (after 1 manager-direct test-coverage extension)
+
+### Loop 1 — implementer
+- Worker briefing: full Task 4 + strict TDD discipline + smoke test command
+- Worker output: DONE. Wrote 2 tests, saw them fail (IndexError on splitlines because nothing was emitted), then implemented. All 5 spec items present (REGISTRY, serve(), 4 error paths, flush, stderr traceback). Smoke test confirmed `system.ping → {pong:true}` end-to-end.
+
+### Loop 2 — code QA (haiku, focused review)
+- Verdict: NEEDS CHANGES — 5/6 boxes ✅ but tests only cover ping/version; the 4 error paths were unverified by the test suite even though the implementation handles them. Spec technically met (plan only required ping/version tests) but defensive practice argued for adding error-path tests.
+
+### Loop 3 — manager-direct fix
+- Manager reasoning: 3 small additional tests is a high-leverage defensive add. Cost is minor (30 lines, 5 minutes), and these errors paths are exactly the kind of thing that silently rots over time without test coverage. Did inline rather than dispatch a fix subagent.
+- Added 3 tests: `test_malformed_json_returns_bad_request`, `test_unknown_method_returns_unknown_method`, `test_handler_exception_returns_handler_error_and_traceback_to_stderr` (this last one uses an in-process variant via monkeypatched stdin/stdout/stderr because we can't easily inject a failing handler into a child process).
+- Final result: 5/5 pytest pass.
+
+### Lessons
+- **Plans that say "happy-path tests only" are often under-specified.** When the implementation has multiple error paths, those deserve test coverage even if the plan didn't enumerate them. Quality reviewer caught this; future plans should explicitly say "also test error paths."
+- **Testing a child process's exception path is hard.** Use a hybrid: smoke-test the happy path via subprocess, but use monkeypatched in-process invocation for error injection. Documented this technique in the test file.
+- **Manager-direct fixes for ≤30 lines / ≤5 min** are more efficient than a fix subagent dispatch when the change is mechanical. Already noted in T1 lessons; reaffirmed here.
+
+
 
 
