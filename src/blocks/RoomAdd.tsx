@@ -1,3 +1,11 @@
+import BlockHost from '~/shell/BlockHost';
+
 export default function RoomAdd() {
-  return <div>Add room — wired in Tasks 14, 17, 20.</div>;
+  return (
+    <div class="space-y-4">
+      <BlockHost id="import" />
+      <BlockHost id="queue" />
+      <BlockHost id="review-bulk-assign" />
+    </div>
+  );
 }
