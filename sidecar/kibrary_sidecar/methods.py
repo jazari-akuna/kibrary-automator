@@ -15,6 +15,11 @@ from kibrary_sidecar import files
 from kibrary_sidecar import kicad_install
 from kibrary_sidecar import kicad_register
 from kibrary_sidecar import editor as kicad_editor
+from kibrary_sidecar import lib_scanner
+from kibrary_sidecar import lib_ops
+from kibrary_sidecar import sexpr_diff
+from kibrary_sidecar import model3d_ops
+from kibrary_sidecar import bootstrap
 
 
 def system_ping(_: dict) -> dict:
@@ -202,6 +207,74 @@ def editor_open(p: dict) -> dict:
     return kicad_editor.open_editor(install, kind, file_path)
 
 
+def library_list(p: dict) -> dict:
+    return {"libraries": lib_scanner.list_libraries(Path(p["workspace"]))}
+
+
+def library_list_components(p: dict) -> dict:
+    return {"components": lib_scanner.list_components(Path(p["lib_dir"]))}
+
+
+def library_get_component(p: dict) -> dict:
+    return lib_scanner.get_component(Path(p["lib_dir"]), p["component_name"])
+
+
+def library_rename_component(p: dict) -> dict:
+    lib_ops.rename_component(Path(p["lib_dir"]), p["old_name"], p["new_name"])
+    return {"ok": True}
+
+
+def library_delete_component(p: dict) -> dict:
+    lib_ops.delete_component(Path(p["lib_dir"]), p["component_name"])
+    return {"ok": True}
+
+
+def library_move_component(p: dict) -> dict:
+    lib_ops.move_component(Path(p["src_lib"]), Path(p["dst_lib"]), p["component_name"])
+    return {"ok": True}
+
+
+def library_rename_library(p: dict) -> dict:
+    lib_ops.rename_library(Path(p["workspace"]), p["old"], p["new"])
+    return {"ok": True}
+
+
+def library_update_metadata(p: dict) -> dict:
+    lib_ops.update_library_metadata(Path(p["lib_dir"]), p["metadata"])
+    return {"ok": True}
+
+
+def library_diff(p: dict) -> dict:
+    return {"changes": sexpr_diff.diff_kicad_sym(p["before"], p["after"])}
+
+
+def library_replace_3d(p: dict) -> dict:
+    dst = model3d_ops.replace_3d_model(
+        Path(p["lib_dir"]), p["component_name"], Path(p["new_step_path"])
+    )
+    return {"path": str(dst)}
+
+
+def library_add_3d(p: dict) -> dict:
+    dst = model3d_ops.add_3d_model(
+        Path(p["lib_dir"]), p["component_name"], Path(p["src_path"])
+    )
+    return {"path": str(dst)}
+
+
+def bootstrap_detect(p: dict) -> dict:
+    candidates = p.get("candidate_paths") or []
+    result = bootstrap.detect_python(candidates)
+    return {"detected": result}
+
+
+def bootstrap_install(p: dict) -> dict:
+    target = Path(p["target_dir"])
+    wheel = Path(p["wheel_path"]) if p.get("wheel_path") else None
+    result = bootstrap.install_into_venv(target, wheel)
+    return result
+
+
 def _search_settings() -> tuple[str, str]:
     s = st.read_settings().get("search_raph_io", {})
     return s.get("api_key", ""), s.get("base_url", "https://search.raph.io")
@@ -244,6 +317,19 @@ REGISTRY = {
     "kicad.unregister": kicad_unregister_lib,
     "kicad.list_registered": kicad_list_registered,
     "editor.open": editor_open,
+    "library.list": library_list,
+    "library.list_components": library_list_components,
+    "library.get_component": library_get_component,
+    "library.rename_component": library_rename_component,
+    "library.delete_component": library_delete_component,
+    "library.move_component": library_move_component,
+    "library.rename_library": library_rename_library,
+    "library.update_metadata": library_update_metadata,
+    "library.diff": library_diff,
+    "library.replace_3d": library_replace_3d,
+    "library.add_3d": library_add_3d,
+    "bootstrap.detect": bootstrap_detect,
+    "bootstrap.install": bootstrap_install,
     "search.query": search_query,
     "search.get_part": search_get_part,
 }
