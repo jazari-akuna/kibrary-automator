@@ -157,3 +157,6 @@ CLAUDE-PROMPT-*.md
 
 # Flatpak build cache
 .flatpak-builder/
+
+# Container-test build context
+.test-ctx/
