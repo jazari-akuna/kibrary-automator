@@ -46,11 +46,13 @@ TARGET=${TARGET:-x86_64-unknown-linux-gnu}
 
 OUT_NAME="kibrary-sidecar-${TARGET}"
 
-# Add-data path-separator differs between platforms.
+# Add-data path-separator differs between platforms. Use RELATIVE paths
+# (we already cd'd into $SIDECAR) so Git Bash's /d/a/... style paths
+# don't confuse PyInstaller on Windows.
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" || "$TARGET" == *windows* ]]; then
-  ADDDATA="$SIDECAR/kibrary_sidecar/data;kibrary_sidecar/data"
+  ADDDATA="kibrary_sidecar/data;kibrary_sidecar/data"
 else
-  ADDDATA="$SIDECAR/kibrary_sidecar/data:kibrary_sidecar/data"
+  ADDDATA="kibrary_sidecar/data:kibrary_sidecar/data"
 fi
 
 "$VPY" -m PyInstaller \
