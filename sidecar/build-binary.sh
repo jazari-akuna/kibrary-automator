@@ -78,14 +78,22 @@ fi
 
 echo "Bundled binary: $SIDECAR/dist/$OUT_NAME"
 
-# universal-apple-darwin handling: Tauri's `--target universal-apple-darwin`
-# expects a sidecar named exactly `kibrary-sidecar-universal-apple-darwin`
-# (literal "universal" in the path). PyInstaller can't produce a real
-# universal binary directly. For the alpha we copy the host-arch build
-# under the universal name — works on the host arch (typically arm64
-# on macos-latest runners). Intel Macs would need Rosetta or a separate
-# x86_64 build via `lipo`. Documented as alpha limitation in release notes.
+# universal-apple-darwin handling: Tauri builds Rust twice (once per
+# arch) when --target universal-apple-darwin, and EACH per-arch Rust
+# build expects a sidecar binary with the matching arch in its name.
+# So we need both kibrary-sidecar-aarch64-apple-darwin and
+# kibrary-sidecar-x86_64-apple-darwin to exist.
+#
+# PyInstaller can't cross-compile, so on macOS we copy the host-arch
+# binary under both arch names. The off-arch copy will run via Rosetta
+# (or fail on bare Intel Macs without Rosetta). For a real fat binary,
+# build twice under `arch -x86_64` / `arch -arm64` then `lipo -create`.
+# Deferred — alpha scope.
 if [[ "$(uname)" == "Darwin" ]]; then
-  cp "$SIDECAR/dist/$OUT_NAME" "$SIDECAR/dist/kibrary-sidecar-universal-apple-darwin"
-  echo "Mirrored as: kibrary-sidecar-universal-apple-darwin"
+  for arch in aarch64-apple-darwin x86_64-apple-darwin; do
+    if [[ "$OUT_NAME" != "kibrary-sidecar-$arch" ]]; then
+      cp "$SIDECAR/dist/$OUT_NAME" "$SIDECAR/dist/kibrary-sidecar-$arch"
+      echo "Mirrored as: kibrary-sidecar-$arch"
+    fi
+  done
 fi
