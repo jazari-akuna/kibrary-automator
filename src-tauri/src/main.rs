@@ -14,8 +14,11 @@ use tauri::{AppHandle, Manager};
 /// task to emit Tauri events for incoming notifications.
 pub static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+// NOTE: do NOT mark this `#[tokio::main]`. Tauri owns the async runtime
+// (tauri::async_runtime — currently tokio under the hood), and `tauri::Builder::run()`
+// drives it. If we set up a tokio runtime here too, `block_on` inside `.setup()`
+// panics with "Cannot start a runtime from within a runtime".
+fn main() -> anyhow::Result<()> {
     // P2 / Task P10 — resolve the Python interpreter *before* opening the
     // main window.  Resolution order (see bootstrap::try_resolve_sidecar):
     //   1. KIBRARY_SIDECAR_PYTHON env var
@@ -37,9 +40,8 @@ async fn main() -> anyhow::Result<()> {
 
     if bootstrap_result.is_none() {
         eprintln!(
-            "[bootstrap] kibrary_sidecar not found — set KIBRARY_SIDECAR_PYTHON or \
-             install via: python3 -m pip install kibrary-sidecar\n\
-             The app will open the setup screen so you can install it from the UI."
+            "[bootstrap] no Python kibrary_sidecar found on PATH/cache; will try the \
+             bundled sidecar binary next, otherwise the in-app setup screen will appear."
         );
     }
 
