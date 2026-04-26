@@ -68,8 +68,10 @@ fi
   --hidden-import=keyring.backends \
   --hidden-import=secretstorage \
   --hidden-import=respx \
+  --collect-all kibrary_sidecar \
   --collect-all kiutils \
   --collect-all JLC2KiCadLib \
+  --collect-submodules kibrary_sidecar \
   --noconfirm \
   --clean \
   --distpath "$SIDECAR/dist" \

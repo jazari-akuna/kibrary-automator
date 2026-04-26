@@ -1,17 +1,16 @@
-"""Sidecar entry point. The actual RPC server (rpc.py) is wired in Task 4."""
+"""Sidecar entry point. Launched by the Rust shell as a subprocess."""
 
-import sys
+import os
+
+# Silence GitPython's noisy ImportError when `git` isn't on PATH.
+# Users without git see a runtime error from git_ops only when they
+# actually try to commit — non-git workflows still work.
+os.environ.setdefault("GIT_PYTHON_REFRESH", "quiet")
+
+from kibrary_sidecar.rpc import serve  # noqa: E402  (env var must be set first)
 
 
 def main() -> None:
-    try:
-        from kibrary_sidecar.rpc import serve
-    except ImportError:
-        print(
-            "kibrary_sidecar: RPC server not yet implemented (see Task 4 of the P1 plan)",
-            file=sys.stderr,
-        )
-        sys.exit(1)
     serve()
 
 

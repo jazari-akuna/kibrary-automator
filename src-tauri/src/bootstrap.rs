@@ -294,8 +294,11 @@ pub struct BootstrapState {
 /// The frontend calls this on mount to decide whether to show `<Shell />` or
 /// `<Bootstrap />`.
 #[tauri::command]
-pub fn bootstrap_status(state: State<'_, BootstrapState>) -> serde_json::Value {
-    match &state.result {
+pub fn bootstrap_status(
+    state: State<'_, std::sync::Mutex<BootstrapState>>,
+) -> serde_json::Value {
+    let s = state.lock().expect("bootstrap state mutex poisoned");
+    match &s.result {
         Some(r) => serde_json::json!({
             "python_resolved": true,
             "sidecar_version": r.sidecar_version,
@@ -516,15 +519,13 @@ pub async fn bootstrap_install_direct(
             },
         );
 
+        // Install the bundled wheel. Transitive deps (kiutils, JLC2KiCadLib,
+        // httpx, GitPython, pydantic, keyring) come from PyPI — we don't
+        // pre-bundle the entire dep tree because it would balloon the
+        // installer by ~30 MB. Requires internet on first install.
         let mut pip_cmd = Command::new(&pip);
         pip_cmd.args([
             "install",
-            "--no-index",
-            "--find-links",
-            &wheel_path_clone
-                .parent()
-                .unwrap_or(&wheel_path_clone)
-                .to_string_lossy(),
             &wheel_path_clone.to_string_lossy(),
         ]);
         run_blocking(pip_cmd).map_err(|e| format!("pip install failed: {}", e))?;

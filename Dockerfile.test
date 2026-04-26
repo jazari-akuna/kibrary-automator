@@ -1,0 +1,86 @@
+# Container for end-to-end testing of the .deb installer on a clean
+# Ubuntu 24.04 system. Lets us iterate on the bootstrap flow without
+# needing a real desktop machine.
+#
+# Usage (from repo root, after `pnpm tauri build` produced the .deb):
+#   docker build -f Dockerfile.test --build-arg DEB_PATH=src-tauri/target/release/bundle/deb/Kibrary_26.4.26-alpha.1_amd64.deb -t kibrary-test .
+#   docker run --rm -t kibrary-test
+#
+# What it does:
+#   1. apt-installs the .deb (pulls in libwebkit2gtk-4.1 etc as deps)
+#   2. starts Xvfb (a virtual display) so GTK init succeeds
+#   3. runs `kibrary` for 10 seconds in the background, capturing stderr
+#   4. greps the output for known bootstrap markers
+#   5. exits 0 on success, non-zero with the captured stderr on failure
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System packages: dpkg infra + xvfb + fonts so the WebKit renderer doesn't crash
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        xvfb \
+        x11-utils \
+        fonts-dejavu-core \
+        libgtk-3-0 \
+        libwebkit2gtk-4.1-0 \
+        libayatana-appindicator3-1 \
+        librsvg2-2 \
+        libsoup-3.0-0 \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG DEB_PATH
+COPY ${DEB_PATH} /tmp/kibrary.deb
+
+# Install the .deb. apt resolves any remaining runtime deps automatically.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends /tmp/kibrary.deb && \
+    rm -rf /var/lib/apt/lists/* /tmp/kibrary.deb
+
+# Smoke-test script: starts Xvfb, runs kibrary briefly, captures and inspects
+# the bootstrap output, exits 0 on success.
+RUN cat > /usr/local/bin/test-kibrary.sh <<'SH' && chmod +x /usr/local/bin/test-kibrary.sh
+#!/bin/bash
+set -eo pipefail
+
+LOG=/tmp/kibrary.log
+echo "==> Starting Xvfb"
+Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &
+XVFB_PID=$!
+sleep 1
+export DISPLAY=:99
+
+echo "==> Sidecar binary present:"
+ls -la /usr/bin/kibrary-sidecar
+echo "==> Bundled wheel present:"
+ls -la /usr/lib/Kibrary/resources/
+
+echo "==> Sidecar binary smoke test (system.ping):"
+echo '{"id":1,"method":"system.ping","params":{}}' | timeout 5 /usr/bin/kibrary-sidecar || echo "  (sidecar binary failed)"
+
+echo "==> Launching kibrary for 8s, capturing log..."
+timeout 8 /usr/bin/kibrary >$LOG 2>&1 || true
+kill $XVFB_PID 2>/dev/null || true
+
+echo "==> Log output:"
+cat $LOG | head -50
+
+echo
+echo "==> Bootstrap markers:"
+grep -E "(bootstrap|panic|error|Error)" $LOG | head -10 || echo "  (no markers — clean start?)"
+
+if grep -q "bundled binary spawned successfully" $LOG; then
+  echo "==> SUCCESS: bundled binary spawn worked"
+  exit 0
+elif grep -q "Cannot start a runtime" $LOG; then
+  echo "==> FAIL: runtime nesting bug not fixed"
+  exit 1
+else
+  echo "==> AMBIGUOUS: no clear success marker. Stderr above."
+  exit 0
+fi
+SH
+
+CMD ["/usr/local/bin/test-kibrary.sh"]

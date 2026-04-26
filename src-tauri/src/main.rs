@@ -48,7 +48,9 @@ fn main() -> anyhow::Result<()> {
     // Both the bundled binary check and the Python-fallback spawn happen inside
     // .setup() where AppHandle (and therefore resource_dir) is available.
     // tauri::async_runtime::block_on is used for the async spawn calls.
-    let bootstrap_state = bootstrap::BootstrapState { result: bootstrap_result.clone() };
+    let bootstrap_state = std::sync::Mutex::new(
+        bootstrap::BootstrapState { result: bootstrap_result.clone() }
+    );
     let bootstrap_result_for_setup = bootstrap_result;
 
     let builder = tauri::Builder::default()
@@ -69,6 +71,16 @@ fn main() -> anyhow::Result<()> {
                         ) {
                             Ok(sc) => {
                                 eprintln!("[bootstrap] bundled binary spawned successfully");
+                                // Mark bootstrap_status as resolved so the frontend doesn't
+                                // show the install screen when a bundled binary is running.
+                                if let Some(state) = app.try_state::<std::sync::Mutex<bootstrap::BootstrapState>>() {
+                                    if let Ok(mut s) = state.lock() {
+                                        s.result = Some(bootstrap::BootstrapResult {
+                                            python_path: bin_str.clone(),
+                                            sidecar_version: "bundled".to_string(),
+                                        });
+                                    }
+                                }
                                 Some(Arc::new(sc))
                             }
                             Err(e) => {
@@ -113,7 +125,7 @@ fn main() -> anyhow::Result<()> {
 
             Ok(())
         })
-        .manage(bootstrap_state)
+        .manage(bootstrap_state) // std::sync::Mutex<BootstrapState>
         // Watcher state: starts inactive; activated by the `watch_workspace` command.
         .manage(watcher::WatcherState::new())
         .plugin(tauri_plugin_dialog::init())
