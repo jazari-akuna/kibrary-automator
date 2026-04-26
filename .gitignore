@@ -154,3 +154,6 @@ keys/*-private.asc
 
 # Internal Claude-session handoff prompts — never commit
 CLAUDE-PROMPT-*.md
+
+# Flatpak build cache
+.flatpak-builder/

@@ -1,5 +1,0 @@
-[Runtime]
-name=io.raph.kibrary.Debug
-
-[ExtensionOf]
-ref=app/io.raph.kibrary/x86_64/master
