@@ -173,18 +173,25 @@ fn probe_python(candidate: &str) -> Option<String> {
 ///
 /// Returns the path to the executable if found and executable, `None` otherwise.
 pub fn try_find_bundled_binary(resource_dir: &std::path::Path) -> Option<PathBuf> {
-    // Tauri strips the `-<triple>` suffix when copying the sidecar into the
-    // resource dir on macOS/Windows AppBundles, but on Linux it may keep the
-    // full name.  We check both.
-    let candidates = [
-        // Plain name (Tauri strips the triple at install time for most platforms)
+    // Tauri puts external sidecar binaries next to the main executable on
+    // Linux .deb / .rpm (`/usr/bin/`), inside the .app bundle on macOS, and
+    // alongside the .exe on Windows. The resource_dir contains data files
+    // (icons, wheels, etc.) but NOT the sidecar binary on Linux .deb.
+    // So we check several spots. Also check both bare and arch-suffixed names.
+    let mut candidates: Vec<PathBuf> = vec![
         resource_dir.join("kibrary-sidecar"),
-        // With explicit host triple suffix (Linux AppImage / dev builds)
-        resource_dir.join(format!(
-            "kibrary-sidecar-{}",
-            std::env::consts::ARCH
-        )),
+        resource_dir.join(format!("kibrary-sidecar-{}", std::env::consts::ARCH)),
     ];
+
+    // Add `<exe-dir>/kibrary-sidecar` — this is where Tauri's externalBin
+    // ends up on Linux .deb (/usr/bin/) and on Windows (next to .exe).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            candidates.push(exe_dir.join("kibrary-sidecar"));
+            candidates.push(exe_dir.join("kibrary-sidecar.exe")); // Windows
+            candidates.push(exe_dir.join(format!("kibrary-sidecar-{}", std::env::consts::ARCH)));
+        }
+    }
 
     for path in &candidates {
         if path.exists() {
@@ -349,21 +356,36 @@ fn venv_python(venv: &PathBuf) -> PathBuf {
     }
 }
 
-/// Scan `dir` for a file matching `kibrary_sidecar-*.whl` and return its path.
+/// Scan `dir` (and `dir/resources/`) for a file matching `kibrary_sidecar-*.whl`
+/// and return its path. Tauri's `bundle.resources` glob copies files into a
+/// `resources/` subdirectory of the install path on Linux .deb, so we check
+/// both the dir itself and that subdirectory.
 fn find_wheel(dir: &PathBuf) -> Result<PathBuf, String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("Cannot read resource dir {}: {}", dir.display(), e))?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with("kibrary_sidecar-") && name_str.ends_with(".whl") {
-            return Ok(entry.path());
+    let scan_dirs = [dir.clone(), dir.join("resources")];
+    let mut last_err = String::new();
+    for d in &scan_dirs {
+        match std::fs::read_dir(d) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with("kibrary_sidecar-") && name_str.ends_with(".whl") {
+                        return Ok(entry.path());
+                    }
+                }
+            }
+            Err(e) => {
+                last_err = format!("Cannot read {}: {}", d.display(), e);
+            }
         }
     }
     Err(format!(
-        "No kibrary_sidecar-*.whl found in {}. \
-         Ensure the wheel is bundled with the application.",
-        dir.display()
+        "No kibrary_sidecar-*.whl found in {} or {}/resources/. \
+         Ensure the wheel is bundled with the application. \
+         (last fs error: {})",
+        dir.display(),
+        dir.display(),
+        last_err
     ))
 }
 

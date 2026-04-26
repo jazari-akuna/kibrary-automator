@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.raph.kibrary</id>
+  <name>Kibrary</name>
+  <summary>Turn JLCPCB part numbers into committed KiCad libraries</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>CC-BY-SA-4.0</project_license>
+
+  <description>
+    <p>
+      Kibrary is a desktop app that automates the JLCPCB → KiCad library
+      workflow. Paste a list of LCSC codes, watch them download in parallel,
+      review/edit each before commit, and have everything land in your
+      library repo as one git commit per part — automatically registered
+      with your KiCad install.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Paste-import a BOM or LCSC list, parallel download via JLC2KiCadLib</li>
+      <li>Three review modes: sequential, pick, and bulk-assign</li>
+      <li>Library auto-suggestion from LCSC category</li>
+      <li>In-app property editor with debounced autosave</li>
+      <li>Per-component footprint thumbnails rendered with kicad-cli</li>
+      <li>Library management room — browse, rename, move, delete components</li>
+      <li>Per-save git auto-commit with one-click Undo</li>
+      <li>OS-keychain storage for search.raph.io API key</li>
+      <li>Cross-OS KiCad install detection (Flatpak, regular, macOS, Windows)</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.raph.kibrary.desktop</launchable>
+
+  <url type="homepage">https://github.com/jazari-akuna/kibrary-automator</url>
+  <url type="bugtracker">https://github.com/jazari-akuna/kibrary-automator/issues</url>
+  <url type="vcs-browser">https://github.com/jazari-akuna/kibrary-automator</url>
+
+  <developer id="io.raph">
+    <name>Raphael Casimir Inge</name>
+  </developer>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.2.0" date="2026-04-26">
+      <description>
+        <p>Library Management room + sidecar bootstrap + STEP browse/replace + GitHub-releases auto-update.</p>
+      </description>
+    </release>
+  </releases>
+
+  <categories>
+    <category>Development</category>
+    <category>Electronics</category>
+  </categories>
+</component>

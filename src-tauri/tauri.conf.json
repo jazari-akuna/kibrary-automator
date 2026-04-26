@@ -5,7 +5,7 @@
   "identifier": "io.raph.kibrary",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build && bash sidecar/build-binary.sh",
+    "beforeBuildCommand": "pnpm build && bash scripts/build-wheel.sh && bash sidecar/build-binary.sh",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173"
   },

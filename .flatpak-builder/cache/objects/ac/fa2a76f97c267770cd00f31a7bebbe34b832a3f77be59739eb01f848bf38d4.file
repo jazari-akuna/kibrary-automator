@@ -1,0 +1,50 @@
+{
+  "id" : "io.raph.kibrary",
+  "runtime" : "org.gnome.Platform",
+  "runtime-version" : "47",
+  "runtime-commit" : "7d00756d7d5f6397c54f09ac69521991cff9e40a31e6eca6bf61ae9864149380",
+  "sdk" : "org.gnome.Sdk",
+  "sdk-commit" : "fb298c9ea35750b1037f755885076d16ffeed5462b4cee83705b6007474b0307",
+  "command" : "kibrary",
+  "modules" : [
+    {
+      "name" : "kibrary",
+      "buildsystem" : "simple",
+      "sources" : [
+        {
+          "path" : "..",
+          "skip" : [
+            "target",
+            "node_modules",
+            ".git",
+            ".vite",
+            "dist",
+            "sidecar/.venv",
+            "sidecar/.build-venv",
+            "sidecar/dist",
+            "sidecar/build"
+          ],
+          "type" : "dir"
+        }
+      ],
+      "build-commands" : [
+        "install -Dm755 src-tauri/target/release/kibrary /app/bin/kibrary",
+        "install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/io.raph.kibrary.png",
+        "install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/io.raph.kibrary.png",
+        "install -Dm644 flatpak/io.raph.kibrary.desktop /app/share/applications/io.raph.kibrary.desktop",
+        "install -Dm644 flatpak/io.raph.kibrary.metainfo.xml /app/share/metainfo/io.raph.kibrary.metainfo.xml"
+      ]
+    }
+  ],
+  "finish-args" : [
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--share=ipc",
+    "--device=dri",
+    "--share=network",
+    "--filesystem=home",
+    "--talk-name=org.freedesktop.secrets",
+    "--talk-name=org.freedesktop.Flatpak"
+  ],
+  "source-date-epoch" : 1777221040
+}

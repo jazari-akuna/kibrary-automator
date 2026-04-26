@@ -45,11 +45,43 @@ function detectOS(): 'windows' | 'macos' | 'linux' {
   return 'linux';
 }
 
-function pipInstallCommand(): string {
+function manualInstructions(): { intro: string; commands: string[]; note: string } {
   const os = detectOS();
-  const base = 'pip install kibrary-sidecar';
-  if (os === 'windows') return `py -m ${base}`;
-  return `python3 -m ${base}`;
+  // The kibrary_sidecar wheel is not on PyPI — we ship it bundled inside
+  // the app. Manual install means: install pipx (which manages an isolated
+  // venv per package) and point it at the bundled wheel.
+  if (os === 'windows') {
+    return {
+      intro: 'Run the following in PowerShell, then click Re-detect:',
+      commands: [
+        'py -m pip install --user pipx',
+        'py -m pipx ensurepath',
+        // Wheel ships inside the install. Default install dir on Windows is C:\Program Files\Kibrary\resources\
+        'pipx install "C:\\Program Files\\Kibrary\\resources\\kibrary_sidecar-26.4.26a1-py3-none-any.whl"',
+      ],
+      note: 'pipx avoids "externally-managed environment" errors and keeps kibrary_sidecar isolated from your system Python.',
+    };
+  }
+  if (os === 'macos') {
+    return {
+      intro: 'Run the following in Terminal, then click Re-detect:',
+      commands: [
+        'brew install pipx',
+        'pipx install /Applications/Kibrary.app/Contents/Resources/resources/kibrary_sidecar-26.4.26a1-py3-none-any.whl',
+      ],
+      note: 'pipx isolates kibrary_sidecar in its own venv — required because macOS Homebrew Python is "externally managed" (PEP 668).',
+    };
+  }
+  // Linux
+  return {
+    intro: 'Run the following in your terminal, then click Re-detect:',
+    commands: [
+      'sudo apt install -y pipx   # Debian/Ubuntu  —  or: sudo dnf install pipx (Fedora)',
+      'pipx ensurepath',
+      'pipx install /usr/lib/Kibrary/resources/kibrary_sidecar-26.4.26a1-py3-none-any.whl',
+    ],
+    note: 'pipx isolates kibrary_sidecar in its own venv — required because Ubuntu 24.04+ Python is "externally managed" (PEP 668), so plain `pip install` is rejected.',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -57,16 +89,14 @@ function pipInstallCommand(): string {
 // ---------------------------------------------------------------------------
 
 function ManualPanel() {
-  const cmd = pipInstallCommand();
+  const m = manualInstructions();
   return (
     <div class="space-y-3">
-      <p class="text-sm text-zinc-600">
-        Run the following command in your terminal, then click{' '}
-        <strong>Re-detect</strong>:
-      </p>
+      <p class="text-sm text-zinc-600">{m.intro}</p>
       <pre class="bg-zinc-100 rounded px-3 py-2 text-xs font-mono text-zinc-800 select-all whitespace-pre-wrap break-all">
-        {cmd}
+        {m.commands.join('\n')}
       </pre>
+      <p class="text-xs text-zinc-500">{m.note}</p>
     </div>
   );
 }

@@ -1,14 +1,22 @@
 # Flatpak manifest for Kibrary
 #
-# Build with:
-#   flatpak install --user flathub org.flatpak.Builder org.gnome.Platform//47 org.gnome.Sdk//47
-#   flatpak-builder --user --force-clean build-dir flatpak/io.raph.kibrary.yml
+# Pragmatic build: assumes the Tauri release binary already exists at
+# src-tauri/target/release/kibrary. Run `pnpm tauri build` once before
+# building the Flatpak. This manifest just packages that binary plus
+# desktop / metainfo files.
 #
-# Test-install locally:
+# For a Flathub-compliant offline build, this manifest will need a
+# tarball release of the binary instead of a `dir:` source. Out of
+# scope for the alpha.
+#
+# Build + install locally:
+#   flatpak install --user flathub org.gnome.Platform//47 org.gnome.Sdk//47
 #   flatpak-builder --user --force-clean --install build-dir flatpak/io.raph.kibrary.yml
 #   flatpak run io.raph.kibrary
 #
-# Publishing to Flathub: see https://docs.flathub.org/docs/for-app-authors/submission
+# Bundle into a single .flatpak file for distribution:
+#   flatpak-builder --user --force-clean --repo=repo build-dir flatpak/io.raph.kibrary.yml
+#   flatpak build-bundle repo io.raph.kibrary.flatpak io.raph.kibrary
 
 app-id: io.raph.kibrary
 runtime: org.gnome.Platform
@@ -16,9 +24,6 @@ runtime-version: '47'
 sdk: org.gnome.Sdk
 command: kibrary
 
-# ----------------------------------------------------------------------
-# Permissions — kept as tight as the workflow allows.
-# ----------------------------------------------------------------------
 finish-args:
   # Display
   - --socket=wayland
@@ -26,55 +31,24 @@ finish-args:
   - --share=ipc
   - --device=dri              # GPU acceleration for the WebKit renderer
 
-  # Network — needed for search.raph.io and JLC2KiCadLib downloads from JLCPCB
+  # Network — needed for search.raph.io and JLC2KiCadLib downloads
   - --share=network
 
-  # Filesystem — user picks a workspace folder anywhere in $HOME (their
-  # KiCad library repo). Read-write because we git-commit in it. Adjust
-  # to a more restrictive path (e.g. xdg-documents) if the user prefers.
+  # Filesystem — user picks a workspace folder anywhere in $HOME
   - --filesystem=home
 
-  # Need to read KiCad's config files where it stores sym-lib-table /
-  # fp-lib-table (regular install). For Flatpak KiCad we read its
-  # ~/.var/app path which is also under $HOME — covered above.
-  # No extra entry needed.
-
-  # OS keychain access for storing the search.raph.io API key.
-  # libsecret needs the org.freedesktop.secrets D-Bus name.
+  # OS keychain access for storing the search.raph.io API key
   - --talk-name=org.freedesktop.secrets
 
-  # We launch KiCad's editor binaries (eeschema / pcbnew) for the
-  # "Edit in KiCad" handoff. Inside Flatpak we can't directly exec a
-  # host binary; flatpak-spawn over the host's Flatpak D-Bus does it.
+  # KiCad handoff via flatpak-spawn from inside the sandbox
   - --talk-name=org.freedesktop.Flatpak
 
 modules:
-  # Build the Tauri app from source.
-  # NOTE: For a real Flathub submission, replace this with a tarball
-  # release of the Tauri-built bundle (offline-build requirement).
   - name: kibrary
     buildsystem: simple
-    build-options:
-      append-path: /app/cargo/bin
-      env:
-        CARGO_HOME: /app/cargo
     build-commands:
-      # Frontend
-      - npm install -g pnpm@9.12.0
-      - pnpm install --frozen-lockfile
-      - pnpm build
-
-      # Sidecar wheel (for the bundled Python fallback path) + binary
-      - python3 -m venv sidecar/.venv
-      - sidecar/.venv/bin/pip install -e sidecar/.[dev]
-      - bash sidecar/build-binary.sh
-      - bash scripts/build-wheel.sh
-
-      # Tauri build
-      - cd src-tauri && cargo build --release
-
-      # Install
       - install -Dm755 src-tauri/target/release/kibrary /app/bin/kibrary
+      - install -Dm644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/io.raph.kibrary.png
       - install -Dm644 src-tauri/icons/icon.png /app/share/icons/hicolor/512x512/apps/io.raph.kibrary.png
       - install -Dm644 flatpak/io.raph.kibrary.desktop /app/share/applications/io.raph.kibrary.desktop
       - install -Dm644 flatpak/io.raph.kibrary.metainfo.xml /app/share/metainfo/io.raph.kibrary.metainfo.xml
@@ -86,7 +60,9 @@ modules:
           - target
           - node_modules
           - .git
+          - .vite
           - dist
           - sidecar/.venv
+          - sidecar/.build-venv
           - sidecar/dist
           - sidecar/build
