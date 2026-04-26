@@ -78,20 +78,14 @@ fi
 
 echo "Bundled binary: $SIDECAR/dist/$OUT_NAME"
 
-# universal-apple-darwin handling: Tauri's --target universal-apple-darwin
-# requires BOTH aarch64- and x86_64- variants of the sidecar. PyInstaller
-# can't cross-compile, so on macOS arm64 (default GH runner) we duplicate
-# the arm64 binary as the x86_64 name. The duplicate runs under Rosetta 2
-# on Intel Macs. For a real universal binary, use lipo with two passes.
+# universal-apple-darwin handling: Tauri's `--target universal-apple-darwin`
+# expects a sidecar named exactly `kibrary-sidecar-universal-apple-darwin`
+# (literal "universal" in the path). PyInstaller can't produce a real
+# universal binary directly. For the alpha we copy the host-arch build
+# under the universal name — works on the host arch (typically arm64
+# on macos-latest runners). Intel Macs would need Rosetta or a separate
+# x86_64 build via `lipo`. Documented as alpha limitation in release notes.
 if [[ "$(uname)" == "Darwin" ]]; then
-  case "$TARGET" in
-    aarch64-apple-darwin)
-      cp "$SIDECAR/dist/$OUT_NAME" "$SIDECAR/dist/kibrary-sidecar-x86_64-apple-darwin"
-      echo "Mirrored as: kibrary-sidecar-x86_64-apple-darwin (runs via Rosetta on Intel)"
-      ;;
-    x86_64-apple-darwin)
-      cp "$SIDECAR/dist/$OUT_NAME" "$SIDECAR/dist/kibrary-sidecar-aarch64-apple-darwin"
-      echo "Mirrored as: kibrary-sidecar-aarch64-apple-darwin"
-      ;;
-  esac
+  cp "$SIDECAR/dist/$OUT_NAME" "$SIDECAR/dist/kibrary-sidecar-universal-apple-darwin"
+  echo "Mirrored as: kibrary-sidecar-universal-apple-darwin"
 fi
