@@ -5,12 +5,12 @@ set -euo pipefail
 # using PyInstaller. The output goes to sidecar/dist/kibrary-sidecar-<triple>
 # per Tauri's sidecar naming convention.
 #
-# Uses whatever `python` (or `python3`) is on PATH — works in CI without a
-# pre-existing venv. For local dev, run from inside the sidecar venv:
-#   source sidecar/.venv/bin/activate && bash sidecar/build-binary.sh
+# Reuses the .build-venv/ created by scripts/build-wheel.sh — both scripts
+# work in any order. Creates the venv if absent.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SIDECAR="$ROOT/sidecar"
+VENV="$SIDECAR/.build-venv"
 
 # Resolve a python interpreter
 PY="${PYTHON:-}"
@@ -24,10 +24,20 @@ fi
 cd "$SIDECAR"
 echo "Using Python: $($PY --version 2>&1) ($(command -v $PY))"
 
-# Install the sidecar package itself (so PyInstaller can find kibrary_sidecar
-# and its data files via the installed metadata) plus pyinstaller.
-"$PY" -m pip install --quiet -e .
-"$PY" -m pip install --quiet pyinstaller
+# Create or reuse the build venv
+if [ ! -d "$VENV" ]; then
+  "$PY" -m venv "$VENV"
+fi
+
+if [ -x "$VENV/bin/python" ]; then VPY="$VENV/bin/python"
+elif [ -x "$VENV/Scripts/python.exe" ]; then VPY="$VENV/Scripts/python.exe"
+else echo "error: venv python not found"; exit 1
+fi
+
+# Install the sidecar package itself + PyInstaller
+"$VPY" -m pip install --quiet --upgrade pip
+"$VPY" -m pip install --quiet -e .
+"$VPY" -m pip install --quiet pyinstaller
 
 # Tauri sidecar convention: the binary must be named with the target triple
 # suffix, e.g. kibrary-sidecar-x86_64-unknown-linux-gnu.
@@ -36,10 +46,17 @@ TARGET=${TARGET:-x86_64-unknown-linux-gnu}
 
 OUT_NAME="kibrary-sidecar-${TARGET}"
 
-"$PY" -m PyInstaller \
+# Add-data path-separator differs between platforms.
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" || "$TARGET" == *windows* ]]; then
+  ADDDATA="$SIDECAR/kibrary_sidecar/data;kibrary_sidecar/data"
+else
+  ADDDATA="$SIDECAR/kibrary_sidecar/data:kibrary_sidecar/data"
+fi
+
+"$VPY" -m PyInstaller \
   --onefile \
   --name "$OUT_NAME" \
-  --add-data "$SIDECAR/kibrary_sidecar/data:kibrary_sidecar/data" \
+  --add-data "$ADDDATA" \
   --hidden-import=kiutils.symbol \
   --hidden-import=kiutils.footprint \
   --hidden-import=keyring.backends \
@@ -54,4 +71,4 @@ OUT_NAME="kibrary-sidecar-${TARGET}"
   --specpath "$SIDECAR/build" \
   "$SIDECAR/kibrary_sidecar/__main__.py"
 
-echo "Bundled: $SIDECAR/dist/$OUT_NAME"
+echo "Bundled binary: $SIDECAR/dist/$OUT_NAME"
