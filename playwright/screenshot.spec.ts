@@ -57,12 +57,59 @@ const tauriInitScript = `
         settings: {
           theme: 'dark',
           concurrency: 4,
-          search_raph_io: { enabled: false, base_url: 'https://search.raph.io', api_key: '' },
+          search_raph_io: { enabled: true, base_url: 'https://search.raph.io' },
         },
       };
     },
 
     'settings.set': function () { return {}; },
+
+    // Pretend a search.raph.io API key is set so the SearchPanel renders.
+    'secrets.get': function (params) {
+      if (params.name === 'search_raph_io_api_key') return { value: 'screenshot-fake-key' };
+      return { value: '' };
+    },
+
+    // Realistic search results that match what search.raph.io actually returns
+    // (the photo_url field uses the real public endpoint so screenshots load
+    // actual product images).
+    'search.query': function (params) {
+      const q = (params.q || '').toLowerCase();
+      // Default fixture set; in practice the search panel debounces and only
+      // queries when the user types something.
+      const all = [
+        {
+          lcsc: 'C25804',
+          mpn: '0603WAF1002T5E',
+          manufacturer: 'UNI-ROYAL',
+          description: '10kΩ ±1% 100mW 0603 Thick Film Resistor',
+          photo_url: 'https://search.raph.io/api/parts/C25804/photo',
+          in_stock: true,
+        },
+        {
+          lcsc: 'C1525',
+          mpn: 'CL05B104KO5NNNC',
+          manufacturer: 'Samsung Electro-Mechanics',
+          description: '100nF 16V X7R ±10% 0402 MLCC',
+          photo_url: 'https://search.raph.io/api/parts/C1525/photo',
+          in_stock: true,
+        },
+        {
+          lcsc: 'C19920',
+          mpn: 'STM32G030F6P6',
+          manufacturer: 'STMicroelectronics',
+          description: 'STM32G030F6P6 ARM Cortex-M0+ 32KB Flash 8KB SRAM TSSOP-20',
+          photo_url: 'https://search.raph.io/api/parts/C19920/photo',
+          in_stock: true,
+        },
+      ];
+      // Filter by query keyword if any; otherwise return all 3
+      if (!q) return { results: all };
+      const hits = all.filter((p) =>
+        (p.lcsc + ' ' + p.mpn + ' ' + p.description).toLowerCase().includes(q),
+      );
+      return { results: hits };
+    },
   };
 
   // Minimal invoke shim.
@@ -175,6 +222,21 @@ test('snapshot route', async ({ page }) => {
     await btn.click();
     // Give Solid's reactive system a moment to settle after the click.
     await page.waitForTimeout(300);
+
+    // For the Add room, type something into the search panel so results
+    // appear in the screenshot.
+    if (room === 'add') {
+      const searchInput = page.getByPlaceholder(/MPN.*description.*LCSC/i).first();
+      const present = await searchInput.isVisible().catch(() => false);
+      if (present) {
+        await searchInput.fill('10k');
+        // SearchPanel debounces 250 ms before firing the query;
+        // wait for any product images from search.raph.io to load too.
+        await page.waitForTimeout(800);
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(500);
+      }
+    }
 
     // For the Libraries room, open the fake workspace first so the tree
     // populates with mock data rather than showing "Open a workspace first".
