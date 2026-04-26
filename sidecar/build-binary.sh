@@ -77,3 +77,21 @@ fi
   "kibrary_sidecar/__main__.py"
 
 echo "Bundled binary: $SIDECAR/dist/$OUT_NAME"
+
+# universal-apple-darwin handling: Tauri's --target universal-apple-darwin
+# requires BOTH aarch64- and x86_64- variants of the sidecar. PyInstaller
+# can't cross-compile, so on macOS arm64 (default GH runner) we duplicate
+# the arm64 binary as the x86_64 name. The duplicate runs under Rosetta 2
+# on Intel Macs. For a real universal binary, use lipo with two passes.
+if [[ "$(uname)" == "Darwin" ]]; then
+  case "$TARGET" in
+    aarch64-apple-darwin)
+      cp "$SIDECAR/dist/$OUT_NAME" "$SIDECAR/dist/kibrary-sidecar-x86_64-apple-darwin"
+      echo "Mirrored as: kibrary-sidecar-x86_64-apple-darwin (runs via Rosetta on Intel)"
+      ;;
+    x86_64-apple-darwin)
+      cp "$SIDECAR/dist/$OUT_NAME" "$SIDECAR/dist/kibrary-sidecar-aarch64-apple-darwin"
+      echo "Mirrored as: kibrary-sidecar-aarch64-apple-darwin"
+      ;;
+  esac
+fi
