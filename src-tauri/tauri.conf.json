@@ -17,7 +17,6 @@
   },
   "bundle": {
     "active": true,
-    "_targets_note": "msi excluded — alpha/-suffix versions aren't valid MSI ProductVersion (numeric-only ≤65535). NSIS is the modern Windows installer anyway.",
     "targets": ["app", "dmg", "deb", "rpm", "appimage", "nsis"],
     "icon": ["icons/icon.png"],
     "resources": ["resources/*.whl"],
