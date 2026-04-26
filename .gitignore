@@ -141,6 +141,9 @@ screenshots/
 test-results/
 *.log
 
+# Claude session artifacts
+.claude/scheduled_tasks.lock
+
 # Kibrary P2 additions
 src-tauri/resources/*.whl
 
