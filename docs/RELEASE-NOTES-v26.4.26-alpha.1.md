@@ -1,4 +1,4 @@
-# Kibrary v0.2.0 — first public release
+# Kibrary v26.4.26-alpha.1 — first alpha release
 
 Kibrary turns JLCPCB part numbers into committed KiCad libraries. Paste a list of LCSC codes, watch them download in parallel, review/edit each before commit, and have everything land in your library repo as one git commit per part — automatically registered with your KiCad install.
 
@@ -18,12 +18,12 @@ This first release combines what the dev plans called P1 (MVP), P2 (Library Mana
 
 | Platform | Download | First-launch note |
 |---|---|---|
-| Linux x86_64 (AppImage) | `Kibrary_0.2.0_amd64.AppImage` | `chmod +x` then double-click. GPG signature `.asc` next to it for `gpg --verify`. |
-| Linux x86_64 (.deb)     | `Kibrary_0.2.0_amd64.deb`     | `sudo apt install ./Kibrary_0.2.0_amd64.deb` |
-| Linux x86_64 (.rpm)     | `Kibrary-0.2.0-1.x86_64.rpm`  | `sudo rpm -i Kibrary-0.2.0-1.x86_64.rpm` |
+| Linux x86_64 (AppImage) | `Kibrary_26.4.26-alpha.1_amd64.AppImage` | `chmod +x` then double-click. GPG signature `.asc` next to it for `gpg --verify`. |
+| Linux x86_64 (.deb)     | `Kibrary_26.4.26-alpha.1_amd64.deb`     | `sudo apt install ./Kibrary_26.4.26-alpha.1_amd64.deb` |
+| Linux x86_64 (.rpm)     | `Kibrary-26.4.26-alpha.1-1.x86_64.rpm`  | `sudo rpm -i Kibrary-26.4.26-alpha.1-1.x86_64.rpm` |
 | Linux Flatpak           | (build from `flatpak/`)        | See `docs/SIGNING.md`. Flathub submission planned. |
-| macOS                   | `Kibrary_0.2.0_aarch64.dmg` (or `_x64.dmg`) | **Right-click → Open** the first time (we use ad-hoc signing, not Apple Developer). The OS remembers the approval. |
-| Windows                 | `Kibrary_0.2.0_x64-setup.nsis.exe` | SmartScreen may say "Unknown publisher" — click "More info → Run anyway". (Signed builds via SignPath Foundation pending.) |
+| macOS                   | `Kibrary_26.4.26-alpha.1_aarch64.dmg` (or `_x64.dmg`) | **Right-click → Open** the first time (we use ad-hoc signing, not Apple Developer). The OS remembers the approval. |
+| Windows                 | `Kibrary_26.4.26-alpha.1_x64-setup.nsis.exe` | SmartScreen may say "Unknown publisher" — click "More info → Run anyway". (Signed builds via SignPath Foundation pending.) |
 
 After the first launch, the auto-updater takes over.
 
@@ -47,11 +47,11 @@ After the first launch, the auto-updater takes over.
 Each release artifact is signed two ways:
 
 1. **`tauri-plugin-updater` minisign signature** (`<artifact>.sig`) — used automatically by the in-app updater. The public key lives in `tauri.conf.json` and ships with every install.
-2. **GPG signature on the AppImage** (`Kibrary_0.2.0_amd64.AppImage.asc`) — verify with:
+2. **GPG signature on the AppImage** (`Kibrary_26.4.26-alpha.1_amd64.AppImage.asc`) — verify with:
    ```bash
-   curl -O https://github.com/jazari-akuna/kibrary-automator/releases/download/v0.2.0/Kibrary_0.2.0_amd64.AppImage{,.asc}
+   curl -O https://github.com/jazari-akuna/kibrary-automator/releases/download/v26.4.26-alpha.1/Kibrary_26.4.26-alpha.1_amd64.AppImage{,.asc}
    gpg --import keys/appimage-signing-public.asc   # one-time
-   gpg --verify Kibrary_0.2.0_amd64.AppImage.asc Kibrary_0.2.0_amd64.AppImage
+   gpg --verify Kibrary_26.4.26-alpha.1_amd64.AppImage.asc Kibrary_26.4.26-alpha.1_amd64.AppImage
    ```
    Public key fingerprint: `ED37847C4ED3376CA28546538E0FDC9F2E542C63`.
 
