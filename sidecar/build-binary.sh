@@ -90,7 +90,10 @@ echo "Bundled binary: $SIDECAR/dist/$OUT_NAME"
 # build twice under `arch -x86_64` / `arch -arm64` then `lipo -create`.
 # Deferred — alpha scope.
 if [[ "$(uname)" == "Darwin" ]]; then
-  for arch in aarch64-apple-darwin x86_64-apple-darwin; do
+  # Need all three: aarch64-, x86_64-, AND universal-apple-darwin.
+  # Tauri uses the per-arch names during the per-arch Rust builds,
+  # then asks for the universal name during the final bundling step.
+  for arch in aarch64-apple-darwin x86_64-apple-darwin universal-apple-darwin; do
     if [[ "$OUT_NAME" != "kibrary-sidecar-$arch" ]]; then
       cp "$SIDECAR/dist/$OUT_NAME" "$SIDECAR/dist/kibrary-sidecar-$arch"
       echo "Mirrored as: kibrary-sidecar-$arch"
