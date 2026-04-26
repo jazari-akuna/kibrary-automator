@@ -55,6 +55,10 @@ else
   ADDDATA="kibrary_sidecar/data:kibrary_sidecar/data"
 fi
 
+# --add-data SOURCE paths are resolved relative to --specpath (or cwd
+# when --specpath is omitted). We omit --specpath so the spec file
+# lands in $SIDECAR (cwd) and the relative kibrary_sidecar/data
+# source path resolves correctly. Spec gets cleaned up by --clean.
 "$VPY" -m PyInstaller \
   --onefile \
   --name "$OUT_NAME" \
@@ -70,7 +74,6 @@ fi
   --clean \
   --distpath "$SIDECAR/dist" \
   --workpath "$SIDECAR/build" \
-  --specpath "$SIDECAR/build" \
-  "$SIDECAR/kibrary_sidecar/__main__.py"
+  "kibrary_sidecar/__main__.py"
 
 echo "Bundled binary: $SIDECAR/dist/$OUT_NAME"
