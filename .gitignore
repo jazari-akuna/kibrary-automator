@@ -151,3 +151,6 @@ src-tauri/resources/*.whl
 keys/*.key
 keys/*.gpg
 keys/*-private.asc
+
+# Internal Claude-session handoff prompts — never commit
+CLAUDE-PROMPT-*.md
