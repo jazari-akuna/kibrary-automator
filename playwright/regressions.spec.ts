@@ -58,6 +58,20 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
       },
     }),
     'settings.set': () => ({}),
+    // Import.tsx Detect handler: parses textarea content and shows the
+    // "Queue all →" button. Treat every non-empty line as a valid LCSC.
+    'parts.parse_input': (params) => {
+      const text = (params && params.text) || '';
+      const rows = String(text)
+        .split(/\\r?\\n/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [lcsc, qty] = line.split(',').map((x) => x.trim());
+          return { lcsc, qty: qty ? Number(qty) : 1, ok: /^C\\d+$/.test(lcsc) };
+        });
+      return { format: 'list', rows };
+    },
     'workspace.get_settings': () => ({ settings: { kicad_target: null } }),
     'workspace.set_settings': () => ({}),
     'secrets.get': (params) =>
@@ -208,23 +222,25 @@ test('bug 4 — queued items can be removed individually', async ({ page }) => {
   await page.getByRole('button', { name: /^Add$/, exact: true }).click();
   await page.waitForTimeout(200);
 
-  // Paste two LCSCs and detect.
+  // Paste two LCSCs, detect, then queue them.
   const textarea = page.locator('textarea').first();
   await textarea.fill('C25804\nC1525');
-  await page.getByRole('button', { name: /detect/i }).click();
-  await page.waitForTimeout(300);
+  await page.getByRole('button', { name: /^detect$/i }).click();
+  await page.waitForTimeout(200);
+  await page.getByRole('button', { name: /queue all/i }).click();
+  await page.waitForTimeout(200);
 
   // Both should be in the queue.
-  await expect(page.locator('text=C25804')).toBeVisible();
-  await expect(page.locator('text=C1525')).toBeVisible();
+  await expect(page.locator('li', { hasText: 'C25804' })).toBeVisible();
+  await expect(page.locator('li', { hasText: 'C1525' })).toBeVisible();
 
   // Each row should have a remove button. Click the one for C25804.
   const c25804Row = page.locator('li', { hasText: 'C25804' });
   await c25804Row.getByRole('button', { name: /remove|✕|×/i }).click();
   await page.waitForTimeout(200);
 
-  await expect(page.locator('text=C25804')).toHaveCount(0);
-  await expect(page.locator('text=C1525')).toBeVisible();
+  await expect(page.locator('li', { hasText: 'C25804' })).toHaveCount(0);
+  await expect(page.locator('li', { hasText: 'C1525' })).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------
@@ -237,19 +253,21 @@ test('bug 4b — Clear queue button removes all items', async ({ page }) => {
 
   const textarea = page.locator('textarea').first();
   await textarea.fill('C25804\nC1525\nC19920');
-  await page.getByRole('button', { name: /detect/i }).click();
-  await page.waitForTimeout(300);
+  await page.getByRole('button', { name: /^detect$/i }).click();
+  await page.waitForTimeout(200);
+  await page.getByRole('button', { name: /queue all/i }).click();
+  await page.waitForTimeout(200);
 
-  await expect(page.locator('text=C25804')).toBeVisible();
-  await expect(page.locator('text=C1525')).toBeVisible();
-  await expect(page.locator('text=C19920')).toBeVisible();
+  await expect(page.locator('li', { hasText: 'C25804' })).toBeVisible();
+  await expect(page.locator('li', { hasText: 'C1525' })).toBeVisible();
+  await expect(page.locator('li', { hasText: 'C19920' })).toBeVisible();
 
   await page.getByRole('button', { name: /clear queue/i }).click();
   await page.waitForTimeout(200);
 
-  await expect(page.locator('text=C25804')).toHaveCount(0);
-  await expect(page.locator('text=C1525')).toHaveCount(0);
-  await expect(page.locator('text=C19920')).toHaveCount(0);
+  await expect(page.locator('li', { hasText: 'C25804' })).toHaveCount(0);
+  await expect(page.locator('li', { hasText: 'C1525' })).toHaveCount(0);
+  await expect(page.locator('li', { hasText: 'C19920' })).toHaveCount(0);
 });
 
 // ---------------------------------------------------------------------------

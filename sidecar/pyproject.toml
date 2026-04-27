@@ -1,6 +1,6 @@
 [project]
 name = "kibrary-sidecar"
-version = "26.4.27-alpha.2"
+version = "26.4.27-alpha.3"
 requires-python = ">=3.10"
 dependencies = [
   "kiutils>=1.4.8",
