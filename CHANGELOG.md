@@ -2,6 +2,21 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.5] — 2026-04-27
+
+### Fixed
+- **"Visit search.raph.io" pill button now actually opens the URL.** Tauri 2 webviews ignore `target="_blank"` on plain `<a>` tags; the click is now wired through `@tauri-apps/plugin-shell`'s `open()`. The shell plugin Rust dep, JS dep, plugin registration, and `shell:allow-open` capability are all in place.
+
+### Added
+- **Pre-fills the user's current query in the URL.** Typing `esp32` in the search box and clicking the pill button now opens `https://search.raph.io/?q=esp32` (URL-encoded), not the bare base URL.
+
+### Performance
+- **~5× faster thumbnail loading.** The sidecar's RPC dispatcher was a single-threaded `for raw in sys.stdin` loop, so each `search.fetch_photo` waited on the previous one. Replaced with a `ThreadPoolExecutor` (8 workers, configurable via `KIBRARY_SIDECAR_WORKERS`). 5 sequential 200 ms calls dropped from ~1000 ms to ~202 ms. Stdout writes were already serialised by `_stdout_lock` so the change was a drop-in.
+- **Module-scoped `httpx.Client`** in `search_client.py` reuses a connection pool across photo fetches — no more per-call TLS handshake.
+- **256-entry LRU cache** on `fetch_photo` (sidecar side) — re-typing a query that resolves to the same LCSCs returns cached `data:` URLs instantly.
+- **Frontend in-flight Promise dedup** — concurrent `<AuthedThumbnail>` instances for the same LCSC share one IPC call instead of firing N parallel requests.
+- **Regression test `bug 7 — multiple thumbnails load in parallel`** asserts 5 thumbnails render within 500 ms (serial dispatch would take ≥1000 ms and fail).
+
 ## [26.4.27-alpha.4] — 2026-04-27
 
 ### Fixed
@@ -119,6 +134,7 @@ See `docs/SHIP-P2.md` for the full checklist. Two manual GitHub steps:
 1. Add private signing keys to repo secrets (one-time): `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE`. See `keys/README.md`.
 2. Restore `.github/workflows/release.yml` from `docs/release-workflow.yml.example` using a credential with `workflow` scope.
 
+[26.4.27-alpha.5]: https://github.com/jazari-akuna/kibrary-automator/releases/tag/v26.4.27-alpha.5
 [26.4.27-alpha.4]: https://github.com/jazari-akuna/kibrary-automator/releases/tag/v26.4.27-alpha.4
 [26.4.27-alpha.3]: https://github.com/jazari-akuna/kibrary-automator/releases/tag/v26.4.27-alpha.3
 [26.4.27-alpha.2]: https://github.com/jazari-akuna/kibrary-automator/releases/tag/v26.4.27-alpha.2
