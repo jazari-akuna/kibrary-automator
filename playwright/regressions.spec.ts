@@ -165,7 +165,55 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
       }
       return payload;
     },
+    // Bugs 13-15: parts.download behaviour swappable via PARTS_DOWNLOAD_MODE.
+    //  - 'ok'         → resolves with empty results (default)
+    //  - 'throw'      → reject the RPC (simulates JLC2KiCadLib not bundled)
+    //  - 'slow'       → emit two download.progress events with a delay so
+    //                   tests can observe the running button state
+    //  - 'progress50' → emit a single 'downloading' event with progress=50
+    //                   so tests can assert the per-row progress bar
+    'parts.download': (params) => {
+      const lcscs = (params && params.lcscs) || [];
+      (window).__partsDownloadCalls = (window).__partsDownloadCalls || [];
+      (window).__partsDownloadCalls.push({ ...params });
+
+      if (PARTS_DOWNLOAD_MODE === 'throw') {
+        return Promise.reject(new Error("[Errno 2] No such file or directory: 'JLC2KiCadLib'"));
+      }
+      if (PARTS_DOWNLOAD_MODE === 'progress50') {
+        for (const lcsc of lcscs) {
+          (window).__emitTauri('download.progress', {
+            lcsc, status: 'downloading', progress: 50,
+          });
+        }
+        return new Promise((resolve) => setTimeout(() => resolve({ results: {} }), 800));
+      }
+      if (PARTS_DOWNLOAD_MODE === 'slow') {
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            for (const lcsc of lcscs) {
+              (window).__emitTauri('download.progress', {
+                lcsc, status: 'downloading', progress: 30,
+              });
+            }
+          }, 100);
+          setTimeout(() => {
+            for (const lcsc of lcscs) {
+              (window).__emitTauri('download.progress', {
+                lcsc, status: 'downloading', progress: 80,
+              });
+            }
+          }, 400);
+          setTimeout(() => resolve({ results: {} }), 1200);
+        });
+      }
+      return { results: {} };
+    },
   };
+
+  // Bugs 11/12: per-test handlers stomp on the defaults above.
+  const EXTRA_HANDLERS = ${extraHandlersLiteral};
+  Object.assign(sidecarHandlers, EXTRA_HANDLERS);
 
   async function invoke(cmd, payload) {
     if (cmd === 'bootstrap_status') return { python_resolved: true, sidecar_version: '0.0.0-test' };
@@ -197,6 +245,27 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
       return null;
     }
     if (cmd === 'plugin:resources|close') return null;
+    if (cmd === 'plugin:event|listen') {
+      // Track listeners so window.__emitTauri can dispatch to them.
+      // payload = { event, target, handler: <transformedCallbackId> }.
+      const eventName = payload && payload.event;
+      const handlerCbId = payload && payload.handler;
+      const eventId = nextEventId++;
+      let bucket = eventListeners.get(eventName);
+      if (!bucket) {
+        bucket = new Map();
+        eventListeners.set(eventName, bucket);
+      }
+      bucket.set(eventId, handlerCbId);
+      return eventId;
+    }
+    if (cmd === 'plugin:event|unlisten') {
+      const eventName = payload && payload.event;
+      const eventId = payload && payload.eventId;
+      const bucket = eventListeners.get(eventName);
+      if (bucket) bucket.delete(eventId);
+      return null;
+    }
     if (cmd && cmd.startsWith('plugin:event')) return null;
     if (cmd && cmd.startsWith('plugin:dialog')) {
       // Simulate the directory picker resolving to FAKE_WORKSPACE.
@@ -213,6 +282,10 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
     if (cmd === 'sidecar_call') {
       const method = payload && payload.method;
       const params = (payload && payload.params) || {};
+      // Bugs 11/12: every sidecar_call is recorded so tests can assert
+      // method-name + params after the user interaction completes.
+      (window).__sidecarCalls = (window).__sidecarCalls || [];
+      (window).__sidecarCalls.push({ method, params });
       const handler = sidecarHandlers[method];
       if (handler) return handler(params);
       console.warn('[regression-mock] Unhandled sidecar_call method:', method);
@@ -244,6 +317,24 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
     },
   };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {};
+
+  // Bugs 13-15: dispatch helper. Tests call window.__emitTauri('event', payload)
+  // to fan a synthetic event out to every listener registered via
+  // plugin:event|listen. Mirrors how Tauri's runtime delivers events.
+  window.__emitTauri = (eventName, payloadObj) => {
+    const bucket = eventListeners.get(eventName);
+    if (!bucket || bucket.size === 0) return 0;
+    const evt = { id: 0, event: eventName, payload: payloadObj };
+    let n = 0;
+    for (const [eventId, cbId] of bucket.entries()) {
+      const e = callbacks.get(cbId);
+      if (e) {
+        try { e.cb({ ...evt, id: eventId }); n++; } catch (_) { /* ignore */ }
+      }
+    }
+    return n;
+  };
+
   // Bug 8: tests can override the recents list (or pass [] for the empty
   // case). Default keeps the previous behaviour so existing tests continue
   // to pass.
@@ -603,4 +694,287 @@ test('bug 10 — Settings has Check-for-updates button', async ({ page }) => {
   // the UI should land on "You're up to date".
   await btn.click();
   await expect(page.getByText(/up to date/i)).toBeVisible({ timeout: 3000 });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 13 — "Download all" surfaces errors when the sidecar RPC throws.
+//
+// Root cause (alpha.5): the production sidecar binary called the
+// `JLC2KiCadLib` console-script via subprocess, but PyInstaller bundles
+// the Python package without installing the console-script on PATH inside
+// the onefile binary. Every download therefore failed with
+// `FileNotFoundError: 'JLC2KiCadLib'`. The frontend swallowed the rejection
+// silently — the button click "did nothing" from the user's POV.
+//
+// Fix: jlc.py now drives JLC2KiCadLib via its Python API, AND Queue.tsx
+// wraps the RPC in try/catch so any future rejection flips dispatched
+// items to `failed` and shows a toast.
+// ---------------------------------------------------------------------------
+test('bug 13 — Download all surfaces errors when RPC throws', async ({ page }) => {
+  // Capture console errors so we can assert one fires.
+  const consoleErrors: string[] = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') consoleErrors.push(msg.text());
+  });
+
+  await mountApp(page, { partsDownloadMode: 'throw' });
+
+  // Queue two items via the Add room.
+  await page.getByRole('button', { name: /^Add$/, exact: true }).click();
+  await page.waitForTimeout(200);
+  const textarea = page.locator('textarea').first();
+  await textarea.fill('C25804\nC1525');
+  await page.getByRole('button', { name: /^detect$/i }).click();
+  await page.waitForTimeout(200);
+  await page.getByRole('button', { name: /queue all/i }).click();
+  await page.waitForTimeout(200);
+
+  // Click Download all and wait for the RPC to settle.
+  await page.getByRole('button', { name: /download all/i }).click();
+  await page.waitForTimeout(500);
+
+  // Both queue rows should now show 'failed'. Scope to the queue list.
+  const queueList = page.locator('ul.font-mono').first();
+  await expect(queueList.locator('li', { hasText: 'C25804' })
+    .locator('text=failed')).toBeVisible({ timeout: 3000 });
+  await expect(queueList.locator('li', { hasText: 'C1525' })
+    .locator('text=failed')).toBeVisible({ timeout: 3000 });
+
+  // And a console error must have fired with the actual cause.
+  expect(consoleErrors.some((m) => /parts\.download|JLC2KiCadLib/i.test(m))).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// Bug 14 — "Download all" button shows progress text while running.
+//
+// Root cause (alpha.5): the button had no loading/progress state, so even
+// when the RPC succeeded the user had no idea anything was happening for
+// 10 s+ until the per-row badges flipped.
+//
+// Fix: Queue.tsx now sets isDownloading() around the RPC and the button
+// renders "Downloading… (N of M)" while busy.
+// ---------------------------------------------------------------------------
+test('bug 14 — Download all button shows progress text while running', async ({ page }) => {
+  await mountApp(page, { partsDownloadMode: 'slow' });
+
+  // Queue two parts.
+  await page.getByRole('button', { name: /^Add$/, exact: true }).click();
+  await page.waitForTimeout(200);
+  const textarea = page.locator('textarea').first();
+  await textarea.fill('C25804\nC1525');
+  await page.getByRole('button', { name: /^detect$/i }).click();
+  await page.waitForTimeout(200);
+  await page.getByRole('button', { name: /queue all/i }).click();
+  await page.waitForTimeout(200);
+
+  // Click Download all (don't await — RPC takes ~1.2 s and we want to
+  // observe the running state).
+  await page.getByRole('button', { name: /download all/i }).click();
+
+  // Within 1 s the button label should change to "Downloading… (N of M)".
+  await expect(
+    page.getByRole('button', { name: /Downloading.*\d+.*of/i }),
+  ).toBeVisible({ timeout: 1500 });
+
+  // Wait for the RPC to settle so we don't leak timers into the next test.
+  await page.waitForTimeout(1500);
+});
+
+// ---------------------------------------------------------------------------
+// Bug 15 — per-item progress bar appears for downloading items.
+//
+// Root cause (alpha.5): no per-row visual feedback existed beyond a status
+// badge. Fix: `QueueItem.progress` is plumbed through from the sidecar's
+// download.progress events to a thin progress bar rendered next to the
+// 'downloading' badge.
+// ---------------------------------------------------------------------------
+test('bug 15 — per-item progress bar appears for downloading items', async ({ page }) => {
+  await mountApp(page, { partsDownloadMode: 'progress50' });
+
+  // Queue one part.
+  await page.getByRole('button', { name: /^Add$/, exact: true }).click();
+  await page.waitForTimeout(200);
+  const textarea = page.locator('textarea').first();
+  await textarea.fill('C25804');
+  await page.getByRole('button', { name: /^detect$/i }).click();
+  await page.waitForTimeout(200);
+  await page.getByRole('button', { name: /queue all/i }).click();
+  await page.waitForTimeout(200);
+
+  await page.getByRole('button', { name: /download all/i }).click();
+
+  // The mock dispatches `download.progress` with progress=50 immediately,
+  // so the row's progressbar should appear with width: 50%.
+  const row = page.locator('ul.font-mono li', { hasText: 'C25804' });
+  const bar = row.getByRole('progressbar');
+  await expect(bar).toBeVisible({ timeout: 2000 });
+  await expect(bar).toHaveAttribute('aria-valuenow', '50');
+
+  // The inner fill div must carry width: 50%.
+  const fill = bar.locator('> div').first();
+  await expect(fill).toHaveAttribute('style', /width:\s*50%/);
+});
+
+// ---------------------------------------------------------------------------
+// Bug 11 — Libraries-room SymbolPreview must read from the committed-library
+// layout (one merged <lib>.kicad_sym), not the staging layout.
+//
+// Root cause (alpha): ComponentDetail.tsx passed a fake stagingDir = libDir
+// to SymbolPreview/FootprintPreview, which called `parts.read_file` looking
+// for `<libDir>/<comp>/<comp>.kicad_sym` — a path that doesn't exist for
+// committed libraries. The handler raised FileNotFoundError, the resource
+// errored, and the UI fell back to "Preview unavailable".
+//
+// Fix: a new RPC `library.read_file_content` slices the merged sym file
+// (kiutils filter → single-symbol library → re-emit). Both preview blocks
+// gained dual-mode props (libDir/componentName) and call the new RPC in
+// library mode.
+// ---------------------------------------------------------------------------
+test('bug 11 — symbol preview renders for committed component', async ({ page }) => {
+  // A minimal but valid kicad_symbol_lib stub. kicanvas-embed copies the
+  // <kicanvas-source> child into its shadow DOM, so we just need it to be
+  // non-empty for the assertion.
+  const stubSym =
+    '(kicad_symbol_lib (version 20231120) (generator kibrary)\n' +
+    '  (symbol "R_10k_0402"\n' +
+    '    (property "Reference" "R" (id 0) (at 0 0 0))\n' +
+    '    (property "Value" "10k" (id 1) (at 0 0 0))\n' +
+    '  )\n' +
+    ')';
+
+  await mountApp(page, {
+    extraHandlers: {
+      'library.list': `() => ({
+        libraries: [{
+          name: 'Resistors_KSL',
+          path: '/tmp/kib-regression-ws/Resistors_KSL',
+          component_count: 1,
+          has_pretty: true,
+          has_3dshapes: false,
+        }],
+      })`,
+      'library.list_components': `() => ({
+        components: [{
+          name: 'R_10k_0402',
+          description: '10k 0402',
+          reference: 'R',
+          value: '10k',
+          footprint: 'Resistor_SMD:R_0402',
+        }],
+      })`,
+      'library.read_file_content': `(params) => {
+        if (params.kind === 'sym') {
+          return { content: ${JSON.stringify(stubSym)} };
+        }
+        return { content: '(footprint "R_10k_0402" (layer "F.Cu"))' };
+      }`,
+      'library.get_3d_info': `() => ({ info: null })`,
+      'library.get_component': `() => ({ properties: { Reference: 'R', Value: '10k' }, footprint_path: null, model3d_path: null })`,
+      'library.get_component_icon': `() => ({ svg: null })`,
+      // PropertyEditor still uses parts.read_props/read_meta — return empty
+      // stubs so its resource resolves rather than throwing.
+      'parts.read_props': `() => ({ properties: {} })`,
+      'parts.read_meta': `() => ({ meta: {} })`,
+    },
+  });
+
+  await page.getByRole('button', { name: /^Libraries$/, exact: true }).click();
+
+  // Pick the library, then the component.
+  await page.getByRole('button', { name: /Resistors_KSL/ }).first().click();
+  await page.locator('text=R_10k_0402').first().click();
+
+  // The kicanvas-embed element should mount with our stub content. A simple,
+  // implementation-agnostic check: the matching <kicanvas-source> exists and
+  // its textContent includes our symbol name.
+  const source = page.locator('kicanvas-source').first();
+  await expect(source).toBeAttached({ timeout: 3000 });
+  const text = await source.textContent();
+  expect(text ?? '').toContain('R_10k_0402');
+
+  // And — most importantly for this regression — the "Preview unavailable"
+  // fallback must NOT be visible.
+  await expect(page.getByText(/Preview unavailable/i)).toHaveCount(0);
+});
+
+// ---------------------------------------------------------------------------
+// Bug 12 — 3D positioner must surface 9 editable inputs and Save must fire
+// `library.set_3d_offset` with the exact tuple the user typed.
+//
+// Root cause (alpha): the 3D model card was read-only — there was a Replace
+// button but no way to nudge offset/rotation/scale. KiCad has no CLI flag to
+// open its 3D Model Properties dialog directly; we build one in-app by
+// round-tripping through kiutils' Footprint().models[0].pos/.rotate/.scale.
+// ---------------------------------------------------------------------------
+test('bug 12 — 3D positioner inputs are editable + Save fires the right RPC', async ({ page }) => {
+  await mountApp(page, {
+    extraHandlers: {
+      'library.list': `() => ({
+        libraries: [{
+          name: 'Resistors_KSL',
+          path: '/tmp/kib-regression-ws/Resistors_KSL',
+          component_count: 1,
+          has_pretty: true,
+          has_3dshapes: true,
+        }],
+      })`,
+      'library.list_components': `() => ({
+        components: [{
+          name: 'R_10k_0402',
+          description: '10k 0402',
+          reference: 'R',
+          value: '10k',
+          footprint: 'Resistor_SMD:R_0402',
+        }],
+      })`,
+      'library.read_file_content': `() => ({ content: '(stub)' })`,
+      'library.get_3d_info': `() => ({
+        info: {
+          model_path: '\${KSL_ROOT}/Resistors_KSL/Resistors_KSL.3dshapes/R_10k_0402.step',
+          filename: 'R_10k_0402.step',
+          format: 'step',
+          offset: [0, 0, 0],
+          rotation: [0, 0, 0],
+          scale: [1, 1, 1],
+        }
+      })`,
+      'library.set_3d_offset': `() => ({ ok: true })`,
+      'library.get_component': `() => ({ properties: { Reference: 'R', Value: '10k' }, footprint_path: null, model3d_path: null })`,
+      'library.get_component_icon': `() => ({ svg: null })`,
+      'parts.read_props': `() => ({ properties: {} })`,
+      'parts.read_meta': `() => ({ meta: {} })`,
+    },
+  });
+
+  await page.getByRole('button', { name: /^Libraries$/, exact: true }).click();
+  await page.getByRole('button', { name: /Resistors_KSL/ }).first().click();
+  await page.locator('text=R_10k_0402').first().click();
+
+  // The positioner should render 9 number inputs (3 axes × Offset/Rotation/Scale).
+  const numberInputs = page.locator('input[type="number"]');
+  await expect(numberInputs).toHaveCount(9, { timeout: 3000 });
+
+  // Type a new value into the first input (Offset X).
+  await numberInputs.nth(0).fill('1.5');
+
+  // Click Save and wait for the RPC to fire.
+  await page.getByRole('button', { name: /^Save$/ }).click();
+
+  await page.waitForFunction(() => {
+    const calls = (window as unknown as { __sidecarCalls?: Array<{ method: string }> }).__sidecarCalls ?? [];
+    return calls.some((c) => c.method === 'library.set_3d_offset');
+  }, { timeout: 3000 });
+
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = await page.evaluate(
+    () =>
+      (window as unknown as { __sidecarCalls?: Array<{ method: string; params: Record<string, unknown> }> })
+        .__sidecarCalls ?? [],
+  );
+  const setOffsetCall = calls.find((c) => c.method === 'library.set_3d_offset');
+  expect(setOffsetCall, 'library.set_3d_offset must be invoked once Save is clicked').toBeDefined();
+  expect(setOffsetCall!.params.lib_dir).toBe('/tmp/kib-regression-ws/Resistors_KSL');
+  expect(setOffsetCall!.params.component_name).toBe('R_10k_0402');
+  expect(setOffsetCall!.params.offset).toEqual([1.5, 0, 0]);
+  expect(setOffsetCall!.params.rotation).toEqual([0, 0, 0]);
+  expect(setOffsetCall!.params.scale).toEqual([1, 1, 1]);
 });

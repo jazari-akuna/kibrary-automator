@@ -21,6 +21,8 @@ export interface QueueItem {
   qty: number;
   status: QueueStatus;
   error?: string;
+  /** 0–100 download progress; only meaningful while status === 'downloading'. */
+  progress?: number;
 }
 
 const [items, setItems] = createSignal<QueueItem[]>([]);
@@ -38,13 +40,18 @@ export function enqueue(parts: { lcsc: string; qty: number }[]): void {
   });
 }
 
-/** Update the status (and optional error message) of a queued item. */
-export function setStatus(lcsc: string, status: QueueStatus, error?: string): void {
+/** Update the status (and optional error message / progress %) of a queued item. */
+export function setStatus(
+  lcsc: string,
+  status: QueueStatus,
+  error?: string,
+  progress?: number,
+): void {
   setItems((prev) => {
     const idx = prev.findIndex((q) => q.lcsc === lcsc);
-    if (idx === -1) return [...prev, { lcsc, qty: 1, status, error }];
+    if (idx === -1) return [...prev, { lcsc, qty: 1, status, error, progress }];
     const next = [...prev];
-    next[idx] = { ...next[idx], status, error };
+    next[idx] = { ...next[idx], status, error, progress };
     return next;
   });
 }
@@ -65,7 +72,7 @@ export function pruneQueue(keep: QueueStatus[]): void {
 }
 
 // Subscribe to download.progress events from the Tauri backend.
-listen<{ lcsc: string; status: QueueStatus; error?: string }>(
+listen<{ lcsc: string; status: QueueStatus; error?: string; progress?: number }>(
   'download.progress',
-  (e) => setStatus(e.payload.lcsc, e.payload.status, e.payload.error),
+  (e) => setStatus(e.payload.lcsc, e.payload.status, e.payload.error, e.payload.progress),
 );

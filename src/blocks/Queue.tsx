@@ -1,7 +1,14 @@
-import { For, Show } from 'solid-js';
+import { For, Show, createSignal } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
-import { queueItems, setStatus, pruneQueue, clearQueue, dequeue } from '~/state/queue';
+import {
+  queueItems,
+  setStatus,
+  pruneQueue,
+  clearQueue,
+  dequeue,
+} from '~/state/queue';
 import { currentWorkspace } from '~/state/workspace';
+import { pushToast } from '~/state/toasts';
 
 function statusClass(status: string): string {
   switch (status) {
@@ -15,23 +22,58 @@ function statusClass(status: string): string {
   }
 }
 
-async function downloadLcscs(lcscs: string[]) {
+// Module-level signals so retry() and downloadAll() share download state.
+const [isDownloading, setIsDownloading] = createSignal(false);
+
+async function downloadLcscs(lcscs: string[]): Promise<void> {
   const ws = currentWorkspace();
   if (!ws || lcscs.length === 0) return;
-  await invoke('sidecar_call', {
-    method: 'parts.download',
-    params: {
-      lcscs,
-      staging_dir: `${ws.root}/.kibrary/staging`,
-      concurrency: ws.settings.concurrency,
-    },
-  });
+
+  setIsDownloading(true);
+  // Optimistically mark as downloading so the UI flips immediately even
+  // before the sidecar emits its first progress event.
+  for (const lcsc of lcscs) setStatus(lcsc, 'downloading', undefined, 0);
+
+  try {
+    await invoke('sidecar_call', {
+      method: 'parts.download',
+      params: {
+        lcscs,
+        staging_dir: `${ws.root}/.kibrary/staging`,
+        concurrency: ws.settings.concurrency,
+      },
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[Queue] parts.download RPC failed:', msg);
+    // Surface the error on every dispatched LCSC and as a toast so the
+    // user actually sees something happened.
+    for (const lcsc of lcscs) setStatus(lcsc, 'failed', msg);
+    pushToast({ kind: 'error', message: `Download failed: ${msg}` });
+  } finally {
+    setIsDownloading(false);
+  }
 }
 
 export default function Queue() {
   const queuedItems = () => queueItems().filter((q) => q.status === 'queued');
   const hasWorkspace = () => currentWorkspace() !== null;
-  const downloadAllDisabled = () => !hasWorkspace() || queuedItems().length === 0;
+  const downloadAllDisabled = () =>
+    !hasWorkspace() || queuedItems().length === 0 || isDownloading();
+
+  // Progress text shown on the "Download all" button while a batch is
+  // running: M = total non-queued items currently in the queue (i.e.
+  // dispatched), N = how many of those are already downloaded/terminal.
+  const downloadProgress = () => {
+    const all = queueItems();
+    const dispatched = all.filter((q) => q.status !== 'queued');
+    const done = dispatched.filter(
+      (q) => q.status === 'ready'
+        || q.status === 'committed'
+        || q.status === 'failed',
+    );
+    return { n: done.length, m: dispatched.length };
+  };
 
   const downloadAll = () => {
     const lcscs = queuedItems().map((q) => q.lcsc);
@@ -79,7 +121,12 @@ export default function Queue() {
                 disabled={downloadAllDisabled()}
                 onClick={downloadAll}
               >
-                Download all
+                <Show
+                  when={isDownloading()}
+                  fallback={<>Download all</>}
+                >
+                  Downloading… ({downloadProgress().n} of {downloadProgress().m})
+                </Show>
               </button>
             }
           >
@@ -108,6 +155,20 @@ export default function Queue() {
                 <span class={`px-2 py-0.5 rounded text-xs font-sans ${statusClass(q.status)}`}>
                   {q.status}
                 </span>
+                <Show when={q.status === 'downloading'}>
+                  <div
+                    class="w-32 h-1 bg-zinc-200 dark:bg-zinc-800 rounded overflow-hidden"
+                    role="progressbar"
+                    aria-valuenow={q.progress ?? 30}
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                  >
+                    <div
+                      class="h-full bg-amber-500 transition-all duration-200"
+                      style={{ width: `${q.progress ?? 30}%` }}
+                    />
+                  </div>
+                </Show>
                 <Show when={q.status === 'failed'}>
                   <button
                     class="text-xs underline text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
