@@ -65,7 +65,13 @@ gpg --batch --yes --detach-sign --armor --local-user 8E0FDC9F2E542C63 \
 echo "==> Building latest.json"
 APPIMAGE_SIG="$(cat "${APPIMAGE}.sig")"
 PUB_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-LATEST_JSON="$(mktemp)"
+# Must be named exactly "latest.json" — `gh release create <file>#<label>` does
+# NOT rename the asset (it sets a display label, not a filename), so a mktemp
+# basename ends up as the asset name and `releases/latest/download/latest.json`
+# 404s. Lesson learned the hard way in alpha.6.
+LATEST_DIR="$(mktemp -d)"
+LATEST_JSON="$LATEST_DIR/latest.json"
+trap 'rm -rf "$LATEST_DIR"' EXIT
 cat > "$LATEST_JSON" <<EOF
 {
   "version": "${VER}",
@@ -95,12 +101,15 @@ gh release create "$TAG" \
   "$APPIMAGE" "${APPIMAGE}.sig" "${APPIMAGE}.asc" \
   "$DEB" "${DEB}.sig" \
   "$RPM" "${RPM}.sig" \
-  "$LATEST_JSON#latest.json"
+  "$LATEST_JSON"
 
 echo "==> Verifying updater endpoint"
 sleep 2
 URL="https://github.com/jazari-akuna/kibrary-automator/releases/latest/download/latest.json"
-STATUS="$(curl -sILo /dev/null -w '%{http_code}' "$URL")"
+# Must use GET not HEAD (-I): GitHub's release-asset CDN responds to HEAD
+# differently than GET when chained through two 302 redirects, returning 404
+# on the final hop. The tauri-updater uses GET, so we mirror that here.
+STATUS="$(curl -sLo /dev/null -w '%{http_code}' "$URL")"
 if [ "$STATUS" != "200" ]; then
   echo "  WARNING: endpoint returned HTTP $STATUS — auto-update will not work" >&2
   exit 1
