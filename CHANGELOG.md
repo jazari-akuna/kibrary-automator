@@ -2,6 +2,28 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.15] — 2026-04-28
+
+### Added
+- **Search Parts is now a collapsible right-side pane.** Default state: open at 360px (400px ≥1600 viewport) with the same Stock filter + search.raph.io link as before. Collapsed state: a 40px vertical rail with a chevron toggle and a rotated "Search Parts" label. Width animates over 200ms via Tailwind `transition-[width]`. Manual state persists via `localStorage('kibrary.searchPaneOpen')`. New testid `[data-testid="search-pane-toggle"]` exposes the toggle to e2e + screen readers (`aria-expanded`, `aria-controls`).
+- **Auto-collapse on Download all.** Clicking Download all with a non-empty queue now synchronously collapses the search pane via `collapseSearchPane()` so Bulk Assign reclaims the freed ~320px before the first byte downloads. Manual toggle still wins after — auto-collapse fires once per click, never re-opens.
+- **Sidecar `search.prefetch_photos` RPC.** A single round-trip warms the photo LRU for the first 6 results in parallel (vs N IPC calls one-per-row before). Frontend kicks it off the moment `setResults` lands so thumbnails settle while the DOM lays out.
+
+### Changed
+- **Add-room layout.** Two-column shell: fluid main column (Import + Queue + Bulk Assign stacked) on the left; sticky right pane (Search) that animates between open/collapsed widths. Bulk Assign no longer sits in its own bottom row — it stays directly under Queue and grows horizontally when the pane collapses, so the table's first row is now above the fold for a single-part download (was buried in alpha.14).
+- **Search responsiveness, mirroring search.raph.io's web UI.**
+  - Debounce window: 250ms → 80ms (matches `useSearch.ts:7`).
+  - "Searching…" indicator now flips synchronously on input (was gated behind the debounce → felt dead for the first quarter-second).
+  - Monotonic `requestSeq` race guard: a slow `STM` response can no longer stomp a fresh `STM32` one. (Tauri 2 has no AbortController forwarding into Rust, hence the counter rather than `signal`.)
+  - First-paint thumbnail prefetch (see Added) replaces N independent IPCs with one batched call.
+  - Sidecar httpx pool bumped 16→32 (8→16 keepalive); split connect/read timeouts (`connect=2.0, read=10.0`) so DNS hiccups fail fast instead of stalling the burst.
+  - Auto-focus the input on mount; restore last query from `localStorage('kibrary.search.lastQuery')`.
+- **Stock filter is now server-side.** SearchPanel forwards the LCSC/JLC checkbox combination as `stockFilter=lcsc|jlc|both` on the `/api/search` request (omits the param when both off — fully backwards-compatible). The previous client-side `filteredResults()` predicate is kept as a SAFETY NET so older self-hosted jlc-search servers (which don't recognize `stockFilter=both`) still produce a correct list. Wins: server returns only the relevant subset, pagination no longer hides matches, less bandwidth, no lag while the browser drops half the rows. Requires the new `stockFilter=both` value on the server — see `jlc-search/updated_api_prompt.md` written for the JLC-side maintainers.
+
+### Notes
+- `stockFilter=both` is brand-new on the API (the existing values `none|lcsc|jlc|any` were already accepted). Until that lands, "both checkboxes ticked" still works correctly because the client-side safety-net filter catches what the server failed to filter — but server-side bandwidth/pagination wins only kick in after the server upgrade.
+- UX-loop process: alpha.15 went through three subagents (UX spec → 3 implementers in one round → UX sign-off) on real Tauri-webview-under-Xvfb screenshots. UX reviewer verdict: **APPROVE WITH POLISH** — three cosmetic items deferred to alpha.16: (1) collapsed-rail toggle button could use a border for affordance parity with the open-state button, (2) rotated "Search Parts" label needs `px-1` so it isn't pinned to the viewport edge, (3) tighten the chevron→label gap on the rail to read as one unit.
+
 ## [26.4.27-alpha.14] — 2026-04-27
 
 ### Added

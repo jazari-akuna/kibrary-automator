@@ -9,6 +9,7 @@ import {
 } from '~/state/queue';
 import { currentWorkspace } from '~/state/workspace';
 import { pushToast } from '~/state/toasts';
+import { collapseSearchPane } from '~/state/searchPane';
 
 function statusClass(status: string): string {
   switch (status) {
@@ -111,6 +112,13 @@ export default function Queue() {
 
   const downloadAll = () => {
     const lcscs = queuedItems().map((q) => q.lcsc);
+    // Auto-collapse the side pane *before* dispatching so the width
+    // animation kicks off in the same frame as the request — the user
+    // gets instant visual feedback that the click landed (alpha.9 had
+    // the opposite problem: silent no-op). Collapse only when there's
+    // actually something to download — empty-queue clicks fall through
+    // to the toast inside downloadLcscs() and shouldn't move the UI.
+    if (lcscs.length > 0) collapseSearchPane();
     return downloadLcscs(lcscs);
   };
 

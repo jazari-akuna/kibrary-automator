@@ -39,11 +39,20 @@ def _client() -> httpx.Client:
     if _CLIENT is None:
         with _CLIENT_LOCK:
             if _CLIENT is None:
+                # alpha.15 perf tuning:
+                #   - Split timeout: short connect (fail fast on DNS/TLS
+                #     hiccups), generous read (large photos are 50–200 KB).
+                #     httpx.Timeout requires all four legs OR a default;
+                #     pass `timeout=10.0` as the default and override
+                #     connect explicitly.
+                #   - Bumped pool limits: a fresh search fans out 6+
+                #     fetch_photo calls plus a search.query — the previous
+                #     8/16 pool queued the tail of every burst.
                 _CLIENT = httpx.Client(
-                    timeout=10.0,
+                    timeout=httpx.Timeout(10.0, connect=2.0),
                     limits=httpx.Limits(
-                        max_connections=16,
-                        max_keepalive_connections=8,
+                        max_connections=32,
+                        max_keepalive_connections=16,
                     ),
                 )
     return _CLIENT
@@ -87,6 +96,7 @@ def search(
     api_key: str,
     base_url: str = "https://search.raph.io",
     timeout: float = 5.0,
+    stock_filter: str | None = None,
 ) -> dict:
     """Search for parts matching *query*.
 
@@ -94,15 +104,25 @@ def search(
     ``{'results': [], 'error': '...'}`` on any failure.
     Returns ``{'results': []}`` immediately if *api_key* is empty
     (graceful degradation — user hasn't configured search yet).
+
+    *stock_filter* (alpha.15) maps to the ``stockFilter`` query param on
+    the upstream API: ``"lcsc"`` / ``"jlc"`` / ``"both"`` / ``"any"``.
+    Pass ``None`` (or omit) to skip the param entirely so older
+    self-hosted backends — including ones predating the ``both`` value —
+    don't break. The frontend keeps a client-side filter as a safety
+    net for those servers.
     """
     if not api_key:
         return {"results": []}
 
     headers = {"Authorization": f"Bearer {api_key}"}
+    params: dict[str, str] = {"q": query}
+    if stock_filter:
+        params["stockFilter"] = stock_filter
     try:
         response = _client().get(
             f"{base_url}/api/search",
-            params={"q": query},
+            params=params,
             headers=headers,
             timeout=timeout,
         )
@@ -112,6 +132,42 @@ def search(
         return {"results": [], "error": str(exc)}
     except httpx.HTTPError as exc:
         return {"results": [], "error": str(exc)}
+
+
+def prefetch_photos(
+    lcscs: list[str],
+    api_key: str,
+    base_url: str = "https://search.raph.io",
+) -> dict:
+    """Warm the photo LRU for *lcscs* in parallel from a single RPC.
+
+    Used by SearchPanel to seed the cache for the first ~6 visible rows
+    immediately after `setResults` — saves N round-trips of webview ↔
+    sidecar IPC during a fresh burst (perf spec change #8).
+
+    Returns ``{'cached': N}`` where N is how many lcscs ended up cached
+    (cache hits + freshly fetched). Errors per-LCSC are swallowed; this
+    is a best-effort prefetch and the per-row ``fetch_photo`` call will
+    surface any actual user-facing failure.
+    """
+    if not api_key or not lcscs:
+        return {"cached": 0}
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _warm(lcsc: str) -> bool:
+        try:
+            r = fetch_photo(lcsc, api_key=api_key, base_url=base_url)
+            return r.get("data_url") is not None or "error" not in r
+        except Exception:
+            return False
+
+    # Cap parallelism at 8 — the httpx pool keepalive caps at 16 so we
+    # leave headroom for inline search.query / per-row fetches that fire
+    # concurrently with the prefetch fanout.
+    with ThreadPoolExecutor(max_workers=min(8, len(lcscs))) as ex:
+        results = list(ex.map(_warm, lcscs))
+    return {"cached": sum(1 for r in results if r)}
 
 
 def fetch_photo(

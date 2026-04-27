@@ -220,6 +220,26 @@ async function main() {
     await elClear(sid, intakeId as string);
     await elType(sid, intakeId as string, LCSC);
 
+    // alpha.15: search pane should be visible and open by default. This
+    // assertion runs BEFORE Download all so we capture the open state —
+    // the post-download collapse is asserted further below.
+    log('asserting search-pane-toggle exists with aria-expanded="true"');
+    const toggleId = await waitFor(
+      () => findElement(sid, '[data-testid="search-pane-toggle"]'),
+      5_000, 250, 'search-pane-toggle present',
+    );
+    const expandedBefore = await elAttr(sid, toggleId as string, 'aria-expanded');
+    log(`  aria-expanded (before Download all) = ${JSON.stringify(expandedBefore)}`);
+    if (expandedBefore !== 'true') {
+      throw new Error(
+        `search-pane-toggle aria-expanded should be "true" on load, got ${JSON.stringify(expandedBefore)}`,
+      );
+    }
+    // Capture the "search pane open" baseline — this is the visual
+    // counterpart to bulk-assign-filled.png (which is taken later, after
+    // Download all triggers the collapse).
+    await screenshot(sid, `${OUT}/search-open.png`);
+
     log('clicking Detect');
     const detectId = await waitFor(
       () => findElement(sid, '[data-testid="detect-btn"]'),
@@ -252,6 +272,22 @@ async function main() {
       5_000, 500, 'Download all button',
     );
     await elClick(sid, dlId as string);
+
+    // alpha.15: clicking Download all with a non-empty queue collapses
+    // the search pane synchronously (Queue.tsx calls collapseSearchPane()
+    // before dispatching parts.download). Allow ~500ms for the
+    // <Show> swap + width animation; poll the toggle's aria-expanded.
+    log('asserting search pane auto-collapsed after Download all');
+    await waitFor(
+      async () => {
+        const t = await findElement(sid, '[data-testid="search-pane-toggle"]');
+        if (!t) return null;
+        const exp = await elAttr(sid, t, 'aria-expanded');
+        return exp === 'false' ? true : null;
+      },
+      1_500, 100, 'search-pane-toggle aria-expanded="false" after Download all',
+    );
+    log('✅ search pane collapsed on Download all');
 
     // 7. Wait up to 90 s for the row to flip to data-status="ready".
     //    There's only one queue row, so findElement (singular) is fine.
@@ -370,6 +406,12 @@ async function main() {
       throw new Error(`Bulk-Assign footprint cell is empty for ${LCSC} — meta.footprint not captured`);
     }
     log(`✅ Bulk-Assign: footprint shown (${footprint})`);
+
+    // 9c-bis. Screenshot the post-download "Bulk Assign filled with data"
+    //   state — the moment a UX reviewer needs to see (search panel beside
+    //   queue, bulk-assign table populated). Saved BEFORE we click cancel
+    //   so the table is still visible.
+    await screenshot(sid, `${OUT}/bulk-assign-filled.png`);
 
     // 9d. Cancel button deletes staged files + drops the queue row.
     log('clicking Bulk-Assign cancel — should rmtree staging dir + dequeue');

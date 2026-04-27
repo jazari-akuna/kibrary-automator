@@ -384,7 +384,25 @@ def _search_settings() -> tuple[str, str]:
 
 def search_query(p: dict) -> dict:
     api_key, base_url = _search_settings()
-    return search_client.search(p["q"], api_key=api_key, base_url=base_url)
+    # alpha.15: forward stock_filter when the frontend passes it. None /
+    # absent maps to the default `none` upstream so older self-hosted
+    # backends are unaffected.
+    return search_client.search(
+        p["q"],
+        api_key=api_key,
+        base_url=base_url,
+        stock_filter=p.get("stock_filter"),
+    )
+
+
+def search_prefetch_photos(p: dict) -> dict:
+    """Warm the photo LRU for a batch of LCSCs in one RPC. Frontend calls
+    this once per `setResults` so thumbnails land ~one IPC RTT sooner.
+    """
+    api_key, base_url = _search_settings()
+    return search_client.prefetch_photos(
+        p.get("lcscs") or [], api_key=api_key, base_url=base_url
+    )
 
 
 def search_get_part(p: dict) -> dict:
@@ -491,6 +509,7 @@ REGISTRY = {
     "search.query": search_query,
     "search.get_part": search_get_part,
     "search.fetch_photo": search_fetch_photo,
+    "search.prefetch_photos": search_prefetch_photos,
     "secrets.get": secrets_get,
     "secrets.set": secrets_set,
     "secrets.delete": secrets_delete,

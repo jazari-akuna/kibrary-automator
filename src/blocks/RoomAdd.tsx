@@ -1,28 +1,38 @@
 import BlockHost from '~/shell/BlockHost';
+import { searchPaneOpen } from '~/state/searchPane';
 
 export default function RoomAdd() {
-  // Two-row layout:
-  //   Row 1: Import + Queue (left, 2 cols) | Search (right, 1 col).
-  //   Row 2: Bulk Assign (full width).
+  // Two-column shell (alpha.15):
+  //   Main column (fluid):   Import + Queue stacked, Bulk Assign directly
+  //                          beneath. Bulk Assign is a child of the main
+  //                          column, so when the search pane collapses,
+  //                          Bulk Assign reclaims the freed width and the
+  //                          table can show all columns above the fold.
+  //   Right column (fixed):  Search pane — sticky, collapses to a 40px
+  //                          rail. Auto-collapses on Download all (see
+  //                          collapseSearchPane()).
   //
-  // Bulk-assign got moved out of the left column because it benefits from
-  // the full page width (footprint + library picker + delete column don't
-  // fit comfortably at 2/3 width). Pulling it below also lets the search
-  // panel naturally end at the bottom of the queue rather than scrolling
-  // alongside a tall table — matches the "search module ends before the
-  // table" feedback.
+  // The width animation lives on the search pane (transition-[width]),
+  // not on the main column — main is `flex-1 min-w-0` and reflows
+  // synchronously, so the table widens as the pane shrinks without
+  // remounting Bulk Assign.
   return (
-    <div class="space-y-4">
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
-        <div class="md:col-span-2 space-y-4">
-          <BlockHost id="import" />
-          <BlockHost id="queue" />
-        </div>
-        <div class="md:col-span-1">
-          <BlockHost id="search-panel" />
-        </div>
+    <div class="flex gap-4 items-start">
+      <div class="flex-1 min-w-0 space-y-4">
+        <BlockHost id="import" />
+        <BlockHost id="queue" />
+        <BlockHost id="review-bulk-assign" />
       </div>
-      <BlockHost id="review-bulk-assign" />
+      <aside
+        class="shrink-0 sticky top-4 self-start max-h-[calc(100vh-2rem)] overflow-y-auto transition-[width] duration-200 ease-out"
+        classList={{
+          'w-[360px] xl:w-[400px]': searchPaneOpen(),
+          'w-10': !searchPaneOpen(),
+        }}
+        aria-label="Search parts side pane"
+      >
+        <BlockHost id="search-panel" />
+      </aside>
     </div>
   );
 }
