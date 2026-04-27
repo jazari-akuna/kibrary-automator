@@ -2,6 +2,21 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.4] — 2026-04-27
+
+### Fixed
+- **Sidecar stderr is now drained and forwarded with `[sidecar:stderr]` / `[sidecar]` prefixes.** Previously the pipe was opened but never read — diagnostic `print()`s vanished, and a single noisy handler would have eventually deadlocked the child once the 64 KiB pipe buffer filled. This was the missing observability that made every "thumbnails don't load" report a guessing game.
+- **`__version__` no longer hardcodes `26.4.26-alpha.1`.** Resolved at runtime from `importlib.metadata` with a `pyproject.toml` fallback so the bundled binary's `system.version` reflects the build it shipped in.
+
+### Added
+- **Bootstrap log line: `[bootstrap] embedded search key length: <N> (spawning <path>)`.** Prints once per sidecar spawn so a build performed without `KIBRARY_SEARCH_API_KEY` shows `length: 0` immediately at startup.
+- **Sidecar startup line: `[sidecar] startup version=… KIBRARY_SEARCH_API_KEY=set key_len=<N>`.** Confirms the env var crossed the Rust→Python boundary.
+- **Per-fetch line: `[sidecar] search.fetch_photo lcsc='<C…>' api_key_len=<N>`.** Lets `kibrary 2>&1 | grep '\[sidecar\]'` pinpoint which side of the boundary failed for any specific thumbnail.
+- **Visible error indicator** in `<AuthedThumbnail>` — a small red `!` with `title="<error message>"` when `fetch_photo` returns an `error`. Distinguishes "no photo for this part" (silent) from "the request failed" (red badge).
+- **Unified `build_command()` helper** in `src-tauri/src/sidecar.rs`: both `spawn_binary` and `spawn` now go through one place that injects `KIBRARY_SEARCH_API_KEY`. Two new Rust unit tests (`build_command_propagates_search_api_key_to_child`, `build_command_sets_pipes_for_jsonrpc`) pin the env-injection contract — refactoring it without `.env(...)` will now fail compilation tests, not silently break thumbnails.
+- **Polished pill button** for the "Visit search.raph.io" link in the SearchPanel header — rounded, soft shadow, external-link icon, emerald hover accent.
+- **Screenshot mock** updated to handle the new `search.fetch_photo` IPC method so README screenshots actually render product photos again.
+
 ## [26.4.27-alpha.3] — 2026-04-27
 
 ### Fixed
@@ -104,6 +119,7 @@ See `docs/SHIP-P2.md` for the full checklist. Two manual GitHub steps:
 1. Add private signing keys to repo secrets (one-time): `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE`. See `keys/README.md`.
 2. Restore `.github/workflows/release.yml` from `docs/release-workflow.yml.example` using a credential with `workflow` scope.
 
+[26.4.27-alpha.4]: https://github.com/jazari-akuna/kibrary-automator/releases/tag/v26.4.27-alpha.4
 [26.4.27-alpha.3]: https://github.com/jazari-akuna/kibrary-automator/releases/tag/v26.4.27-alpha.3
 [26.4.27-alpha.2]: https://github.com/jazari-akuna/kibrary-automator/releases/tag/v26.4.27-alpha.2
 [26.4.27-alpha.1]: https://github.com/jazari-akuna/kibrary-automator/releases/tag/v26.4.27-alpha.1

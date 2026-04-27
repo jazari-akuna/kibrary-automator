@@ -108,6 +108,22 @@ const tauriInitScript = `
       // side by side rather than narrowing to a single hit.
       return { results: all };
     },
+
+    // AuthedThumbnail in the new SearchPanel calls search.fetch_photo via
+    // sidecar_call (not a plain HTTP fetch — that path was retired because
+    // search.raph.io's CORS only allows localhost:3000). The mock dispatches
+    // on LCSC and returns a hand-drawn SVG matching the actual product so
+    // README screenshots render real-looking photos.
+    'search.fetch_photo': function (params) {
+      const lcsc = (params && params.lcsc) || '';
+      const svgs = {
+        C25804: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><rect width="160" height="160" fill="#f4f1ea"/><rect x="40" y="62" width="80" height="36" rx="3" fill="#1a1a1a"/><rect x="40" y="62" width="14" height="36" fill="#9a9a9a"/><rect x="106" y="62" width="14" height="36" fill="#9a9a9a"/><text x="80" y="86" text-anchor="middle" fill="#f4f1ea" font-family="Arial,sans-serif" font-weight="700" font-size="13">10K</text></svg>',
+        C1525: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><rect width="160" height="160" fill="#f4f1ea"/><rect x="58" y="68" width="44" height="24" rx="2" fill="#7a4a25"/><rect x="58" y="68" width="9" height="24" fill="#c9c9c9"/><rect x="93" y="68" width="9" height="24" fill="#c9c9c9"/></svg>',
+        C19920: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><rect width="160" height="160" fill="#f4f1ea"/><rect x="44" y="46" width="72" height="68" rx="2" fill="#1a1a1a"/><text x="80" y="82" text-anchor="middle" fill="#dcdcdc" font-family="Arial,sans-serif" font-weight="600" font-size="9">STM32</text><text x="80" y="94" text-anchor="middle" fill="#dcdcdc" font-family="Arial,sans-serif" font-weight="600" font-size="9">G030F6</text><g fill="#c9c9c9"><rect x="36" y="50" width="8" height="3"/><rect x="36" y="60" width="8" height="3"/><rect x="36" y="70" width="8" height="3"/><rect x="36" y="80" width="8" height="3"/><rect x="36" y="90" width="8" height="3"/><rect x="36" y="100" width="8" height="3"/><rect x="116" y="50" width="8" height="3"/><rect x="116" y="60" width="8" height="3"/><rect x="116" y="70" width="8" height="3"/><rect x="116" y="80" width="8" height="3"/><rect x="116" y="90" width="8" height="3"/><rect x="116" y="100" width="8" height="3"/></g></svg>',
+      };
+      const svg = svgs[lcsc] || ('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><rect width="160" height="160" fill="#f4f1ea"/><text x="80" y="86" text-anchor="middle" fill="#666" font-family="Arial,sans-serif" font-size="14">' + lcsc + '</text></svg>');
+      return { data_url: 'data:image/svg+xml;base64,' + btoa(svg) };
+    },
   };
 
   // Minimal invoke shim.
