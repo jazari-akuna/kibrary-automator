@@ -61,6 +61,7 @@ impl Sidecar {
     /// stdout — identical protocol to the Python `-m kibrary_sidecar` path.
     pub async fn spawn_binary(binary_path: &str) -> Result<Self> {
         let child = Command::new(binary_path)
+            .env("KIBRARY_SEARCH_API_KEY", crate::embedded_secrets::search_api_key())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -72,6 +73,7 @@ impl Sidecar {
     pub async fn spawn(python_path: &str, module: &str) -> Result<Self> {
         let child = Command::new(python_path)
             .args(["-m", module])
+            .env("KIBRARY_SEARCH_API_KEY", crate::embedded_secrets::search_api_key())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

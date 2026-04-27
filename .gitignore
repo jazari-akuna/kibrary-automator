@@ -131,6 +131,7 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 sidecar/.venv/
+sidecar/.build-venv/
 sidecar/dist/
 sidecar/build/
 sidecar/*.egg-info/

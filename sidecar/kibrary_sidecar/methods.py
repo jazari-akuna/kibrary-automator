@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from kibrary_sidecar import __version__
@@ -292,8 +293,14 @@ def bootstrap_install(p: dict) -> dict:
 
 
 def _search_settings() -> tuple[str, str]:
+    # Production: the Rust shell injects KIBRARY_SEARCH_API_KEY (the
+    # compile-time-embedded key, deobfuscated at startup) into our environment
+    # when spawning us. Fall back to the OS keychain for dev runs where the
+    # sidecar is launched directly (no Rust shell to set the env var).
     s = st.read_settings().get("search_raph_io", {})
-    api_key = secrets.get_secret("search_raph_io_api_key")
+    api_key = os.environ.get("KIBRARY_SEARCH_API_KEY") or secrets.get_secret(
+        "search_raph_io_api_key"
+    )
     return api_key, s.get("base_url", "https://search.raph.io")
 
 

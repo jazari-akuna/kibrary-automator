@@ -36,6 +36,11 @@ export async function openWorkspace(path: string) {
 }
 
 export async function pickAndOpen() {
-  const path = await openDialog({ directory: true, multiple: false });
-  if (typeof path === 'string') await openWorkspace(path);
+  try {
+    const path = await openDialog({ directory: true, multiple: false });
+    if (typeof path === 'string') await openWorkspace(path);
+  } catch (e) {
+    console.error('[workspace] pickAndOpen failed:', e);
+    throw e;
+  }
 }

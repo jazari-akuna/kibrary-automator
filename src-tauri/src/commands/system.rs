@@ -1,3 +1,4 @@
+use crate::embedded_secrets;
 use crate::sidecar::Sidecar;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -19,5 +20,20 @@ pub async fn sidecar_call(
     method: String,
     params: Value,
 ) -> Result<Value, String> {
+    // Intercept search.raph.io API key reads — serve the compile-time-embedded
+    // key directly so the user is never asked for one. Any other secret name
+    // continues to reach the sidecar's keychain handler.
+    if method == "secrets.get" && params.get("name").and_then(Value::as_str)
+        == Some("search_raph_io_api_key")
+    {
+        return Ok(json!({ "value": embedded_secrets::search_api_key() }));
+    }
+    // Writes to the same key are no-ops — there's nothing to store.
+    if method == "secrets.set" && params.get("name").and_then(Value::as_str)
+        == Some("search_raph_io_api_key")
+    {
+        return Ok(json!({}));
+    }
+
     sidecar.call(&method, params).await.map_err(|e| e.to_string())
 }

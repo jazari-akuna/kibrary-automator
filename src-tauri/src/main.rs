@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bootstrap;
+mod embedded_secrets;
 mod protocol;
 mod sidecar;
 mod commands;
