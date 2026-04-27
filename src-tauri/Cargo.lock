@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "kibrary"
-version = "26.4.27-alpha.8"
+version = "26.4.27-alpha.9"
 dependencies = [
  "anyhow",
  "notify",

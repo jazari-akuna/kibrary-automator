@@ -2,7 +2,7 @@ import { createResource, createSignal, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { type Update } from '@tauri-apps/plugin-updater';
 import { theme, setTheme, type Theme } from '~/state/theme';
-import { checkForUpdate, installAndRestart } from '~/api/updater';
+import { checkForUpdate, downloadAndInstall, quitApp } from '~/api/updater';
 
 interface Settings {
   theme: string;
@@ -71,6 +71,7 @@ type UpdateStatus =
   | { kind: 'up-to-date' }
   | { kind: 'available'; update: Update }
   | { kind: 'installing'; update: Update }
+  | { kind: 'installed'; update: Update }
   | { kind: 'error'; message: string };
 
 function UpdateCard() {
@@ -95,9 +96,16 @@ function UpdateCard() {
     if (s.kind !== 'available') return;
     setStatus({ kind: 'installing', update: s.update });
     try {
-      await installAndRestart(s.update);
-      // installAndRestart relaunches; if we reach the next line, treat it as
-      // an error so the UI doesn't silently freeze on "Installing…".
+      await downloadAndInstall(s.update);
+      setStatus({ kind: 'installed', update: s.update });
+    } catch (e) {
+      setStatus({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  const handleQuit = async () => {
+    try {
+      await quitApp();
     } catch (e) {
       setStatus({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
     }
@@ -142,6 +150,25 @@ function UpdateCard() {
 
         <Show when={status().kind === 'installing'}>
           <span class="text-zinc-600 dark:text-zinc-400">Installing…</span>
+        </Show>
+
+        <Show when={status().kind === 'installed'}>
+          {(_) => {
+            const s = status() as { kind: 'installed'; update: Update };
+            return (
+              <>
+                <span class="text-green-600 dark:text-green-400">
+                  v{s.update.version} installed. Quit and re-open Kibrary to apply.
+                </span>
+                <button
+                  class="px-3 py-1 bg-green-600 hover:bg-green-500 text-white rounded text-xs font-semibold"
+                  onClick={handleQuit}
+                >
+                  Quit Kibrary
+                </button>
+              </>
+            );
+          }}
         </Show>
       </div>
 

@@ -29,6 +29,14 @@ export default function Import() {
         params: { text: text() },
       });
       setParsed(r);
+      // Auto-enqueue valid rows so a single Detect click is enough — users
+      // were missing the separate "Queue all" step and then clicking
+      // Download-all on an empty queue, which silently did nothing.
+      const ok = r.rows.filter((row) => row.ok);
+      if (ok.length > 0) {
+        enqueue(ok.map((row) => ({ lcsc: row.lcsc, qty: row.qty })));
+        setText('');
+      }
     } catch (e) {
       setErr(String(e));
       setParsed(null);
@@ -37,6 +45,8 @@ export default function Import() {
     }
   };
 
+  // Kept for the explicit "Queue all" button below — useful when the user
+  // wants to inspect the parse result before committing it to the queue.
   const onQueue = () => {
     const p = parsed();
     if (!p) return;

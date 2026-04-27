@@ -2,6 +2,12 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.10] — 2026-04-27
+
+### Fixed
+- **"Download all" no longer silently does nothing on an empty queue.** The Add room's flow used to require three clicks: type LCSC → click **Detect** → click **Queue all** → click **Download all**. Users (reasonably) skipped the middle step, so "Download all" found an empty queue and was disabled, which the button rendered as a faintly grayed-out widget that looked clickable but no-op'd silently. Now: (1) **Detect auto-enqueues** every valid row immediately so a single click is enough; (2) **the Download-all button stays clickable** even when the queue is empty and surfaces a toast — `Queue is empty — paste LCSC codes above and click Detect.` — instead of doing nothing; (3) a `[Queue] dispatching parts.download {…}` console log is emitted so future bug reports can be traced through DevTools without re-instrumenting.
+- **Post-update restart now asks the user to quit + relaunch manually.** alpha.7-alpha.9 used `relaunch()` from `@tauri-apps/plugin-process` after install — but the Rust crate isn't installed and the plugin isn't registered, so the call always failed silently. The new flow: install completes → banner says "Update installed. Quit Kibrary and re-open it to apply." → "Quit Kibrary" button calls a small `quit_app` Tauri command (`app.exit(0)`). This avoids the polkit/X11/WebKit transition mess of trying to fork+exec from a process whose binary just got dpkg-replaced. Same change in Settings → Updates card.
+
 ## [26.4.27-alpha.9] — 2026-04-27
 
 ### Fixed

@@ -13,7 +13,7 @@
 import { createSignal, Show } from 'solid-js';
 import { onMount } from 'solid-js';
 import { type Update } from '@tauri-apps/plugin-updater';
-import { checkForUpdate, installAndRestart } from '~/api/updater';
+import { checkForUpdate, downloadAndInstall, quitApp } from '~/api/updater';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,12 +96,13 @@ export default function UpdatePrompt() {
     }
   };
 
-  const handleRestart = async () => {
-    const u = update();
-    if (!u) return;
+  const handleQuit = async () => {
     setRestarting(true);
     try {
-      await installAndRestart(u);
+      await quitApp();
+      // If we got here, the process didn't exit — surface that so the user
+      // isn't left staring at a frozen "Restarting…" button.
+      setRestarting(false);
     } catch {
       setRestarting(false);
     }
@@ -140,7 +141,9 @@ export default function UpdatePrompt() {
           </Show>
 
           <Show when={phase() === 'ready'}>
-            <span class="text-green-400">Update ready. Restart now?</span>
+            <span class="text-green-400">
+              Update installed. Quit Kibrary and re-open it to apply.
+            </span>
           </Show>
         </div>
 
@@ -164,10 +167,10 @@ export default function UpdatePrompt() {
           <Show when={phase() === 'ready'}>
             <button
               class="px-3 py-1 bg-green-600 hover:bg-green-500 text-white text-xs font-semibold rounded transition-colors disabled:opacity-50"
-              onClick={handleRestart}
+              onClick={handleQuit}
               disabled={restarting()}
             >
-              {restarting() ? 'Restarting…' : 'Restart'}
+              {restarting() ? 'Quitting…' : 'Quit Kibrary'}
             </button>
           </Show>
         </div>

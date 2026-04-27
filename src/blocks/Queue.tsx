@@ -27,7 +27,28 @@ const [isDownloading, setIsDownloading] = createSignal(false);
 
 async function downloadLcscs(lcscs: string[]): Promise<void> {
   const ws = currentWorkspace();
-  if (!ws || lcscs.length === 0) return;
+  // Failures surface as toasts so the user always sees feedback —
+  // previously a silent return on guard fail looked identical to "nothing
+  // happened" and led to "Download all does not work" reports.
+  if (!ws) {
+    pushToast({ kind: 'error', message: 'Open a workspace first.' });
+    return;
+  }
+  if (lcscs.length === 0) {
+    pushToast({
+      kind: 'info',
+      message: 'Queue is empty — paste LCSC codes above and click Detect.',
+    });
+    return;
+  }
+
+  // Visible diagnostic so future bug reports can be traced through the
+  // browser DevTools console without instrumenting fresh.
+  console.log('[Queue] dispatching parts.download', {
+    lcscs,
+    staging_dir: `${ws.root}/.kibrary/staging`,
+    concurrency: ws.settings?.concurrency,
+  });
 
   setIsDownloading(true);
   // Optimistically mark as downloading so the UI flips immediately even
@@ -40,14 +61,14 @@ async function downloadLcscs(lcscs: string[]): Promise<void> {
       params: {
         lcscs,
         staging_dir: `${ws.root}/.kibrary/staging`,
-        concurrency: ws.settings.concurrency,
+        // Default to 4 if settings somehow didn't load — sidecar accepts
+        // any positive integer.
+        concurrency: ws.settings?.concurrency ?? 4,
       },
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[Queue] parts.download RPC failed:', msg);
-    // Surface the error on every dispatched LCSC and as a toast so the
-    // user actually sees something happened.
     for (const lcsc of lcscs) setStatus(lcsc, 'failed', msg);
     pushToast({ kind: 'error', message: `Download failed: ${msg}` });
   } finally {
@@ -116,9 +137,19 @@ export default function Queue() {
           <Show
             when={!hasWorkspace()}
             fallback={
+              // The button is only `disabled` while a batch is in flight,
+              // not when the queue is empty — clicking on an empty queue
+              // surfaces a "queue is empty" toast inside downloadLcscs()
+              // instead of silently no-op'ing. This was the alpha.9
+              // "Download all does nothing" trap.
               <button
                 class="px-2 py-1 text-xs bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 rounded disabled:opacity-40 disabled:cursor-not-allowed"
-                disabled={downloadAllDisabled()}
+                disabled={isDownloading()}
+                title={
+                  queuedItems().length === 0
+                    ? 'Paste LCSC codes above and click Detect to populate the queue.'
+                    : `Download ${queuedItems().length} queued part(s).`
+                }
                 onClick={downloadAll}
               >
                 <Show

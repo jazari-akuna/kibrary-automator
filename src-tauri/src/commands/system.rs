@@ -13,6 +13,16 @@ pub fn app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+/// Cleanly exit the app. Used by the post-install update flow: after the
+/// updater's `downloadAndInstall()` lands the new .deb, the user clicks
+/// "Quit Kibrary" and we call this to terminate the running (now-stale)
+/// process. Re-launching is intentionally left to the user — auto-relaunch
+/// from inside a polkit-mediated install transition is unreliable.
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[tauri::command]
 pub async fn sidecar_ping(sidecar: State<'_, Arc<Sidecar>>) -> Result<Value, String> {
     sidecar.call("system.ping", json!({})).await.map_err(|e| e.to_string())

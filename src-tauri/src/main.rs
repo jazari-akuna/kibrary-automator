@@ -136,6 +136,7 @@ fn main() -> anyhow::Result<()> {
     builder
         .invoke_handler(tauri::generate_handler![
             commands::app_version,
+            commands::quit_app,
             commands::sidecar_ping,
             commands::sidecar_version,
             commands::sidecar_call,
