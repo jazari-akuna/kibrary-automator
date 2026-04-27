@@ -18,7 +18,7 @@
  * because download never captured the part's category metadata.
  */
 
-import { createSignal, createEffect, For, Show } from 'solid-js';
+import { createSignal, createEffect, Index, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { queueItems, setStatus } from '~/state/queue';
 import { currentWorkspace } from '~/state/workspace';
@@ -211,43 +211,50 @@ export default function ReviewBulkAssign() {
                 </tr>
               </thead>
               <tbody>
-                <For each={rows()}>
+                {/*
+                  Use <Index> instead of <For>: updateRow returns new row
+                  objects every time, so <For> (which keys on object
+                  identity) recreated each <tr> — including <input> —
+                  per keystroke and stole focus. <Index> keeps DOM stable
+                  by keying on position; only the accessed values update.
+                */}
+                <Index each={rows()}>
                   {(row) => (
-                    <tr class="border-b border-zinc-800 align-middle" data-testid="bulk-row" data-lcsc={row.lcsc}>
-                      <td class="py-1.5 pr-3 font-mono">{row.lcsc}</td>
-                      <td class="py-1.5 pr-3 text-zinc-300 max-w-xs truncate" title={row.description}>
-                        {row.description || <span class="text-zinc-600 italic">—</span>}
+                    <tr class="border-b border-zinc-800 align-middle" data-testid="bulk-row" data-lcsc={row().lcsc}>
+                      <td class="py-1.5 pr-3 font-mono">{row().lcsc}</td>
+                      <td class="py-1.5 pr-3 text-zinc-300 max-w-xs truncate" title={row().description}>
+                        {row().description || <span class="text-zinc-600 italic">—</span>}
                       </td>
                       <td class="py-1.5 pr-3 font-mono text-zinc-400" data-testid="bulk-suggested">
-                        {row.suggestedLib}
-                        <Show when={row.isExisting}>
+                        {row().suggestedLib}
+                        <Show when={row().isExisting}>
                           <span class="ml-2 text-[10px] text-amber-400">(exists)</span>
                         </Show>
                       </td>
                       <td class="py-1.5 pr-3">
                         <LibPicker
-                          value={row.overrideLib}
-                          existing={row.existingLibs}
-                          suggested={row.suggestedLib}
-                          matches={row.matches}
-                          disabled={row.saveState === 'saving' || row.saveState === 'ok'}
-                          onChange={(v) => updateRow(row.lcsc, { overrideLib: v })}
+                          value={row().overrideLib}
+                          existing={row().existingLibs}
+                          suggested={row().suggestedLib}
+                          matches={row().matches}
+                          disabled={row().saveState === 'saving' || row().saveState === 'ok'}
+                          onChange={(v) => updateRow(row().lcsc, { overrideLib: v })}
                         />
                       </td>
                       <td class="py-1.5 text-center w-8">
-                        <Show when={row.saveState === 'saving'}>
+                        <Show when={row().saveState === 'saving'}>
                           <span class="text-blue-400 text-xs animate-pulse">…</span>
                         </Show>
-                        <Show when={row.saveState === 'ok'}>
+                        <Show when={row().saveState === 'ok'}>
                           <span class="text-emerald-400 text-xs">✓</span>
                         </Show>
-                        <Show when={row.saveState === 'error'}>
-                          <span class="text-red-400 text-xs" title={row.errorMsg}>✗</span>
+                        <Show when={row().saveState === 'error'}>
+                          <span class="text-red-400 text-xs" title={row().errorMsg}>✗</span>
                         </Show>
                       </td>
                     </tr>
                   )}
-                </For>
+                </Index>
               </tbody>
             </table>
           </div>

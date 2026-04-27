@@ -2,6 +2,12 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.13] — 2026-04-27
+
+### Fixed
+- **LibPicker no longer steals focus on every keystroke.** Typing into the Bulk-Assign library search defocused the input after each character — only the first letter actually landed. Cause: `ReviewBulkAssign` used `<For each={rows()}>` and `updateRow` returned brand-new row objects on every change, so SolidJS's identity-keyed `<For>` recreated the entire `<tr>` DOM (including the `<input>`) per keystroke. Switched to `<Index>` which keys on position, keeping the input element alive across updates so focus + caret + typing all persist.
+- **LibPicker popover no longer clipped by the table.** Results extended below the visible row and forced scrolling because the popover was `position: absolute` inside an ancestor with `overflow-x-auto`. Now renders into a `<Portal>` at document body root with `position: fixed` coordinates derived from the input's bounding rect, capped at half the viewport height. Repositions on scroll/resize/open. Adds `e2e/specs/download-all.spec.ts` regression test that multi-char-types into the picker and asserts the full string lands.
+
 ## [26.4.27-alpha.12] — 2026-04-27
 
 ### Fixed

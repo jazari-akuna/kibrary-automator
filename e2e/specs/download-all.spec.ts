@@ -325,6 +325,40 @@ async function main() {
     }
     log(`✅ Bulk-Assign: category-derived suggestion (${suggested})`);
 
+    // 9b. Regression test for the alpha.12 LibPicker defocus bug — typing
+    //     into the picker used to lose focus after each keystroke because
+    //     the parent <For> recreated the row's DOM on every state update.
+    //     Switching to <Index> kept the input alive across updates. This
+    //     test multi-char-types and asserts the full string lands; if focus
+    //     were lost after char 1, only char 1 would arrive.
+    log('typing multi-char into Bulk-Assign LibPicker (defocus regression)');
+    const picker = await waitFor(
+      () => findElement(sid, '[data-testid="bulk-row"] input'),
+      5_000, 500, 'bulk-assign LibPicker input',
+    );
+    // Don't try to clear — WebKitWebDriver returns "element not interactable"
+    // for the <input>'s clear endpoint. Append instead and verify the suffix
+    // landed; if focus were lost after char 1, only char 1 would arrive.
+    const valueBefore = await execScript(sid, `
+      var el = document.querySelector('[data-testid="bulk-row"] input');
+      return el ? el.value : null;
+    `) as string | null;
+    const SUFFIX = '_v2';
+    await elType(sid, picker as string, SUFFIX);
+    const valueAfter = await execScript(sid, `
+      var el = document.querySelector('[data-testid="bulk-row"] input');
+      return el ? el.value : null;
+    `) as string | null;
+    log(`  before=${JSON.stringify(valueBefore)} after=${JSON.stringify(valueAfter)}`);
+    if (valueAfter !== valueBefore + SUFFIX) {
+      throw new Error(
+        `LibPicker defocus regression: appended "${SUFFIX}" but value went ` +
+        `${JSON.stringify(valueBefore)} → ${JSON.stringify(valueAfter)} ` +
+        `(expected ${JSON.stringify(valueBefore + SUFFIX)}) — input lost focus mid-type`,
+      );
+    }
+    log('✅ Bulk-Assign LibPicker keeps focus across keystrokes');
+
     // 10. Thumbnail asserts (alpha.12 regression coverage): probe the photo
     //     endpoint via the sidecar to prove the embedded API key works.
     //     alpha.11 shipped with the API key missing its leading `-`, which
