@@ -2,6 +2,14 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.8] — 2026-04-27
+
+### Fixed
+- **Auto-updater now actually installs the new release.** alpha.7 downloaded the update but never installed it on .deb-based systems (every Linux user, since .deb is the primary distribution). Root cause: `tauri-plugin-updater` searches `latest.json` for `<os>-<arch>-<installer>` first (e.g. `linux-x86_64-deb`) before falling back to `<os>-<arch>`. We were only publishing the fallback, with the AppImage URL. The .deb-installed binary's `bundle_type=Deb` makes it call `install_deb(bytes)`, which calls `infer::archive::is_deb(bytes)` — that returns `false` for AppImage bytes, prints a `"update is not a valid deb package"` warning, and silently returns. No UI error.
+  Fixed by publishing per-installer platform entries: `linux-x86_64-deb` → .deb URL + .deb.sig, `linux-x86_64-appimage` → AppImage URL + AppImage.sig, `linux-x86_64-rpm` → .rpm URL + .rpm.sig, plus the original `linux-x86_64` fallback.
+  Empirically verified end-to-end: downloaded .deb URL has correct `!<arch>\n` magic, `dpkg -i` installs cleanly inside a fresh Ubuntu 24.04 container (`Setting up kibrary (26.4.27-alpha.7) ...`), and `dpkg -l` confirms the package version is now the new one.
+- **`scripts/release.sh` verify step now asserts all four installer platform keys are present** in the published `latest.json` and refuses to proceed if any are missing. This prevents the alpha.7-class bug from ever silently shipping again.
+
 ## [26.4.27-alpha.7] — 2026-04-27
 
 ### Fixed

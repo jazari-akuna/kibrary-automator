@@ -64,6 +64,8 @@ gpg --batch --yes --detach-sign --armor --local-user 8E0FDC9F2E542C63 \
 
 echo "==> Building latest.json"
 APPIMAGE_SIG="$(cat "${APPIMAGE}.sig")"
+DEB_SIG="$(cat "${DEB}.sig")"
+RPM_SIG="$(cat "${RPM}.sig")"
 PUB_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 # Must be named exactly "latest.json" — `gh release create <file>#<label>` does
 # NOT rename the asset (it sets a display label, not a filename), so a mktemp
@@ -72,12 +74,39 @@ PUB_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 LATEST_DIR="$(mktemp -d)"
 LATEST_JSON="$LATEST_DIR/latest.json"
 trap 'rm -rf "$LATEST_DIR"' EXIT
+
+# tauri-updater searches platform keys in this order:
+#   1.  "<os>-<arch>-<installer>"   (e.g. linux-x86_64-deb)
+#   2.  "<os>-<arch>"               (fallback)
+#
+# The <installer> string comes from the bundle_type baked into the running
+# binary at bundle time (see tauri-utils/src/platform.rs::bundle_type).
+# A user who installed the .deb has bundle_type=Deb; if we only publish the
+# fallback "linux-x86_64" with the AppImage URL, the deb installer downloads
+# the AppImage bytes and tries to install them as a .deb (infer::is_deb
+# returns false → silent fail with "update is not a valid deb package").
+# This was the alpha.7 "downloads but doesn't install" bug.
+#
+# So we emit ONE entry per installer plus a fallback. Each installer entry
+# uses the matching artifact's own .sig (tauri-bundler signs all three).
 cat > "$LATEST_JSON" <<EOF
 {
   "version": "${VER}",
   "notes": "See the GitHub release page for the full changelog.",
   "pub_date": "${PUB_DATE}",
   "platforms": {
+    "linux-x86_64-appimage": {
+      "signature": "${APPIMAGE_SIG}",
+      "url": "https://github.com/jazari-akuna/kibrary-automator/releases/download/${TAG}/Kibrary_${VER}_amd64.AppImage"
+    },
+    "linux-x86_64-deb": {
+      "signature": "${DEB_SIG}",
+      "url": "https://github.com/jazari-akuna/kibrary-automator/releases/download/${TAG}/Kibrary_${VER}_amd64.deb"
+    },
+    "linux-x86_64-rpm": {
+      "signature": "${RPM_SIG}",
+      "url": "https://github.com/jazari-akuna/kibrary-automator/releases/download/${TAG}/Kibrary-${VER}-1.x86_64.rpm"
+    },
     "linux-x86_64": {
       "signature": "${APPIMAGE_SIG}",
       "url": "https://github.com/jazari-akuna/kibrary-automator/releases/download/${TAG}/Kibrary_${VER}_amd64.AppImage"
@@ -115,6 +144,18 @@ if [ "$STATUS" != "200" ]; then
   exit 1
 fi
 RESOLVED_VER="$(curl -sL "$URL" | python3 -c "import json,sys;print(json.load(sys.stdin)['version'])")"
+# Verify all three installer platform keys are present and resolve to the
+# matching artifact URL. Missing any of these means a class of users
+# (deb / rpm / appimage installers) silently fails to update.
+EXPECTED_KEYS="linux-x86_64-appimage linux-x86_64-deb linux-x86_64-rpm linux-x86_64"
+ACTUAL_KEYS="$(curl -sL "$URL" | python3 -c "import json,sys; print(' '.join(sorted(json.load(sys.stdin)['platforms'].keys())))")"
+for KEY in $EXPECTED_KEYS; do
+  case " $ACTUAL_KEYS " in
+    *" $KEY "*) ;;
+    *) echo "  WARNING: latest.json missing required platform key '$KEY' — that installer class will not auto-update" >&2; exit 1 ;;
+  esac
+done
+echo "  OK: latest.json has all installer platform keys: $ACTUAL_KEYS"
 if [ "$RESOLVED_VER" != "$VER" ]; then
   echo "  WARNING: endpoint resolves to $RESOLVED_VER, expected $VER" >&2
   exit 1
