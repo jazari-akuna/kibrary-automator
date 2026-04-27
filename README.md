@@ -115,6 +115,23 @@ The app works fully offline-friendly without it.
 
 ## Quick start
 
+### Install from a release (recommended)
+
+Pre-built installers are published on the [Releases page](https://github.com/jazari-akuna/kibrary-automator/releases). Each release ships AppImage / .deb / .rpm / Flatpak for Linux and a signed `.exe` setup for Windows; macOS .dmg is on the way.
+
+```bash
+# Debian/Ubuntu
+sudo apt install ./Kibrary_<version>_amd64.deb
+
+# Fedora/RHEL
+sudo rpm -i Kibrary-<version>-1.x86_64.rpm
+
+# AppImage (any glibc-based Linux)
+chmod +x Kibrary_<version>_amd64.AppImage && ./Kibrary_<version>_amd64.AppImage
+```
+
+The Python sidecar is bundled inside the installer — no Python install required on the target machine. The app also self-updates from GitHub Releases (signed with a minisign Ed25519 key).
+
 ### Run the legacy CLI (still works)
 
 The original `kibrary_automator.py` script lives at the repo root and is unchanged through the P1 milestone. See [the CLI section below](#legacy-cli) for details. Most users should use the new desktop app.
@@ -200,13 +217,11 @@ Lines with `#` are comments. The `qty` field is preserved in `meta.json` for dow
 
 ## Project status & roadmap
 
-**Currently shipped (P1 — MVP):** everything the screenshots show — paste import, parallel download, three review modes, in-app property editor + kicanvas previews + KiCad handoff, library commit + git auto-commit, KiCad install detection + table registration, first-run wizard, optional search.raph.io.
+**Currently shipped (alpha):** all of P1 (MVP), P2 (Library Management), and most of P3 — paste import, parallel download, three review modes, in-app property editor + kicanvas previews + KiCad handoff, library commit + git auto-commit, KiCad install detection + table registration, first-run wizard, optional search.raph.io with secure keychain storage, browse/rename/move/delete in committed libraries, library metadata editor, light/dark theme, signed Linux installers (AppImage/deb/rpm/Flatpak) + Windows .exe, GitHub-Releases auto-update via minisign.
 
-**Next (P2 — Library management):** browse / rename / move / delete components in already-committed libraries, library-level metadata editor, S-expression-aware diff preview before commit.
+**Pending:** macOS .dmg build (needs a Mac), SignPath Foundation enrollment for Windows code signing, full S-expression-aware diff preview before commit, BOM/JLC stock-check blocks, full STEP rendering inside the app.
 
-**Later (P3 — Polish):** signed installers (mac/win), auto-update, BOM block, JLC stock-check block, light/dark theme, search.raph.io batch endpoint, full STEP rendering.
-
-Per-phase implementation plans live under [`docs/superpowers/plans/`](docs/superpowers/plans/).
+Per-phase implementation plans live under [`docs/superpowers/plans/`](docs/superpowers/plans/); the per-version changelog is in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
