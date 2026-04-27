@@ -1,6 +1,9 @@
+import logging
 import os
 import sys
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 from kibrary_sidecar import __version__
 from kibrary_sidecar import workspace as ws
@@ -103,7 +106,46 @@ def library_get_3d_info(p: dict) -> dict:
 
 
 def library_suggest(p: dict) -> dict:
-    return {"library": category_map.suggest_library(p["category"])}
+    """Suggest a library name for a part by category, optionally matching
+    against libraries already present in *workspace*.
+
+    Returns:
+        library      (str)         — the recommended library name
+        is_existing  (bool)        — True if `library` already exists in workspace
+        existing     (list[str])   — all existing library names (for the picker)
+        matches      (list[str])   — existing libs that fuzzy-match the suggestion,
+                                      sorted by relevance (best match first)
+
+    `workspace` is optional for backwards compat with old callers — when
+    omitted, only the category-derived name comes back (no matching).
+    """
+    derived = category_map.suggest_library(p.get("category", ""))
+    workspace_path = p.get("workspace")
+    if not workspace_path:
+        return {"library": derived, "is_existing": False, "existing": [], "matches": []}
+
+    try:
+        existing_libs = lib_scanner.list_libraries(Path(workspace_path))
+        existing_names = sorted({lib["name"] for lib in existing_libs})
+    except Exception as exc:
+        log.warning("library.suggest: list_libraries failed: %s", exc)
+        return {"library": derived, "is_existing": False, "existing": [], "matches": []}
+
+    is_existing = derived in existing_names
+    # Fuzzy matches: case-insensitive prefix or substring on the derived name
+    # without the _KSL suffix (so `Resistors_KSL` matches `Resistors`,
+    # `Resistors_v2`, `MyResistors`). Cheap O(n) scan — workspaces have <1000 libs.
+    needle = derived.lower().replace("_ksl", "")
+    matches = sorted(
+        (n for n in existing_names if needle in n.lower() and n != derived),
+        key=lambda n: (not n.lower().startswith(needle), len(n)),
+    )
+    return {
+        "library": derived,
+        "is_existing": is_existing,
+        "existing": existing_names,
+        "matches": matches,
+    }
 
 
 def library_commit(p: dict) -> dict:

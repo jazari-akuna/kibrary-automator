@@ -58,6 +58,35 @@ RPM="$RD/rpm/Kibrary-${VER}-1.x86_64.rpm"
 
 [ -f "$APPIMAGE" ] || { echo "error: $APPIMAGE missing"; exit 2; }
 
+echo "==> Verify embedded search.raph.io key actually works"
+# alpha.11 shipped with the API key missing its leading `-` (I mistook the
+# character for a markdown bullet when reading it from a transcript). The
+# key happens to authenticate successfully against /api/search but the
+# /api/kibrary/parts/<lcsc>/photo endpoint requires the leading `-` — so
+# unit tests passed, smoke-real passed, smoke-ui passed, and thumbnails
+# silently 401'd in production. This step decodes the binary's embedded
+# key and hits the live photo endpoint to prove the credential is valid.
+KEY_BLOB="$(find "$ROOT/src-tauri/target/release/build/" -name search_api_key.bin -newer "$ROOT/src-tauri/build.rs" 2>/dev/null \
+            | xargs -I{} stat -c '%Y {}' {} 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
+[ -n "$KEY_BLOB" ] && [ -f "$KEY_BLOB" ] || { echo "  error: cannot find current search_api_key.bin"; exit 2; }
+EMBEDDED_KEY="$(python3 -c "
+mask=bytes([0x9e,0x4c,0xa1,0x33,0x77,0xd1,0x52,0x08,0xb6,0x2f,0xee,0x14,
+            0x8b,0x6a,0xc7,0x39,0x05,0xfd,0x91,0x4d,0x28,0xb3,0x76,0x1c,
+            0xa0,0x68,0xdb,0x47,0xf2,0x59,0x82,0x3a])
+data=open('$KEY_BLOB','rb').read()
+print(''.join(chr(b^mask[i%32]) for i,b in enumerate(data)))")"
+[ -n "$EMBEDDED_KEY" ] || { echo "  error: embedded key is empty — \$KIBRARY_SEARCH_API_KEY was not set during build"; exit 1; }
+PHOTO_HTTP="$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $EMBEDDED_KEY" \
+              "https://search.raph.io/api/kibrary/parts/C25804/photo")"
+if [ "$PHOTO_HTTP" != "200" ]; then
+    echo "  ❌ Embedded key fails live /photo probe (HTTP $PHOTO_HTTP) — refusing to ship a binary with broken thumbnails"
+    exit 1
+fi
+echo "  OK: embedded search.raph.io key is valid (HTTP 200 on live /photo endpoint)"
+echo
+
+
 echo "==> Smoke test 1/2: sidecar + real kicad-cli + real JLC network (smoke-real)"
 # Catches the class of bugs unit tests / mocks cannot:
 #   - file-layout mismatches (alpha.6 download bug)

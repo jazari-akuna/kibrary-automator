@@ -20,11 +20,14 @@ Frontend uses these to drive both the per-row progress bar and the
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from kibrary_sidecar import jlc
 from kibrary_sidecar import icons
+from kibrary_sidecar import search_client
+from kibrary_sidecar import staging as staging_mod  # `staging` param shadows the module
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +118,30 @@ async def run_batch(
                     await asyncio.to_thread(icons.render_for_part, staging / lcsc, lcsc)
                 except Exception as exc:
                     log.warning("Icon render error for %s (non-fatal): %s", lcsc, exc)
+
+                # Best-effort metadata capture — fetch category/description from
+                # search.raph.io and write meta.json so downstream UI (e.g.
+                # ReviewBulkAssign) can suggest a sensible library name. Without
+                # this every part falls back to Misc_KSL because library.suggest
+                # gets an empty category. Never fails the download.
+                try:
+                    api_key = os.environ.get("KIBRARY_SEARCH_API_KEY", "")
+                    part = await asyncio.to_thread(search_client.get_part, lcsc, api_key)
+                    if part:
+                        meta = {
+                            "lcsc": lcsc,
+                            "category": part.get("category"),
+                            "subcategory": part.get("subcategory"),
+                            "description": part.get("description"),
+                            "mpn": part.get("mpn"),
+                            "manufacturer": part.get("manufacturer"),
+                            "package": part.get("package"),
+                        }
+                        # Drop None-valued keys so meta.json stays compact.
+                        meta = {k: v for k, v in meta.items() if v is not None}
+                        await asyncio.to_thread(staging_mod.write_meta, staging / lcsc, meta)
+                except Exception as exc:
+                    log.warning("Meta fetch error for %s (non-fatal): %s", lcsc, exc)
 
             if emit:
                 await emit(

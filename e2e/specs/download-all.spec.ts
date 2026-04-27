@@ -297,6 +297,57 @@ async function main() {
     if (size < 100) throw new Error(`${sym} suspiciously small (${size} bytes)`);
     log(`✅ disk: ${sym} → ${size} bytes`);
 
+    // 9. Bulk-Assign asserts (alpha.12 regression coverage):
+    //    - the suggested library MUST be category-derived. C25804 is a
+    //      Resistor on JLCPCB so the picker should propose `Resistors_KSL`,
+    //      NOT the catch-all `Misc_KSL`. The bug it pins down: alpha.11
+    //      and earlier never wrote `category` to meta.json during download,
+    //      so library.suggest always got an empty category and fell back to
+    //      Misc for every part regardless of what it actually was.
+    log('asserting Bulk-Assign suggested library is category-derived');
+    const suggested = await waitFor(
+      async () => {
+        const el = await findElement(sid, '[data-testid="bulk-suggested"]');
+        if (!el) return null;
+        const t = (await elText(sid, el)).trim();
+        // wait until a definitive value lands (skip empty/loading states)
+        if (!t || t.toLowerCase() === 'loading…') return null;
+        return t;
+      },
+      30_000, 1_000, 'bulk-suggested cell populated',
+    );
+    log(`  suggested = ${JSON.stringify(suggested)}`);
+    if (/^Misc_KSL/i.test(suggested)) {
+      throw new Error(
+        `Bulk-Assign suggested "${suggested}" — alpha.11 regression: ` +
+        `category not captured during download (expected something like "Resistors_KSL")`,
+      );
+    }
+    log(`✅ Bulk-Assign: category-derived suggestion (${suggested})`);
+
+    // 10. Thumbnail asserts (alpha.12 regression coverage): probe the photo
+    //     endpoint via the sidecar to prove the embedded API key works.
+    //     alpha.11 shipped with the API key missing its leading `-`, which
+    //     authenticated against /api/search but 401'd on /photo. Smoke tests
+    //     passed but every thumbnail in the running app rendered as red `!`.
+    log('probing search.fetch_photo via sidecar');
+    const photo = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      window.__TAURI_INTERNALS__.invoke('sidecar_call', {
+        method: 'search.fetch_photo',
+        params: { lcsc: 'C25804' },
+      }).then(function(r) { done({ ok: true, hasUrl: !!(r && r.data_url), error: r && r.error }); })
+        .catch(function(e) { done({ ok: false, e: String(e) }); });
+    `);
+    log(`  fetch_photo result = ${JSON.stringify(photo)}`);
+    if (!photo?.ok || !photo.hasUrl) {
+      throw new Error(
+        `search.fetch_photo failed (error=${photo?.error ?? photo?.e ?? 'no data_url'}) — ` +
+        `embedded search.raph.io API key is invalid or revoked`,
+      );
+    }
+    log('✅ thumbnails: search.fetch_photo returned a data URL');
+
     await screenshot(sid, `${OUT}/download-all.png`);
     log('ALL UI SMOKE TESTS PASSED');
   } catch (e) {

@@ -2,6 +2,21 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.12] — 2026-04-27
+
+### Fixed
+- **Thumbnails work again.** alpha.11 shipped with the search.raph.io API key missing its leading `-`, so `/api/kibrary/parts/<lcsc>/photo` 401'd and every part rendered as a red broken-image icon. Smoke-real and smoke-ui both passed because neither exercised the thumbnail path. `release.sh` now decodes the just-built binary's embedded key and probes the live `/photo` endpoint before publishing — any 401 aborts the release. The smoke-ui spec also asserts `search.fetch_photo` returns a data URL via the sidecar so the regression can't recur silently.
+- **Bulk-Assign to Libraries: complete rebuild.** Four problems in one cell:
+  1. **Contrast.** The native `<select>` rendered light-grey `<option>` text on a white background even in dark theme — `<option>` styling can't be controlled by parent CSS. Replaced with a custom SolidJS `LibPicker` (`src/components/LibPicker.tsx`) that uses themable `<button>` rows.
+  2. **Existing libraries weren't listed.** The old picker hard-coded only two options (the suggestion + "Create new…"). New picker calls `library.suggest({category, workspace})` which now also returns the full set of existing library names + sidecar-pre-matched candidates.
+  3. **No search.** Picker was a 2-option `<select>` with no filter. New `LibPicker` is a text input with a filtered popover — type to narrow, click to pick, free-text creates new.
+  4. **Every part defaulted to `Misc_KSL`.** The download flow never wrote `category` to `meta.json`, so `library.suggest` got an empty category and fell back to the catch-all on every part. The downloader now best-effort-fetches `category/subcategory/description/mpn/manufacturer/package` from `search.raph.io/api/parts/<lcsc>` after each successful download and writes `meta.json`. Resistors → `Resistors_KSL`, MCUs → `MCU_KSL`, etc., per `category_map.default.json`. The smoke-ui spec asserts the C25804 (a Resistor) gets a non-`Misc_*` suggestion.
+
+### Added
+- **`scripts/release.sh` verify-key step.** XOR-decodes the embedded `search_api_key.bin`, hits the live `/api/kibrary/parts/C25804/photo` endpoint, refuses to publish on any non-200. Catches the alpha.11 class of bug at build time.
+- **`src/components/LibPicker.tsx`** — a small searchable combobox component reused by ReviewBulkAssign. Three label kinds: `new` (suggested category-derived name), `match` (sidecar-fuzzy-matched existing lib), `exists` (every other existing lib in the workspace).
+- **`library.suggest` is now workspace-aware.** Returns `{library, is_existing, existing, matches}`. Old single-key callers still work (back-compat: `existing` defaults to empty list).
+
 ## [26.4.27-alpha.11] — 2026-04-27
 
 ### Fixed
