@@ -9,7 +9,7 @@
  * Dismissed by the "[Get started →]" button which calls dismissFirstRun().
  */
 
-import { createResource, createSignal, For, Show } from 'solid-js';
+import { createEffect, createResource, createSignal, For, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { currentWorkspace, dismissFirstRun } from '~/state/workspace';
 
@@ -60,11 +60,22 @@ function PaneKiCad(props: {
     invoke<{ installs: KiCadInstall[] }>('sidecar_call', {
       method: 'kicad.detect',
       params: {},
-    }).then((r) => r.installs)
+    }).then((r) => r.installs ?? [])
   );
 
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
+
+  // Auto-select the first detected install once the resource resolves, but
+  // only if the user hasn't already made a choice. This prevents the user
+  // from being stuck on a "Get started" button that *looks* enabled but
+  // would skip past KiCad entirely.
+  createEffect(() => {
+    const list = installs();
+    if (!list || list.length === 0) return;
+    if (props.selected != null) return;
+    void save(list[0].id);
+  });
 
   const save = async (id: string | null) => {
     props.onSelect(id);
