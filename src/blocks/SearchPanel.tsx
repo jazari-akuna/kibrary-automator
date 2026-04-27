@@ -67,15 +67,35 @@ interface PhotoResponse {
   error?: string;
 }
 
+// Module-scoped photo cache — lives across SearchPanel mounts and across
+// every result row that happens to share an LCSC.  createResource alone
+// memoises within one component instance, but a fresh search query that
+// returns the same LCSC will create a new resource and re-fire unless we
+// dedupe at this level.  The sidecar also has its own LRU; this just
+// avoids the IPC roundtrip entirely on a cache hit.
+//
+// We cache the in-flight Promise (not the resolved value) so two
+// thumbnails for the same LCSC mounted at the same instant share a
+// single sidecar call.
+const photoCache = new Map<string, Promise<PhotoResponse>>();
+
+function fetchPhoto(lcsc: string): Promise<PhotoResponse> {
+  const hit = photoCache.get(lcsc);
+  if (hit) return hit;
+  const p = invoke<PhotoResponse>('sidecar_call', {
+    method: 'search.fetch_photo',
+    params: { lcsc },
+  }).catch((e) => {
+    // Don't poison the cache on transient errors — let the next mount retry.
+    photoCache.delete(lcsc);
+    throw e;
+  });
+  photoCache.set(lcsc, p);
+  return p;
+}
+
 function AuthedThumbnail(props: AuthedThumbnailProps) {
-  const [photo] = createResource(
-    () => props.lcsc,
-    async (lcsc) =>
-      invoke<PhotoResponse>('sidecar_call', {
-        method: 'search.fetch_photo',
-        params: { lcsc },
-      }),
-  );
+  const [photo] = createResource(() => props.lcsc, fetchPhoto);
 
   // Failure modes the fallback distinguishes (alpha.3 user feedback: a
   // silent grey square is indistinguishable from "still loading"):

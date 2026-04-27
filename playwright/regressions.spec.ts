@@ -24,6 +24,11 @@ interface MockOpts {
   firstRun?: boolean;
   apiKey?: string;
   kicadInstalls?: Array<{ kind: string; binary: string; version: string }>;
+  /** Bug 7: artificial delay (ms) on every search.fetch_photo call to
+   *  simulate slow upstream and prove fetches run in parallel, not serially. */
+  photoDelayMs?: number;
+  /** Bug 7: override the default 2-result search.query payload. */
+  searchResults?: Array<{ lcsc: string; mpn: string; description: string }>;
 }
 
 function buildTauriInitScript(opts: MockOpts = {}): string {
@@ -34,6 +39,8 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
       { kind: 'native', binary: '/usr/bin/kicad', version: '8.0.4' },
       { kind: 'flatpak', binary: 'flatpak run org.kicad.KiCad', version: '8.0.4' },
     ],
+    photoDelayMs = 0,
+    searchResults,
   } = opts;
 
   return `
@@ -42,6 +49,8 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
   const FIRST_RUN = ${JSON.stringify(firstRun)};
   const API_KEY = ${JSON.stringify(apiKey)};
   const KICAD_INSTALLS = ${JSON.stringify(kicadInstalls)};
+  const PHOTO_DELAY_MS = ${JSON.stringify(photoDelayMs)};
+  const SEARCH_RESULTS_OVERRIDE = ${JSON.stringify(searchResults ?? null)};
 
   const sidecarHandlers = {
     'library.list': () => ({ libraries: [] }),
@@ -77,25 +86,36 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
     'secrets.get': (params) =>
       params.name === 'search_raph_io_api_key' ? { value: API_KEY } : { value: '' },
     'secrets.set': () => ({}),
-    'search.query': (params) => ({
-      results: [
-        { lcsc: 'C25804', mpn: '0603WAF1002T5E', manufacturer: 'UNI-ROYAL',
-          description: '10kΩ ±1% 100mW 0603 Thick Film Resistor',
-          photo_url: 'https://search.raph.io/api/kibrary/parts/C25804/photo' },
-        { lcsc: 'C1525', mpn: 'CL05B104KO5NNNC', manufacturer: 'Samsung',
-          description: '100nF 16V X7R ±10% 0402 MLCC',
-          photo_url: 'https://search.raph.io/api/kibrary/parts/C1525/photo' },
-      ],
-    }),
+    'search.query': (params) => {
+      if (SEARCH_RESULTS_OVERRIDE) {
+        return { results: SEARCH_RESULTS_OVERRIDE };
+      }
+      return {
+        results: [
+          { lcsc: 'C25804', mpn: '0603WAF1002T5E', manufacturer: 'UNI-ROYAL',
+            description: '10kΩ ±1% 100mW 0603 Thick Film Resistor',
+            photo_url: 'https://search.raph.io/api/kibrary/parts/C25804/photo' },
+          { lcsc: 'C1525', mpn: 'CL05B104KO5NNNC', manufacturer: 'Samsung',
+            description: '100nF 16V X7R ±10% 0402 MLCC',
+            photo_url: 'https://search.raph.io/api/kibrary/parts/C1525/photo' },
+        ],
+      };
+    },
     // Sidecar-proxied photo fetch (bypasses webview CORS). Tracked via
     // window.__photoFetches so tests can assert it was actually called
-    // with the expected lcsc.
+    // with the expected lcsc.  When PHOTO_DELAY_MS > 0 the handler returns
+    // a Promise that resolves after the delay, simulating slow upstream
+    // — bug 7 uses this to prove parallel dispatch.
     'search.fetch_photo': (params) => {
       (window).__photoFetches = (window).__photoFetches || [];
-      (window).__photoFetches.push(params);
+      (window).__photoFetches.push({ ...params, t: performance.now() });
       // 1x1 red PNG, base64-encoded.
       const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Zy7d3MAAAAASUVORK5CYII=';
-      return { data_url: 'data:image/png;base64,' + png };
+      const payload = { data_url: 'data:image/png;base64,' + png };
+      if (PHOTO_DELAY_MS > 0) {
+        return new Promise((resolve) => setTimeout(() => resolve(payload), PHOTO_DELAY_MS));
+      }
+      return payload;
     },
   };
 
@@ -356,4 +376,84 @@ test('bug 6 — thumbnails render with embedded API key', async ({ page }) => {
   );
   expect(fetched.length).toBeGreaterThan(0);
   expect(fetched.map((f) => f.lcsc)).toContain('C25804');
+});
+
+// ---------------------------------------------------------------------------
+// Bug 7 — multiple thumbnails load in parallel.
+//
+// Root cause (alpha.4): the Python sidecar's RPC server (rpc.py) was a
+// single-threaded loop that read one request, ran the handler to
+// completion, then read the next. Five thumbnails meant five sequential
+// HTTPS roundtrips to search.raph.io — easily a couple of seconds on a
+// noisy network even though each fetch is independent.
+//
+// Fix: rpc.py now dispatches handlers on a small ThreadPoolExecutor so
+// independent I/O-bound calls overlap. search_client also reuses a
+// module-scoped httpx.Client (TLS handshake amortised) and caches photos
+// in an in-process LRU; the frontend additionally dedupes via a Map.
+//
+// This test mocks search.fetch_photo with a 200ms delay and asserts that
+// 5 thumbnails are all visible within ~500ms of the search resolving.
+// Serial fetching would take ~1000ms+ and fail the assertion.
+// ---------------------------------------------------------------------------
+test('bug 7 — multiple thumbnails load in parallel', async ({ page }) => {
+  const fiveResults = [
+    { lcsc: 'C25804', mpn: 'MPN-1', description: 'Part 1' },
+    { lcsc: 'C1525', mpn: 'MPN-2', description: 'Part 2' },
+    { lcsc: 'C19920', mpn: 'MPN-3', description: 'Part 3' },
+    { lcsc: 'C99999', mpn: 'MPN-4', description: 'Part 4' },
+    { lcsc: 'C77777', mpn: 'MPN-5', description: 'Part 5' },
+  ];
+
+  await mountApp(page, {
+    apiKey: 'real-looking-key',
+    photoDelayMs: 200,
+    searchResults: fiveResults,
+  });
+  await page.getByRole('button', { name: /^Add$/, exact: true }).click();
+  await page.waitForTimeout(200);
+
+  const searchInput = page.getByPlaceholder(/MPN.*description.*LCSC/i).first();
+  await searchInput.fill('parallel-test');
+
+  // Wait for the 5 result rows to appear (search.query is debounced 250 ms
+  // in SearchPanel + zero-delay mock; result list materialises shortly
+  // after the input event). Once the rows exist we start the parallel
+  // clock.
+  const rows = page.locator('ul li', { hasText: /MPN-/ });
+  await expect(rows).toHaveCount(5, { timeout: 2000 });
+
+  const startedAt = await page.evaluate(() => performance.now());
+
+  // All 5 <img> tags must materialise within 500ms — round-trip is 200ms
+  // per call. Parallel ≈ max(200ms) + overhead. Serial would be
+  // 5 × 200ms = 1000ms+ and fail this assertion.
+  const imgs = page.locator('li img');
+  await expect(imgs).toHaveCount(5, { timeout: 500 });
+
+  const elapsed = await page.evaluate((s) => performance.now() - s, startedAt);
+  expect(
+    elapsed,
+    `5 thumbnails took ${elapsed.toFixed(0)}ms — expected < 500ms (proving ` +
+      `parallel dispatch). Anything ≥ 1000ms means the sidecar is back to ` +
+      `serial fetches, which is the alpha.4 perf bug regressing.`,
+  ).toBeLessThan(500);
+
+  // Sanity: the sidecar mock saw 5 calls AND they were issued in a tight
+  // burst (last-issued − first-issued < 50ms). Serial dispatch would
+  // spread them by 200ms+ each.
+  const fetches: Array<{ lcsc: string; t: number }> = await page.evaluate(
+    () =>
+      (window as unknown as { __photoFetches?: Array<{ lcsc: string; t: number }> })
+        .__photoFetches ?? [],
+  );
+  expect(fetches.length).toBe(5);
+  const ts = fetches.map((f) => f.t).sort((a, b) => a - b);
+  const burstSpan = ts[ts.length - 1] - ts[0];
+  expect(
+    burstSpan,
+    `fetch dispatch spread over ${burstSpan.toFixed(0)}ms — expected a tight ` +
+      `burst (< 50ms). A wider spread means the frontend is awaiting each ` +
+      `call before issuing the next.`,
+  ).toBeLessThan(50);
 });
