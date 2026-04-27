@@ -103,12 +103,10 @@ const tauriInitScript = `
           in_stock: true,
         },
       ];
-      // Filter by query keyword if any; otherwise return all 3
-      if (!q) return { results: all };
-      const hits = all.filter((p) =>
-        (p.lcsc + ' ' + p.mpn + ' ' + p.description).toLowerCase().includes(q),
-      );
-      return { results: hits };
+      // Screenshot fixture: return the full diverse result set whenever any
+      // text is typed, so the screenshot shows resistor + cap + MCU thumbnails
+      // side by side rather than narrowing to a single hit.
+      return { results: all };
     },
   };
 
@@ -203,11 +201,86 @@ const tauriInitScript = `
 })();
 `;
 
+// ---------------------------------------------------------------------------
+// Per-LCSC fake product photos (SVG, served by Playwright's network mock).
+//
+// SearchPanel's <AuthedThumbnail> calls
+//   fetch('https://search.raph.io/api/kibrary/parts/<LCSC>/photo',
+//         { headers: { Authorization: 'Bearer <key>' } })
+// and renders the response as a blob URL. With a fake API key the real server
+// would 401, so we intercept the request below and return a hand-drawn SVG
+// that resembles the actual JLCPCB product photo for that LCSC code.
+// ---------------------------------------------------------------------------
+const fakePhotoSvgs: Record<string, string> = {
+  // C25804 — UNI-ROYAL 10kΩ 0603 thick-film resistor (small beige rectangle
+  // with black ends + "10K" silkscreen).
+  C25804: `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+    <rect width="160" height="160" fill="#f4f1ea"/>
+    <rect x="40" y="62" width="80" height="36" rx="3" fill="#1a1a1a"/>
+    <rect x="40" y="62" width="14" height="36" fill="#9a9a9a"/>
+    <rect x="106" y="62" width="14" height="36" fill="#9a9a9a"/>
+    <text x="80" y="86" text-anchor="middle" fill="#f4f1ea" font-family="Arial,sans-serif" font-weight="700" font-size="13">10K</text>
+  </svg>`,
+
+  // C1525 — Samsung CL05B104KO5NNNC 100nF 0402 MLCC (small brown rectangle).
+  C1525: `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+    <rect width="160" height="160" fill="#f4f1ea"/>
+    <rect x="58" y="68" width="44" height="24" rx="2" fill="#7a4a25"/>
+    <rect x="58" y="68" width="9" height="24" fill="#c9c9c9"/>
+    <rect x="93" y="68" width="9" height="24" fill="#c9c9c9"/>
+  </svg>`,
+
+  // C19920 — STMicro STM32G030F6P6, TSSOP-20 (black SOIC body with pins).
+  C19920: `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+    <rect width="160" height="160" fill="#f4f1ea"/>
+    <rect x="44" y="46" width="72" height="68" rx="2" fill="#1a1a1a"/>
+    <circle cx="54" cy="56" r="2.5" fill="#666"/>
+    <text x="80" y="82" text-anchor="middle" fill="#dcdcdc" font-family="Arial,sans-serif" font-weight="600" font-size="9">STM32</text>
+    <text x="80" y="94" text-anchor="middle" fill="#dcdcdc" font-family="Arial,sans-serif" font-weight="600" font-size="9">G030F6</text>
+    <g fill="#c9c9c9">
+      <rect x="36" y="50" width="8" height="3"/>
+      <rect x="36" y="57" width="8" height="3"/>
+      <rect x="36" y="64" width="8" height="3"/>
+      <rect x="36" y="71" width="8" height="3"/>
+      <rect x="36" y="78" width="8" height="3"/>
+      <rect x="36" y="85" width="8" height="3"/>
+      <rect x="36" y="92" width="8" height="3"/>
+      <rect x="36" y="99" width="8" height="3"/>
+      <rect x="36" y="106" width="8" height="3"/>
+      <rect x="116" y="50" width="8" height="3"/>
+      <rect x="116" y="57" width="8" height="3"/>
+      <rect x="116" y="64" width="8" height="3"/>
+      <rect x="116" y="71" width="8" height="3"/>
+      <rect x="116" y="78" width="8" height="3"/>
+      <rect x="116" y="85" width="8" height="3"/>
+      <rect x="116" y="92" width="8" height="3"/>
+      <rect x="116" y="99" width="8" height="3"/>
+      <rect x="116" y="106" width="8" height="3"/>
+    </g>
+  </svg>`,
+};
+
+function fallbackPhotoSvg(lcsc: string): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+    <rect width="160" height="160" fill="#f4f1ea"/>
+    <text x="80" y="86" text-anchor="middle" fill="#666" font-family="Arial,sans-serif" font-size="14">${lcsc}</text>
+  </svg>`;
+}
+
 test('snapshot route', async ({ page }) => {
   fs.mkdirSync(outDir, { recursive: true });
 
   // Inject the Tauri mock before any page scripts execute.
   await page.addInitScript({ content: tauriInitScript });
+
+  // Intercept thumbnail HTTP requests and serve a hand-drawn SVG matching
+  // the LCSC code, so screenshots look polished without needing a real key.
+  await page.route('**/api/kibrary/parts/*/photo', async (route, request) => {
+    const m = request.url().match(/\/parts\/([^/?]+)\/photo/);
+    const lcsc = m?.[1] ?? 'C0';
+    const svg = fakePhotoSvgs[lcsc] ?? fallbackPhotoSvg(lcsc);
+    await route.fulfill({ status: 200, contentType: 'image/svg+xml', body: svg });
+  });
 
   await page.goto(route);
   await page.waitForLoadState('networkidle');
