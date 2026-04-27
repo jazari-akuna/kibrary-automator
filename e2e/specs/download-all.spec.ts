@@ -211,6 +211,38 @@ async function main() {
     await elClick(sid, addBtnId as string);
     await new Promise((r) => setTimeout(r, 500));
 
+    // 3b. alpha.16: capture pristine Add room (search pane open by default,
+    //     no input, no queue) — the screenshot the user inspects to verify
+    //     the toggle button isn't crowding any other button.
+    await screenshot(sid, `${OUT}/add-room-empty.png`);
+
+    // 3c. alpha.16: open Stock dropdown to verify (a) both checkboxes
+    //     default to checked, (b) the dropdown doesn't visually collide
+    //     with the search-pane-toggle now that the toggle is inline (not
+    //     absolute-positioned).
+    log('opening Stock dropdown to assert default-on + no toggle collision');
+    const stockBtn = await waitFor(
+      () => findElement(sid, '[data-testid="stock-btn"]'),
+      5_000, 250, 'Stock button',
+    );
+    await elClick(sid, stockBtn);
+    await new Promise((r) => setTimeout(r, 200));
+    const lcscBox = await findElement(sid, '[data-testid="stock-lcsc"]');
+    const jlcBox = await findElement(sid, '[data-testid="stock-jlc"]');
+    if (!lcscBox || !jlcBox) throw new Error('stock-lcsc / stock-jlc checkboxes not found');
+    const lcscChecked = await execScript(sid, `return document.querySelector('[data-testid="stock-lcsc"]').checked;`);
+    const jlcChecked = await execScript(sid, `return document.querySelector('[data-testid="stock-jlc"]').checked;`);
+    log(`  defaults: LCSC=${lcscChecked} JLC=${jlcChecked}`);
+    if (lcscChecked !== true || jlcChecked !== true) {
+      throw new Error(
+        `alpha.16 regression: stock filter checkboxes should default to true,true; got LCSC=${lcscChecked} JLC=${jlcChecked}`,
+      );
+    }
+    await screenshot(sid, `${OUT}/stock-dropdown.png`);
+    // Close the dropdown so it doesn't occlude later screenshots.
+    await elClick(sid, stockBtn);
+    await new Promise((r) => setTimeout(r, 200));
+
     // 4. Type LCSC + click Detect (alpha.10 auto-enqueues).
     log(`typing ${LCSC} into intake`);
     const intakeId = await waitFor(
@@ -333,29 +365,28 @@ async function main() {
     if (size < 100) throw new Error(`${sym} suspiciously small (${size} bytes)`);
     log(`✅ disk: ${sym} → ${size} bytes`);
 
-    // 9. Bulk-Assign asserts (alpha.12 regression coverage):
-    //    - the suggested library MUST be category-derived. C25804 is a
-    //      Resistor on JLCPCB so the picker should propose `Resistors_KSL`,
-    //      NOT the catch-all `Misc_KSL`. The bug it pins down: alpha.11
-    //      and earlier never wrote `category` to meta.json during download,
-    //      so library.suggest always got an empty category and fell back to
-    //      Misc for every part regardless of what it actually was.
-    log('asserting Bulk-Assign suggested library is category-derived');
+    // 9. Bulk-Assign asserts (alpha.12 regression coverage, alpha.16 reroute):
+    //    The dedicated "Suggested" column was removed in alpha.16 — the
+    //    LibPicker input now shows the suggested name as its initial value
+    //    (with a "new" badge in the dropdown). Same intent as the alpha.11
+    //    regression: C25804 is a Resistor so we should see Resistors_KSL,
+    //    NOT the catch-all Misc_KSL.
+    log('asserting LibPicker initial value is category-derived suggestion');
     const suggested = await waitFor(
       async () => {
-        const el = await findElement(sid, '[data-testid="bulk-suggested"]');
-        if (!el) return null;
-        const t = (await elText(sid, el)).trim();
-        // wait until a definitive value lands (skip empty/loading states)
-        if (!t || t.toLowerCase() === 'loading…') return null;
-        return t;
+        const v = await execScript(sid, `
+          var el = document.querySelector('[data-testid="bulk-row"] input');
+          return el ? el.value : null;
+        `) as string | null;
+        if (!v || !v.trim()) return null;
+        return v.trim();
       },
-      30_000, 1_000, 'bulk-suggested cell populated',
+      30_000, 1_000, 'LibPicker input populated with suggestion',
     );
     log(`  suggested = ${JSON.stringify(suggested)}`);
     if (/^Misc_KSL/i.test(suggested)) {
       throw new Error(
-        `Bulk-Assign suggested "${suggested}" — alpha.11 regression: ` +
+        `LibPicker default "${suggested}" — alpha.11 regression: ` +
         `category not captured during download (expected something like "Resistors_KSL")`,
       );
     }
@@ -412,6 +443,78 @@ async function main() {
     //   queue, bulk-assign table populated). Saved BEFORE we click cancel
     //   so the table is still visible.
     await screenshot(sid, `${OUT}/bulk-assign-filled.png`);
+
+    // 9c-ter. alpha.16: typing an unknown library into the LibPicker should
+    //   show the typed text in the dropdown with a green "new" badge, the
+    //   same affordance the suggested-from-category entry uses. Previously
+    //   the empty-list fallback only said "No match — keep typing to create
+    //   <name>" without the visual badge, so users didn't realise the typed
+    //   value was actionable.
+    log('asserting LibPicker shows "new" badge for user-typed unknown library');
+    // Picker input was last typed into during the focus regression test —
+    // value is now `Resistors_KSL_v2`. Open the popover by re-focusing.
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var el = document.querySelector('[data-testid="bulk-row"] input');
+      if (!el) { done({ ok: false, e: 'picker input gone' }); return; }
+      el.focus();
+      setTimeout(function() { done({ ok: true }); }, 150);
+    `);
+    // The popover is rendered into a Portal (document.body), not inside
+    // the bulk-row, so query globally for the green "new" badge.
+    const newBadgeFound = await waitFor(
+      async () => execScript(sid, `
+        var spans = document.querySelectorAll('span');
+        for (var i = 0; i < spans.length; i++) {
+          var s = spans[i];
+          if ((s.textContent || '').trim() === 'new' &&
+              (s.className || '').indexOf('bg-emerald') >= 0) {
+            // Verify it's adjacent to the typed-text option.
+            var btn = s.closest('button');
+            if (btn && /Resistors_KSL_v2/.test(btn.textContent || '')) return true;
+          }
+        }
+        return null;
+      `),
+      3_000, 200, 'green "new" badge next to user-typed lib name',
+    );
+    log(`  found="new" badge for typed text: ${newBadgeFound}`);
+    await screenshot(sid, `${OUT}/libpicker-new-badge.png`);
+    // Close popover by clicking outside it.
+    await execScript(sid, `document.body.click();`);
+    await new Promise((r) => setTimeout(r, 150));
+
+    // 9c-quater. alpha.16: server-side stockFilter=both is now live on
+    //   search.raph.io — exercise the path through the sidecar to prove
+    //   it works end-to-end (not just that we send the right param).
+    log('probing search.query with stock_filter=both');
+    const stockBothResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      window.__TAURI_INTERNALS__.invoke('sidecar_call', {
+        method: 'search.query',
+        params: { q: '0603 10k', stock_filter: 'both' },
+      }).then(function(r) {
+        var ok = r && Array.isArray(r.results);
+        var allInStock = ok && r.results.every(function(p) {
+          return (p.stock || 0) > 0 && (p.jlc_stock || 0) > 0;
+        });
+        done({ ok: ok, count: ok ? r.results.length : 0, allInStock: allInStock, error: r && r.error });
+      }).catch(function(e) { done({ ok: false, e: String(e) }); });
+    `);
+    log(`  stock=both result: ${JSON.stringify(stockBothResult)}`);
+    if (!stockBothResult?.ok) {
+      throw new Error(`search.query stock_filter=both failed: ${stockBothResult?.error ?? stockBothResult?.e}`);
+    }
+    // The server might still return rows that don't meet the AND filter if
+    // the API change isn't deployed yet — log a warning rather than fail
+    // (the safety net is removed, so the user would see them, but it's a
+    // server-side issue not a kibrary regression).
+    if (stockBothResult.count > 0 && !stockBothResult.allInStock) {
+      log(`  ⚠️  server returned ${stockBothResult.count} rows but not all are stock>0 AND jlc_stock>0`);
+      log(`  ⚠️  the stockFilter=both API change may not be deployed yet on the configured search.raph.io`);
+    } else {
+      log(`✅ stockFilter=both server-side: ${stockBothResult.count} rows, all in stock at both sources`);
+    }
 
     // 9d. Cancel button deletes staged files + drops the queue row.
     log('clicking Bulk-Assign cancel — should rmtree staging dir + dequeue');

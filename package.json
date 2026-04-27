@@ -1,7 +1,7 @@
 {
   "name": "kibrary",
   "private": true,
-  "version": "26.4.27-alpha.15",
+  "version": "26.4.27-alpha.16",
   "type": "module",
   "scripts": {
     "dev": "vite",

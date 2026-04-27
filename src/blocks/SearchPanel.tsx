@@ -229,12 +229,22 @@ export default function SearchPanel() {
   const [searchError, setSearchError] = createSignal<string | null>(null);
   const [searching, setSearching] = createSignal(false);
 
-  // Stock filter — server-side via stockFilter=lcsc|jlc|both (alpha.15).
-  // Client-side predicate stays as a defence-in-depth safety net so older
-  // self-hosted servers that don't accept the param still get filtered.
+  // Stock filter — server-side via stockFilter=lcsc|jlc|both (alpha.15+).
+  // Both checkboxes default to ON; the typical user wants in-stock parts.
+  //
+  // alpha.16 found a bug in search.raph.io's `both` implementation: when
+  // both checkboxes are sent as `stockFilter=both`, the server still returns
+  // some rows with stock=0 (LCSC out of stock) — the AND clause isn't
+  // strictly enforced. Verified empirically: C25804 with LCSC stock=0 +
+  // JLC stock=24M still shows up. Until the server-side fix lands (see
+  // jlc-search/updated_api_prompt.md), keep the client-side predicate as
+  // a defence-in-depth filter — it costs nothing when the server is
+  // correct and catches the regression when it isn't. Single-source modes
+  // (`lcsc`, `jlc`) are correct server-side; the safety net is a no-op
+  // for those.
   const [stockOpen, setStockOpen] = createSignal(false);
-  const [requireLcsc, setRequireLcsc] = createSignal(false);
-  const [requireJlc, setRequireJlc] = createSignal(false);
+  const [requireLcsc, setRequireLcsc] = createSignal(true);
+  const [requireJlc, setRequireJlc] = createSignal(true);
   const stockActive = () => requireLcsc() || requireJlc();
   const stockFilterParam = (): 'lcsc' | 'jlc' | 'both' | undefined => {
     if (requireLcsc() && requireJlc()) return 'both';
@@ -242,7 +252,7 @@ export default function SearchPanel() {
     if (requireJlc()) return 'jlc';
     return undefined;
   };
-  const filteredResults = () => {
+  const filteredResultsClientSide = () => {
     const all = results();
     if (!stockActive()) return all;
     return all.filter((r) => {
@@ -395,65 +405,71 @@ export default function SearchPanel() {
 
         {/* Open state: full panel with search + results. The container
             stays mounted across collapse/expand so query/results signals
-            don't reset; we just hide the body via <Show>. */}
-        <Show when={searchPaneOpen()}>
-          <div id="search-pane-body" class="relative space-y-2 transition-opacity duration-150 px-1">
-            <div class="flex items-center justify-between pr-10">
-              <h2 class="font-semibold text-sm">Search Parts</h2>
-              <a
-                href={targetUrl()}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={async (e) => {
-                  // Tauri 2 webviews don't open target="_blank" via the OS
-                  // browser by default — the click is a no-op unless we route
-                  // through the shell plugin's openUrl. Keep the href so right-
-                  // click "Copy link" and screen-readers still see the URL.
-                  e.preventDefault();
-                  await openUrl(targetUrl());
-                }}
-                class="group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 ring-1 ring-inset ring-zinc-200 dark:ring-zinc-700 shadow-sm hover:bg-white dark:hover:bg-zinc-700/70 hover:text-emerald-700 dark:hover:text-emerald-400 hover:ring-emerald-500/40 hover:shadow transition-all duration-150"
-              >
-                <span>search.raph.io</span>
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  class="w-3 h-3 opacity-70 group-hover:opacity-100 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
-                  aria-hidden="true"
-                >
-                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                  <polyline points="15 3 21 3 21 9" />
-                  <line x1="10" y1="14" x2="21" y2="3" />
-                </svg>
-              </a>
-            </div>
+            don't reset; we just hide the body via <Show>.
 
-            {/* Collapse toggle — pinned top-right of the open pane. */}
-            <button
-              type="button"
-              data-testid="search-pane-toggle"
-              aria-label="Collapse search pane"
-              aria-expanded="true"
-              aria-controls="search-pane-body"
-              onClick={() => {
-                // Blur input first so the on-screen IME / focus ring doesn't
-                // get stranded on a hidden element after the width animates.
-                inputRef?.blur();
-                toggleSearchPane();
-              }}
-              class="absolute top-0 right-0 h-8 w-8 rounded-md border border-neutral-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-neutral-50 dark:hover:bg-zinc-700 active:bg-neutral-100 flex items-center justify-center text-zinc-700 dark:text-zinc-200 focus-visible:ring-2 focus-visible:ring-emerald-500 focus:outline-none"
-            >
-              {/* chevron-right ">>" — clicks collapse */}
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" aria-hidden="true">
-                <polyline points="13 17 18 12 13 7" />
-                <polyline points="6 17 11 12 6 7" />
-              </svg>
-            </button>
+            Toggle is now an INLINE flex item in the title row (alpha.16:
+            previously absolute top-right of the pane, which sat right
+            next to the search.raph.io pill and the user could mis-click
+            between them). With justify-between + a right-side flex group,
+            the toggle has its own column and never overlaps. */}
+        <Show when={searchPaneOpen()}>
+          <div id="search-pane-body" class="space-y-2 transition-opacity duration-150 px-1">
+            <div class="flex items-center justify-between gap-2">
+              <h2 class="font-semibold text-sm">Search Parts</h2>
+              <div class="flex items-center gap-2 shrink-0">
+                <a
+                  href={targetUrl()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={async (e) => {
+                    // Tauri 2 webviews don't open target="_blank" via the OS
+                    // browser by default — the click is a no-op unless we route
+                    // through the shell plugin's openUrl. Keep the href so right-
+                    // click "Copy link" and screen-readers still see the URL.
+                    e.preventDefault();
+                    await openUrl(targetUrl());
+                  }}
+                  class="group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 ring-1 ring-inset ring-zinc-200 dark:ring-zinc-700 shadow-sm hover:bg-white dark:hover:bg-zinc-700/70 hover:text-emerald-700 dark:hover:text-emerald-400 hover:ring-emerald-500/40 hover:shadow transition-all duration-150"
+                >
+                  <span>search.raph.io</span>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    class="w-3 h-3 opacity-70 group-hover:opacity-100 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+                    aria-hidden="true"
+                  >
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                    <polyline points="15 3 21 3 21 9" />
+                    <line x1="10" y1="14" x2="21" y2="3" />
+                  </svg>
+                </a>
+                <button
+                  type="button"
+                  data-testid="search-pane-toggle"
+                  aria-label="Collapse search pane"
+                  aria-expanded="true"
+                  aria-controls="search-pane-body"
+                  onClick={() => {
+                    // Blur input first so the on-screen IME / focus ring doesn't
+                    // get stranded on a hidden element after the width animates.
+                    inputRef?.blur();
+                    toggleSearchPane();
+                  }}
+                  class="h-7 w-7 rounded-md border border-neutral-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-neutral-50 dark:hover:bg-zinc-700 active:bg-neutral-100 flex items-center justify-center text-zinc-700 dark:text-zinc-200 focus-visible:ring-2 focus-visible:ring-emerald-500 focus:outline-none"
+                >
+                  {/* chevron-right ">>" — clicks collapse */}
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" aria-hidden="true">
+                    <polyline points="13 17 18 12 13 7" />
+                    <polyline points="6 17 11 12 6 7" />
+                  </svg>
+                </button>
+              </div>
+            </div>
 
             {/* Search input + Stock filter */}
             <div class="flex items-stretch gap-2">
@@ -515,30 +531,22 @@ export default function SearchPanel() {
             </Show>
 
             {/* No matches */}
-            <Show when={!searching() && !searchError() && query().trim() !== '' && results().length === 0}>
+            <Show when={!searching() && !searchError() && query().trim() !== '' && filteredResultsClientSide().length === 0}>
               <p class="text-xs text-zinc-400 dark:text-zinc-500 italic">No matches.</p>
             </Show>
 
-            {/* All results were filtered out by Stock toggles — surface that
-                instead of showing an empty list, otherwise the user thinks
-                their query had no matches. */}
-            <Show when={!searching() && !searchError() && results().length > 0 && filteredResults().length === 0}>
-              <p class="text-xs text-zinc-400 dark:text-zinc-500 italic">
-                All {results().length} matches filtered out by Stock — toggle off to see them.
-              </p>
-            </Show>
 
             {/* Result cards — scrollable list, ~6 cards visible.
-                Use keyed <For> on lcsc so a Stock toggle that re-narrows the
-                array doesn't unmount/remount rows whose lcsc still appears
-                (perf spec change #4 — preserves <AuthedThumbnail> instances
-                so the photo resource isn't recreated). */}
-            <Show when={filteredResults().length > 0}>
+                Renders the client-side-filtered list (defence-in-depth
+                against the search.raph.io `stockFilter=both` server bug —
+                see comment near filteredResultsClientSide). For correct
+                server responses this is a no-op. */}
+            <Show when={filteredResultsClientSide().length > 0}>
               <ul
                 class="space-y-1.5 overflow-y-auto"
                 style={{ 'max-height': '480px' }}
               >
-                <For each={filteredResults()}>
+                <For each={filteredResultsClientSide()}>
                   {(result) => (
                     <li class="flex items-center gap-3 bg-zinc-100 dark:bg-zinc-800 rounded px-3 py-2 min-h-[80px]">
                       {/* Thumbnail */}

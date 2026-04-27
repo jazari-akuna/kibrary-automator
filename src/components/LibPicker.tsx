@@ -67,26 +67,35 @@ export default function LibPicker(props: LibPickerProps) {
   });
 
   const filtered = createMemo(() => {
-    const q = props.value.trim().toLowerCase();
+    const q = props.value.trim();
+    const qLower = q.toLowerCase();
     const seen = new Set<string>();
     const items: Array<{ name: string; kind: 'match' | 'existing' | 'new' }> = [];
 
     const suggestedExists = props.existing.includes(props.suggested);
-    if (props.suggested && !suggestedExists && (!q || props.suggested.toLowerCase().includes(q))) {
+    if (props.suggested && !suggestedExists && (!q || props.suggested.toLowerCase().includes(qLower))) {
       items.push({ name: props.suggested, kind: 'new' });
       seen.add(props.suggested);
     }
     for (const m of props.matches) {
       if (seen.has(m)) continue;
-      if (q && !m.toLowerCase().includes(q)) continue;
+      if (q && !m.toLowerCase().includes(qLower)) continue;
       items.push({ name: m, kind: 'match' });
       seen.add(m);
     }
     for (const e of props.existing) {
       if (seen.has(e)) continue;
-      if (q && !e.toLowerCase().includes(q)) continue;
+      if (q && !e.toLowerCase().includes(qLower)) continue;
       items.push({ name: e, kind: suggestedExists && e === props.suggested ? 'match' : 'existing' });
       seen.add(e);
+    }
+    // alpha.16: when the user has typed a name that doesn't appear in any
+    // existing/matched/suggested entry, surface the typed text as an
+    // explicit "new" row (same green badge as the suggested-from-category
+    // entry) so they know clicking it actually creates a library — not a
+    // dead-end "No match" message.
+    if (q && !seen.has(q)) {
+      items.push({ name: q, kind: 'new' });
     }
     return items;
   });

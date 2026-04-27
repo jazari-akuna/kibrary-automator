@@ -231,7 +231,9 @@ export default function ReviewBulkAssign() {
                   <th class="pb-1 pr-3 font-medium">LCSC</th>
                   <th class="pb-1 pr-3 font-medium">Description</th>
                   <th class="pb-1 pr-3 font-medium">Footprint</th>
-                  <th class="pb-1 pr-3 font-medium">Suggested</th>
+                  {/* alpha.16: Suggested column removed — the LibPicker
+                      below already shows the suggested name with a green
+                      "new" badge. A dedicated column duplicated info. */}
                   <th class="pb-1 pr-3 font-medium">Library</th>
                   <th class="pb-1 pr-3 font-medium">Status</th>
                   <th class="pb-1 font-medium w-8"></th>
@@ -254,12 +256,6 @@ export default function ReviewBulkAssign() {
                       </td>
                       <td class="py-1.5 pr-3 font-mono text-zinc-400 text-xs" data-testid="bulk-footprint">
                         {row().footprint || <span class="text-zinc-600 italic">—</span>}
-                      </td>
-                      <td class="py-1.5 pr-3 font-mono text-zinc-400" data-testid="bulk-suggested">
-                        {row().suggestedLib}
-                        <Show when={row().isExisting}>
-                          <span class="ml-2 text-[10px] text-amber-400">(exists)</span>
-                        </Show>
                       </td>
                       <td class="py-1.5 pr-3">
                         <LibPicker

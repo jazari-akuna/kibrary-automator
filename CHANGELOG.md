@@ -2,6 +2,20 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.16] — 2026-04-28
+
+### Fixed
+- **Search-pane toggle no longer crowds adjacent buttons.** alpha.15 positioned the open-state toggle as `absolute top-0 right-0` of the pane body; on the user's screen it sat tight against the `search.raph.io` pill and visually competed with neighbouring controls. Toggle is now an inline flex item in the pane title row's right-side group, so the layout is fully linear and the button has its own column. Same `[data-testid="search-pane-toggle"]` testid; same chevron iconography; behaviour unchanged.
+- **Stock filtering — server-side request + client safety net.** SearchPanel forwards `stockFilter=lcsc|jlc|both` per alpha.15's API prompt. Both LCSC + JLC stock checkboxes default to **on** so a fresh install gets useful results immediately. Smoke-ui's end-to-end probe of `stockFilter=both` revealed the server's `both` clause isn't strictly AND-enforced (returns rows where one source is out of stock — see `jlc-search/updated_api_prompt.md`'s status update for the empirical evidence), so the client-side predicate stays as defence-in-depth. Single-source `lcsc` / `jlc` modes are correct server-side; the predicate is a no-op for those.
+
+### Changed
+- **LibPicker shows the green `new` badge for any user-typed unknown library name.** Previously the empty-list fallback only said *"No match — keep typing to create &lt;name&gt;"* — informational text, no actionable cue. Now the typed text appears as a clickable row with the same emerald **new** badge the suggested-from-category entry uses, so it's visually obvious that pressing it creates the library.
+- **Removed the *Suggested* column from Bulk Assign.** It duplicated info the LibPicker already surfaces (the suggested name is the input's default value AND the badged top entry in its dropdown). Saves ~140 px of horizontal real estate per row, helps the table fit at 1280 viewport without truncation.
+
+### Notes
+- Smoke-ui captures four screenshots: `add-room-empty.png` (pristine state — verifies toggle isn't crowding), `stock-dropdown.png` (verifies both checkboxes default-on, no toggle collision), `bulk-assign-filled.png` (post-download with collapsed pane + reclaimed width), `libpicker-new-badge.png` (typed-text "new" affordance). Each is asserted on by the spec — the build refuses to ship if any state breaks.
+- The `stockFilter=both` server probe in smoke-ui logs a warning rather than fails when the configured `search.raph.io` returns mixed-stock rows — the kibrary client trusts the server. If your self-hosted server hasn't merged the change yet, tick the boxes off and on again to fall back to single-source `lcsc`/`jlc` filters which the older API has supported since alpha.13.
+
 ## [26.4.27-alpha.15] — 2026-04-28
 
 ### Added
