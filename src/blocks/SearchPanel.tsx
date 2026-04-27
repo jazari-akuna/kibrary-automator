@@ -176,9 +176,24 @@ export default function SearchPanel() {
               href={baseUrl()}
               target="_blank"
               rel="noopener noreferrer"
-              class="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 underline"
+              class="group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 ring-1 ring-inset ring-zinc-200 dark:ring-zinc-700 shadow-sm hover:bg-white dark:hover:bg-zinc-700/70 hover:text-emerald-700 dark:hover:text-emerald-400 hover:ring-emerald-500/40 hover:shadow transition-all duration-150"
             >
-              Visit search.raph.io ↗
+              <span>search.raph.io</span>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                class="w-3 h-3 opacity-70 group-hover:opacity-100 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+                aria-hidden="true"
+              >
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
             </a>
           </div>
 
