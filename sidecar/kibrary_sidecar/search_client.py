@@ -5,6 +5,8 @@ can use the results directly without try/except boilerplate.
 """
 from __future__ import annotations
 
+import base64
+
 import httpx
 
 
@@ -38,6 +40,43 @@ def search(
         return {"results": [], "error": str(exc)}
     except httpx.HTTPError as exc:
         return {"results": [], "error": str(exc)}
+
+
+def fetch_photo(
+    lcsc: str,
+    api_key: str,
+    base_url: str = "https://search.raph.io",
+    timeout: float = 10.0,
+) -> dict:
+    """Fetch the auth-gated thumbnail for *lcsc* and return it as a data URL.
+
+    Browser ``fetch()`` from a Tauri webview to ``search.raph.io`` is blocked
+    by CORS (the server only allow-lists ``http://localhost:3000``), so we
+    proxy the request through Python where no CORS rules apply. The frontend
+    receives a self-contained ``data:image/...;base64,...`` URL it can drop
+    straight into ``<img src>`` — no Bearer header, no blob lifecycle.
+
+    Returns ``{'data_url': '...'}`` on success, ``{'error': '...'}`` on
+    failure, or ``{'data_url': None}`` if *api_key* is empty.
+    """
+    if not api_key:
+        return {"data_url": None}
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.get(
+                f"{base_url}/api/kibrary/parts/{lcsc}/photo",
+                headers=headers,
+            )
+            if response.status_code == 404:
+                return {"data_url": None}
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "image/jpeg")
+            b64 = base64.b64encode(response.content).decode("ascii")
+            return {"data_url": f"data:{content_type};base64,{b64}"}
+    except httpx.HTTPError as exc:
+        return {"error": str(exc)}
 
 
 def get_part(

@@ -315,6 +315,16 @@ def search_get_part(p: dict) -> dict:
     return {"part": part}
 
 
+def search_fetch_photo(p: dict) -> dict:
+    """Proxy the auth-gated photo fetch through Python (bypasses webview CORS).
+
+    See ``search_client.fetch_photo`` for the rationale. Returns either
+    ``{'data_url': 'data:image/...'}`` or ``{'error': '...'}``.
+    """
+    api_key, base_url = _search_settings()
+    return search_client.fetch_photo(p["lcsc"], api_key=api_key, base_url=base_url)
+
+
 def secrets_get(p: dict) -> dict:
     return {"value": secrets.get_secret(p["name"])}
 
@@ -389,6 +399,7 @@ REGISTRY = {
     "bootstrap.install": bootstrap_install,
     "search.query": search_query,
     "search.get_part": search_get_part,
+    "search.fetch_photo": search_fetch_photo,
     "secrets.get": secrets_get,
     "secrets.set": secrets_set,
     "secrets.delete": secrets_delete,

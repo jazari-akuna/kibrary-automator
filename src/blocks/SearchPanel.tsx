@@ -13,7 +13,7 @@
  *  - Inline error banner on result.error; "No matches" when results empty.
  */
 
-import { createSignal, createResource, For, Show, onCleanup } from 'solid-js';
+import { createSignal, createResource, For, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { enqueue } from '~/state/queue';
 
@@ -41,48 +41,42 @@ interface SearchResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Build the auth-gated photo URL for an LCSC part number.
- * The public `/api/parts/:lcsc/photo` endpoint was retired; thumbnails now
- * live under `/api/kibrary/parts/:lcsc/photo` and require the Bearer key.
- */
-function photoUrl(baseUrl: string, lcsc: string): string {
-  return `${baseUrl}/api/kibrary/parts/${lcsc}/photo`;
-}
-
-// ---------------------------------------------------------------------------
-// AuthedThumbnail — fetch image with Bearer token, render via object URL.
+// AuthedThumbnail — fetch the auth-gated photo via the sidecar proxy.
+//
+// Why not plain `fetch()` from the webview?  search.raph.io's CORS policy
+// only allow-lists `http://localhost:3000`, so a direct browser fetch from
+// a Tauri webview origin (or the Vite dev server) fails the preflight and
+// the `<img>` ends up with no src — which is exactly the grey-placeholder
+// bug the user reported. Routing through the Python sidecar bypasses CORS
+// entirely (it's a server-side request) and keeps the embedded API key out
+// of JS land. The sidecar returns a self-contained `data:` URL that drops
+// straight into `<img src>` with no blob lifecycle to manage.
 // ---------------------------------------------------------------------------
 
 interface AuthedThumbnailProps {
-  url: string;
-  apiKey: string;
+  lcsc: string;
   alt: string;
 }
 
+interface PhotoResponse {
+  data_url?: string | null;
+  error?: string;
+}
+
 function AuthedThumbnail(props: AuthedThumbnailProps) {
-  const [blobUrl] = createResource(
-    () => ({ url: props.url, apiKey: props.apiKey }),
-    async ({ url, apiKey }) => {
-      const resp = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const blob = await resp.blob();
-      return URL.createObjectURL(blob);
-    },
+  const [photo] = createResource(
+    () => props.lcsc,
+    async (lcsc) =>
+      invoke<PhotoResponse>('sidecar_call', {
+        method: 'search.fetch_photo',
+        params: { lcsc },
+      }),
   );
 
-  onCleanup(() => {
-    const u = blobUrl();
-    if (u) URL.revokeObjectURL(u);
-  });
-
   return (
-    <Show when={blobUrl()} fallback={<div class="w-full h-full" />}>
+    <Show when={photo()?.data_url} fallback={<div class="w-full h-full" />}>
       <img
-        src={blobUrl()!}
+        src={photo()!.data_url!}
         alt={props.alt}
         class="w-full h-full object-contain"
         loading="lazy"
@@ -225,11 +219,7 @@ export default function SearchPanel() {
                   <li class="flex items-center gap-3 bg-zinc-100 dark:bg-zinc-800 rounded px-3 py-2 min-h-[80px]">
                     {/* Thumbnail */}
                     <div class="flex-shrink-0 w-14 h-14 bg-zinc-200 dark:bg-zinc-700 rounded overflow-hidden flex items-center justify-center">
-                      <AuthedThumbnail
-                        url={photoUrl(baseUrl(), result.lcsc)}
-                        apiKey={apiKey()}
-                        alt={result.lcsc}
-                      />
+                      <AuthedThumbnail lcsc={result.lcsc} alt={result.lcsc} />
                     </div>
 
                     {/* Part info */}
