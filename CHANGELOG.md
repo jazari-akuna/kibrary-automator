@@ -2,6 +2,17 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.7] — 2026-04-27
+
+### Fixed
+- **"Download all" actually puts files where the frontend expects them.** alpha.6 fixed the "JLC2KiCadLib not found" bundle issue, but the downloaded files landed at deeply nested wrong paths like `<staging>/C25804/tmp/staging/C25804/0603WAF1002T5E.kicad_sym`, named after the part's MPN instead of the LCSC code. Two stacked bugs:
+  1. JLC2KiCadLib treats `symbol_lib_dir`/`footprint_lib`/`model_dir` as **relative to** `output_dir` even when given absolute paths — passing the absolute staging dir for both concatenated the path onto itself.
+  2. JLC2KiCadLib names the symbol library file after `symbol_lib` (an arg we'd left blank), and drops .step files inside the .pretty footprint dir.
+  Fixed by setting `symbol_lib=<lcsc>`, `symbol_lib_dir="."`, `footprint_lib="<lcsc>.pretty"`, `model_dir="."`, plus a post-processing pass that moves `*.step`/`*.wrl` from the .pretty dir into `<lcsc>.3dshapes/`. End-to-end verified against the real bundled binary downloading C25804: produces `<staging>/C25804/{C25804.kicad_sym, C25804.pretty/R0603.kicad_mod, C25804.3dshapes/R0603.step}`. Symbol + footprint preview RPCs now return real content (1516 bytes / 2407 bytes for C25804). Regressions: `test_build_args_uses_relative_paths_to_avoid_self_nesting`, `test_move_3d_models_relocates_step_and_wrl`, `test_move_3d_models_no_op_when_pretty_missing`.
+- **Release script no longer publishes broken `latest.json`.** Two bugs caught by alpha.6:
+  1. `gh release create <file>#<label>` does not rename — the suffix is a display label, not a filename. Writing latest.json via `mktemp` plus `#latest.json` produced an asset named `tmp.VMEpJHcBgO`. Fixed: use `mktemp -d` + write the file as `<dir>/latest.json`.
+  2. The endpoint verify step used `curl -sILo /dev/null -L` (HEAD with redirects) which returns 404 on the GitHub release-asset CDN's final hop, even though GET returns 200. Tauri-updater uses GET, so the script does too now.
+
 ## [26.4.27-alpha.6] — 2026-04-27
 
 ### Fixed

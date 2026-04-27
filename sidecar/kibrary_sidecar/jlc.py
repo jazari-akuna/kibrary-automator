@@ -48,22 +48,60 @@ def _resolve_binary() -> str:
     return shutil.which("JLC2KiCadLib") or "JLC2KiCadLib"
 
 
-def _build_args(target_dir: Path) -> SimpleNamespace:
-    """Construct the argparse-compatible Namespace JLC2KiCadLib expects."""
+def _build_args(target_dir: Path, lcsc: str) -> SimpleNamespace:
+    """
+    Construct the argparse-compatible Namespace JLC2KiCadLib expects so
+    that on-disk layout matches what the frontend expects (and what every
+    other staging consumer in this codebase reads from):
+
+      <target_dir>/<lcsc>.kicad_sym
+      <target_dir>/<lcsc>.pretty/<jlc_footprint>.kicad_mod
+      <target_dir>/<lcsc>.3dshapes/<jlc_footprint>.step   ← post-processed
+
+    Two JLC quirks to know:
+      1. ``symbol_lib_dir`` / ``footprint_lib`` / ``model_dir`` are treated
+         as **relative to ``output_dir``** even when absolute. Passing the
+         absolute ``target_dir`` for them concatenates the path onto itself
+         and silently nests output under ``<target>/<target>/...``.
+      2. ``symbol_lib`` is the *basename* of the .kicad_sym file (not a path
+         component); ``footprint_lib`` is the .pretty *directory name*.
+    """
     return SimpleNamespace(
         output_dir=str(target_dir),
         footprint_creation=True,
         symbol_creation=True,
-        symbol_lib=None,
-        symbol_lib_dir=str(target_dir),
-        footprint_lib=str(target_dir),
+        symbol_lib=lcsc,                  # → <target>/<lcsc>.kicad_sym
+        symbol_lib_dir=".",               # placed directly under output_dir
+        footprint_lib=f"{lcsc}.pretty",   # → <target>/<lcsc>.pretty/<*>.kicad_mod
         models=["STEP"],
-        model_dir=str(target_dir),
+        model_dir=".",                    # → <target>/<lcsc>.pretty/<*>.step (post-moved)
         skip_existing=False,
         model_base_variable="",
         logging_level="WARNING",
         log_file=False,
     )
+
+
+def _move_3d_models_to_3dshapes(target_dir: Path, lcsc: str) -> None:
+    """
+    JLC2KiCadLib places .step / .wrl files at
+    ``<target>/<footprint_lib>/<model_dir>/*`` (i.e. inside the .pretty
+    directory). The frontend's ``files.read_part_file('3d', ...)`` expects
+    them in ``<target>/<lcsc>.3dshapes/``. Move them.
+    """
+    pretty_dir = target_dir / f"{lcsc}.pretty"
+    shapes_dir = target_dir / f"{lcsc}.3dshapes"
+    if not pretty_dir.is_dir():
+        return
+    moved_any = False
+    for ext in (".step", ".wrl"):
+        for src in pretty_dir.glob(f"*{ext}"):
+            shapes_dir.mkdir(parents=True, exist_ok=True)
+            dst = shapes_dir / src.name
+            src.replace(dst)
+            moved_any = True
+    if moved_any:
+        log.debug("moved 3D models from %s into %s", pretty_dir, shapes_dir)
 
 
 def _download_via_api(lcsc: str, target_dir: Path, progress: ProgressFn = None) -> tuple[bool, str | None]:
@@ -80,7 +118,7 @@ def _download_via_api(lcsc: str, target_dir: Path, progress: ProgressFn = None) 
     except ImportError as exc:
         return False, f"JLC2KiCadLib not importable: {exc}"
 
-    args = _build_args(target_dir)
+    args = _build_args(target_dir, lcsc)
     if progress is not None:
         try:
             progress(10)
@@ -92,6 +130,13 @@ def _download_via_api(lcsc: str, target_dir: Path, progress: ProgressFn = None) 
     except Exception as exc:  # noqa: BLE001 — third-party can raise anything
         log.exception("JLC2KiCadLib failed for %s", lcsc)
         return False, f"{type(exc).__name__}: {exc}"
+
+    # Move .step/.wrl files out of the .pretty dir into .3dshapes.
+    try:
+        _move_3d_models_to_3dshapes(target_dir, lcsc)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("post-process 3D move failed for %s", lcsc)
+        return False, f"3D model relocation failed: {type(exc).__name__}: {exc}"
 
     if progress is not None:
         try:

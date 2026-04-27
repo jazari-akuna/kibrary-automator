@@ -5,6 +5,8 @@ from kibrary_sidecar.jlc import (
     download_one,
     _download_via_subprocess,
     _resolve_binary,
+    _build_args,
+    _move_3d_models_to_3dshapes,
 )
 
 
@@ -84,8 +86,50 @@ def test_download_one_returns_clear_error_on_api_exception(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Contract test required by the bug spec
+# Bug 16 (alpha.7): file layout must match what the frontend expects.
+#
+# JLC2KiCadLib is happy to silently produce nested or wrongly-named output
+# (because it treats *_lib_dir as relative-to-output_dir, even when given
+# absolutes). This test pins the contract that download_one() produces the
+# exact paths read_part_file() / get_3d_info() / SymbolPreview / etc. read.
 # ---------------------------------------------------------------------------
+
+def test_build_args_uses_relative_paths_to_avoid_self_nesting():
+    """Regression: passing absolute paths to symbol_lib_dir/footprint_lib/model_dir
+    causes JLC2KiCadLib to nest the path on itself. Must be '.' or a subdir
+    name, never an absolute path."""
+    args = _build_args(Path("/abs/staging/C25804"), "C25804")
+    assert args.symbol_lib_dir == "."
+    assert args.model_dir == "."
+    assert args.footprint_lib == "C25804.pretty"
+    assert args.symbol_lib == "C25804"
+
+
+def test_move_3d_models_relocates_step_and_wrl(tmp_path: Path):
+    """3D models JLC drops in <lcsc>.pretty/ must be moved into <lcsc>.3dshapes/."""
+    pretty = tmp_path / "C25804.pretty"
+    pretty.mkdir()
+    (pretty / "R0603.kicad_mod").write_text("(footprint stuff)")
+    (pretty / "R0603.step").write_bytes(b"ISO-10303-21\n...binary...\n")
+    (pretty / "R0603.wrl").write_text("#VRML V2.0 utf8\n")
+
+    _move_3d_models_to_3dshapes(tmp_path, "C25804")
+
+    # .step and .wrl moved out
+    assert not (pretty / "R0603.step").exists()
+    assert not (pretty / "R0603.wrl").exists()
+    assert (tmp_path / "C25804.3dshapes" / "R0603.step").exists()
+    assert (tmp_path / "C25804.3dshapes" / "R0603.wrl").exists()
+    # .kicad_mod stays put
+    assert (pretty / "R0603.kicad_mod").exists()
+
+
+def test_move_3d_models_no_op_when_pretty_missing(tmp_path: Path):
+    """When the .pretty dir doesn't exist (e.g. footprint creation skipped),
+    the move is a quiet no-op rather than an error."""
+    _move_3d_models_to_3dshapes(tmp_path, "C25804")  # must not raise
+    assert not (tmp_path / "C25804.3dshapes").exists()
+
 
 def test_jlc_resolves_or_returns_clear_error():
     """
