@@ -58,18 +58,33 @@ RPM="$RD/rpm/Kibrary-${VER}-1.x86_64.rpm"
 
 [ -f "$APPIMAGE" ] || { echo "error: $APPIMAGE missing"; exit 2; }
 
-echo "==> Smoke test: bundled sidecar + real kicad-cli + real JLC network"
+echo "==> Smoke test 1/2: sidecar + real kicad-cli + real JLC network (smoke-real)"
 # Catches the class of bugs unit tests / mocks cannot:
 #   - file-layout mismatches (alpha.6 download bug)
 #   - kicad-cli flag changes (alpha.8 icon bug)
 #   - JLC2KiCadLib quirks per real footprint
-# .dockerignore excludes sidecar/dist, so stage the freshly-built binary
-# at .smoke-build/ where the Docker build context can see it.
+# .dockerignore excludes sidecar/dist + bundle/deb, so stage both into
+# .smoke-build/ where the Docker build context can see them.
 mkdir -p .smoke-build
 cp sidecar/dist/kibrary-sidecar-x86_64-unknown-linux-gnu .smoke-build/kibrary-sidecar
+cp "$DEB" .smoke-build/kibrary.deb
 docker build -q -f Dockerfile.smoke-real -t kibrary-smoke-real:${VER} . >/dev/null
 if ! docker run --rm --network host kibrary-smoke-real:${VER}; then
     echo "  ❌ smoke-real failed — refusing to publish ${VER}"
+    rm -rf .smoke-build
+    exit 1
+fi
+echo
+
+echo "==> Smoke test 2/2: real Tauri UI through tauri-driver under Xvfb (smoke-ui)"
+# Catches bugs smoke-real cannot — the alpha.10 "row stuck at downloading
+# even though file is on disk" was invisible to smoke-real (which only
+# checks the sidecar JSON-RPC response) but smoke-ui caught it on first
+# real run because the spec asserts on data-status="ready", which is set
+# by the SAME code path users hit when clicking Download all.
+docker build -q -f Dockerfile.smoke-ui -t kibrary-smoke-ui:${VER} . >/dev/null
+if ! docker run --rm --network host kibrary-smoke-ui:${VER}; then
+    echo "  ❌ smoke-ui failed — refusing to publish ${VER}"
     rm -rf .smoke-build
     exit 1
 fi

@@ -59,6 +59,7 @@ export default function Import() {
   return (
     <div class="space-y-2">
       <textarea
+        data-testid="intake-textarea"
         class="w-full h-32 bg-zinc-100 dark:bg-zinc-800 p-2 rounded font-mono text-sm resize-y"
         placeholder={'C1525, 2\nC25804, 5'}
         value={text()}
@@ -70,6 +71,7 @@ export default function Import() {
       />
       <div class="flex items-center gap-2 flex-wrap">
         <button
+          data-testid="detect-btn"
           class="px-3 py-1 bg-zinc-200 dark:bg-zinc-700 rounded text-sm hover:bg-zinc-300 dark:hover:bg-zinc-600 disabled:opacity-50"
           onClick={onDetect}
           disabled={loading() || text().trim() === ''}

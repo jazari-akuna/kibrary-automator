@@ -1,0 +1,62 @@
+#
+# Dockerfile.smoke-ui — real-UI smoke test for the bundled Tauri 2 app.
+#
+# Catches the class of bugs sidecar-only smoke-real cannot:
+#   - Whether "Download all" button click actually dispatches the RPC
+#     (alpha.9 "Download all does nothing" would fail this image's assertion)
+#   - Whether DOM ↔ on-disk state actually agree post-download
+#
+# Build:
+#   mkdir -p .smoke-build
+#   cp src-tauri/target/release/bundle/deb/Kibrary_<VER>_amd64.deb .smoke-build/kibrary.deb
+#   docker build -f Dockerfile.smoke-ui -t kibrary-smoke-ui .
+#
+# Run:
+#   docker run --rm --network host -v /tmp/smoke-ui-out:/out kibrary-smoke-ui
+#
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Base + kicad-cli (mirrors smoke-real)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl python3 software-properties-common \
+        libwebkit2gtk-4.1-0 libayatana-appindicator3-1 librsvg2-2 file \
+    && add-apt-repository --yes ppa:kicad/kicad-9.0-releases \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends kicad \
+    && rm -rf /var/lib/apt/lists/*
+
+# Display + WebDriver + build-essential (for cargo install tauri-driver)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        xvfb dbus-x11 webkit2gtk-driver libgles2 libegl1 libgl1-mesa-dri \
+        build-essential pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node 22 (for WebdriverIO)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust (minimal) + tauri-driver, then strip the toolchain caches
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal \
+    && cargo install tauri-driver --locked \
+    && rm -rf /root/.cargo/registry /root/.cargo/git /root/.rustup
+
+# Install the bundled .deb (staged at .smoke-build/kibrary.deb because the
+# repo .dockerignore excludes src-tauri/target/release/bundle/deb)
+COPY .smoke-build/kibrary.deb /tmp/kibrary.deb
+RUN apt-get update \
+    && (dpkg -i /tmp/kibrary.deb || apt-get install -f -y) \
+    && rm /tmp/kibrary.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+# e2e suite — plain Node, no WebdriverIO (see scripts/smoke-ui.sh header)
+WORKDIR /e2e
+COPY e2e/specs ./specs
+
+VOLUME /out
+COPY scripts/smoke-ui.sh /usr/local/bin/smoke-ui.sh
+RUN chmod +x /usr/local/bin/smoke-ui.sh
+
+CMD ["/usr/local/bin/smoke-ui.sh"]

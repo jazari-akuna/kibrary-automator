@@ -35,6 +35,27 @@ export async function openWorkspace(path: string) {
   );
 }
 
+// Expose to WebDriver tests so they can drive workspace open without going
+// through the native dialog. Calling __TAURI_INTERNALS__.invoke('workspace_open')
+// directly bypasses setCurrent() and leaves the SolidJS signal stale.
+//
+// Also exposes a probe so tests can check Tauri-event delivery: if the row
+// stays "downloading" but events do arrive (capturedEvents > 0) then the
+// bug is in queue.ts; if no events arrive then the Rust→webview emit path
+// is broken. Either way the smoke test surfaces it.
+if (typeof window !== 'undefined') {
+  (window as any).__kibraryTest = {
+    openWorkspace,
+    capturedProgress: [] as any[],
+    armProgressCapture: async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      await listen('download.progress', (e: any) => {
+        (window as any).__kibraryTest.capturedProgress.push(e.payload);
+      });
+    },
+  };
+}
+
 export async function pickAndOpen() {
   try {
     const path = await openDialog({ directory: true, multiple: false });

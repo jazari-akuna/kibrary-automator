@@ -1,0 +1,316 @@
+/**
+ * Plain Node.js WebDriver-protocol test. Avoids WebdriverIO's W3C capability
+ * negotiation quirks (WDIO 9 wraps capabilities in a way tauri-driver 2.0.5
+ * doesn't accept; manual POST with `alwaysMatch` works fine — see the
+ * manual-curl probe in the alpha.11 commit history). Drives the running
+ * /usr/bin/kibrary via the WebDriver protocol on port 4444.
+ *
+ * Asserts both DOM state (queue row data-status="ready") and on-disk state
+ * (the kicad_sym landed in the right place).
+ */
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const DRIVER  = 'http://127.0.0.1:4444';
+const APP     = '/usr/bin/kibrary';
+const WORKSPACE = '/tmp/e2e-workspace';
+const STAGING = `${WORKSPACE}/.kibrary/staging`;
+const LCSC    = 'C25804';
+const OUT     = '/out';
+
+function log(msg: string) {
+  console.log(`[smoke-ui] ${msg}`);
+}
+
+async function jpost(path: string, body: any): Promise<any> {
+  const res = await fetch(`${DRIVER}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`POST ${path} → ${res.status}: ${text}`);
+  return JSON.parse(text);
+}
+
+async function jget(path: string): Promise<any> {
+  const res = await fetch(`${DRIVER}${path}`);
+  const text = await res.text();
+  if (!res.ok) throw new Error(`GET ${path} → ${res.status}: ${text}`);
+  return JSON.parse(text);
+}
+
+async function jdel(path: string): Promise<any> {
+  const res = await fetch(`${DRIVER}${path}`, { method: 'DELETE' });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`DELETE ${path} → ${res.status}: ${text}`);
+  return JSON.parse(text);
+}
+
+async function execScript(sid: string, script: string, args: any[] = []): Promise<any> {
+  const r = await jpost(`/session/${sid}/execute/sync`, { script, args });
+  return r.value;
+}
+
+// /execute/async waits for arguments[arguments.length - 1](result). Required
+// for any script whose payload depends on a Promise resolving — using sync
+// silently discards the callback and the spec sees `undefined`.
+async function execAsync(sid: string, script: string, args: any[] = []): Promise<any> {
+  const r = await jpost(`/session/${sid}/execute/async`, { script, args });
+  return r.value;
+}
+
+async function findElement(sid: string, selector: string): Promise<string | null> {
+  try {
+    const r = await jpost(`/session/${sid}/element`, {
+      using: 'css selector',
+      value: selector,
+    });
+    // W3C: { value: { 'element-6066-11e4-a52e-4f735466cecf': '...' } }
+    const v = r.value;
+    return v[Object.keys(v)[0]];
+  } catch {
+    return null;
+  }
+}
+
+async function findElements(sid: string, selector: string): Promise<string[]> {
+  const r = await jpost(`/session/${sid}/elements`, {
+    using: 'css selector',
+    value: selector,
+  });
+  return (r.value as any[]).map((v) => v[Object.keys(v)[0]]);
+}
+
+async function elText(sid: string, eid: string): Promise<string> {
+  const r = await jget(`/session/${sid}/element/${eid}/text`);
+  return r.value as string;
+}
+
+async function elAttr(sid: string, eid: string, name: string): Promise<string | null> {
+  const r = await jget(`/session/${sid}/element/${eid}/attribute/${name}`);
+  return r.value as string | null;
+}
+
+async function elClick(sid: string, eid: string): Promise<void> {
+  await jpost(`/session/${sid}/element/${eid}/click`, {});
+}
+
+async function elClear(sid: string, eid: string): Promise<void> {
+  await jpost(`/session/${sid}/element/${eid}/clear`, {});
+}
+
+async function elType(sid: string, eid: string, text: string): Promise<void> {
+  await jpost(`/session/${sid}/element/${eid}/value`, { text });
+}
+
+async function screenshot(sid: string, dest: string): Promise<void> {
+  try {
+    const r = await jget(`/session/${sid}/screenshot`);
+    const png = Buffer.from(r.value as string, 'base64');
+    writeFileSync(dest, png);
+    log(`screenshot saved → ${dest}`);
+  } catch (e) {
+    log(`screenshot failed (non-fatal): ${(e as Error).message}`);
+  }
+}
+
+async function waitFor<T>(
+  fn: () => Promise<T | null | undefined | false>,
+  timeoutMs: number,
+  intervalMs: number,
+  label: string,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const v = await fn();
+    if (v) return v as T;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`waitFor timeout: ${label} (after ${timeoutMs}ms)`);
+}
+
+async function main() {
+  mkdirSync(STAGING, { recursive: true });
+  mkdirSync(OUT, { recursive: true });
+
+  log('creating WebDriver session');
+  const sessRes = await jpost('/session', {
+    capabilities: {
+      alwaysMatch: {
+        browserName: 'wry',
+        'tauri:options': { application: APP },
+      },
+    },
+  });
+  const sid = sessRes.value.sessionId;
+  log(`session ${sid}`);
+
+  let exitCode = 0;
+  try {
+    // 1. Wait for app shell to render. The body should contain "Add", "Libraries"
+    //    or "Open folder" within ~30 s of launch.
+    log('waiting for app shell');
+    await waitFor(
+      async () => {
+        const body = await findElement(sid, 'body');
+        if (!body) return null;
+        const t = await elText(sid, body);
+        return /Add|Libraries|Open folder/.test(t) ? true : null;
+      },
+      30_000, 1_000, 'app shell visible',
+    );
+    log('app shell rendered');
+
+    // 2. Open a fresh workspace via the test helper (calls openWorkspace
+    //    which both invokes Rust workspace_open AND updates the SolidJS
+    //    signal — calling invoke('workspace_open') directly bypasses the
+    //    signal and leaves currentWorkspace() null, which then blocks
+    //    download with the "Open a workspace first" toast).
+    log(`opening workspace ${WORKSPACE} via __kibraryTest.openWorkspace`);
+    const wsResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      if (!window.__kibraryTest) { done({ ok: false, e: '__kibraryTest not exposed — frontend not rebuilt?' }); return; }
+      window.__kibraryTest.openWorkspace(${JSON.stringify(WORKSPACE)})
+        .then(function() { done({ ok: true }); })
+        .catch(function(e) { done({ ok: false, e: String(e) }); });
+    `);
+    if (!wsResult?.ok) throw new Error(`workspace_open failed: ${wsResult?.e}`);
+    log('workspace opened, signal updated');
+    await new Promise((r) => setTimeout(r, 500));
+
+    // 2b. Dismiss the first-run wizard modal if it appeared (workspace is
+    //     fresh, so first_run=true and the modal blocks pointer events).
+    log('dismissing first-run wizard if present');
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      // Find Get started button via plain DOM walk; the modal renders into
+      // the body, not into a portal we can target by selector.
+      var btns = document.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        if (/Get started/i.test(btns[i].textContent || '')) { btns[i].click(); done({ clicked: true }); return; }
+      }
+      // Or the X close button — fallback: dismiss via state hook.
+      done({ clicked: false });
+    `);
+    await new Promise((r) => setTimeout(r, 500));
+
+    // 3. Click Add room button.
+    log('navigating to Add room');
+    const addBtnId = await waitFor(
+      async () => {
+        const els = await findElements(sid, 'button');
+        for (const e of els) {
+          const t = await elText(sid, e);
+          if (t.trim() === 'Add') return e;
+        }
+        return null;
+      },
+      10_000, 500, 'Add button',
+    );
+    await elClick(sid, addBtnId as string);
+    await new Promise((r) => setTimeout(r, 500));
+
+    // 4. Type LCSC + click Detect (alpha.10 auto-enqueues).
+    log(`typing ${LCSC} into intake`);
+    const intakeId = await waitFor(
+      () => findElement(sid, '[data-testid="intake-textarea"]'),
+      10_000, 500, 'intake textarea',
+    );
+    await elClear(sid, intakeId as string);
+    await elType(sid, intakeId as string, LCSC);
+
+    log('clicking Detect');
+    const detectId = await waitFor(
+      () => findElement(sid, '[data-testid="detect-btn"]'),
+      5_000, 500, 'Detect button',
+    );
+    await elClick(sid, detectId as string);
+
+    // 5. Wait for queue row to appear. WebKitWebDriver's /elements (plural)
+    //    endpoint seems to return stale empties even after the element is in
+    //    the DOM (verified via execScript dump). /element (singular) works
+    //    fine, so use it.
+    log('waiting for queue row to appear');
+    await waitFor(
+      () => findElement(sid, '[data-testid="queue-row"]'),
+      10_000, 500, `queue row for ${LCSC}`,
+    );
+
+    // 6. Click Download all.
+    log('arming download.progress capture');
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      window.__kibraryTest.armProgressCapture()
+        .then(function() { done({ ok: true }); })
+        .catch(function(e) { done({ ok: false, e: String(e) }); });
+    `);
+
+    log('clicking Download all');
+    const dlId = await waitFor(
+      () => findElement(sid, '[data-testid="download-all-btn"]'),
+      5_000, 500, 'Download all button',
+    );
+    await elClick(sid, dlId as string);
+
+    // 7. Wait up to 90 s for the row to flip to data-status="ready".
+    //    There's only one queue row, so findElement (singular) is fine.
+    // smoke-real allots 120 s per part for the full JLC + JLC2KiCadLib +
+    // kicad-cli pipeline; in a fresh Docker layer with cold pip caches the
+    // first-time download is slower. 240 s gives headroom without masking a
+    // genuinely-stuck download (status=failed throws immediately).
+    log('waiting for status=ready (up to 240 s; real JLC + kicad-cli network)');
+    let lastStatus: string | null = null;
+    try {
+      await waitFor(
+        async () => {
+          const row = await findElement(sid, '[data-testid="queue-row"]');
+          if (!row) return null;
+          const status = await elAttr(sid, row, 'data-status');
+          if (status !== lastStatus) {
+            log(`  status=${status}`);
+            lastStatus = status;
+          }
+          if (status === 'ready') return true;
+          if (status === 'failed') {
+            await screenshot(sid, `${OUT}/download-all-FAILED.png`);
+            const t = await elText(sid, row);
+            throw new Error(`Row reached status=failed: ${t}`);
+          }
+          return null;
+        },
+        240_000, 2_000,
+        `${LCSC} status=ready (alpha.9 "Download all does nothing" symptom)`,
+      );
+    } catch (e) {
+      // Diagnostic: did download.progress events arrive at the webview at all?
+      const captured = await execScript(sid, `return JSON.stringify(window.__kibraryTest && window.__kibraryTest.capturedProgress);`);
+      log(`DIAG capturedProgress=${captured}`);
+      throw e;
+    }
+    log(`✅ DOM: row ${LCSC} reached status=ready`);
+
+    // 8. Verify on-disk state.
+    const sym = join(STAGING, LCSC, `${LCSC}.kicad_sym`);
+    if (!existsSync(sym)) throw new Error(`On-disk file missing: ${sym}`);
+    const size = statSync(sym).size;
+    if (size < 100) throw new Error(`${sym} suspiciously small (${size} bytes)`);
+    log(`✅ disk: ${sym} → ${size} bytes`);
+
+    await screenshot(sid, `${OUT}/download-all.png`);
+    log('ALL UI SMOKE TESTS PASSED');
+  } catch (e) {
+    log(`❌ FAIL: ${(e as Error).message}`);
+    await screenshot(sid, `${OUT}/download-all-FAILED.png`).catch(() => {});
+    exitCode = 1;
+  } finally {
+    await jdel(`/session/${sid}`).catch(() => {});
+  }
+
+  process.exit(exitCode);
+}
+
+main().catch((e) => {
+  log(`unhandled: ${(e as Error).message}`);
+  process.exit(1);
+});

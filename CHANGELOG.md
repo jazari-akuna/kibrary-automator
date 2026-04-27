@@ -2,6 +2,15 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.11] — 2026-04-27
+
+### Fixed
+- **Queue rows now actually flip from `downloading` → `ready` when a download completes.** alpha.10 (and earlier) relied entirely on `download.progress` Tauri events emitted by the sidecar to drive the UI's terminal status. The new real-UI smoke test caught a row stuck at `downloading` for 240 s even though `C25804.kicad_sym` was on disk in <30 s — the events were silently lost between `sidecar.rs`'s `handle.emit()` and the webview's `listen('download.progress', …)` registration (a top-of-module subscribe race that the smoke surfaced reliably). This is almost certainly what users hit as "Download all does nothing" through alpha.7-9: the download did run and files did land, but the UI never reflected it. Fixed in `Queue.tsx` by treating the `parts.download` JSON-RPC **response** as the source of truth for terminal status (`{results: {<lcsc>: {ok, error}}}`) — the row flips the moment the await resolves, regardless of whether progress notifications arrived. Notifications stay as nice-to-have mid-download progress updates.
+
+### Added
+- **`scripts/smoke-ui.sh` + `Dockerfile.smoke-ui`: a real-**UI** integration test.** Spins up Ubuntu 24.04 + the kicad-9.0 PPA + Xvfb + tauri-driver + WebKitWebDriver, installs the freshly-built `.deb`, then drives the **real bundled app** through the full Add-room flow: workspace open → Detect (auto-enqueue) → Download all → assert `data-status="ready"` on the queue row → assert `<staging>/C25804/C25804.kicad_sym` ≥ 100 bytes. Caught the alpha.10 stuck-status bug that `smoke-real` could not (smoke-real exercises only the sidecar's JSON-RPC response, not the webview's event-listener path). `scripts/release.sh` now runs this gate after `smoke-real` and refuses to publish on failure. The spec uses a plain Node WebDriver client because WDIO 9's W3C capability format is incompatible with tauri-driver 2.0.5.
+- **`window.__kibraryTest` testability hook in `src/state/workspace.ts`** — exposes `openWorkspace` so the smoke can update the SolidJS workspace signal without touching the native file dialog (which can't be driven headlessly), plus an `armProgressCapture` probe for diagnosing event-channel issues.
+
 ## [26.4.27-alpha.10] — 2026-04-27
 
 ### Fixed

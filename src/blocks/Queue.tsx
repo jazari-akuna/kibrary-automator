@@ -56,7 +56,12 @@ async function downloadLcscs(lcscs: string[]): Promise<void> {
   for (const lcsc of lcscs) setStatus(lcsc, 'downloading', undefined, 0);
 
   try {
-    await invoke('sidecar_call', {
+    // sidecar.parts_download returns { results: { <lcsc>: { ok, error } } }.
+    // We use that as the source of truth for terminal status — relying on
+    // download.progress events alone is fragile (alpha.10 smoke caught a row
+    // stuck at "downloading" because the listen() registration race-lost to
+    // the first emit).
+    const resp = await invoke<{ results: Record<string, { ok: boolean; error: string | null }> }>('sidecar_call', {
       method: 'parts.download',
       params: {
         lcscs,
@@ -66,6 +71,14 @@ async function downloadLcscs(lcscs: string[]): Promise<void> {
         concurrency: ws.settings?.concurrency ?? 4,
       },
     });
+    for (const lcsc of lcscs) {
+      const r = resp?.results?.[lcsc];
+      if (r?.ok) {
+        setStatus(lcsc, 'ready', undefined, 100);
+      } else {
+        setStatus(lcsc, 'failed', r?.error ?? 'unknown error');
+      }
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[Queue] parts.download RPC failed:', msg);
@@ -143,6 +156,7 @@ export default function Queue() {
               // instead of silently no-op'ing. This was the alpha.9
               // "Download all does nothing" trap.
               <button
+                data-testid="download-all-btn"
                 class="px-2 py-1 text-xs bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 rounded disabled:opacity-40 disabled:cursor-not-allowed"
                 disabled={isDownloading()}
                 title={
@@ -181,7 +195,11 @@ export default function Queue() {
         <ul class="font-mono text-sm space-y-1">
           <For each={queueItems()}>
             {(q) => (
-              <li class="flex items-center gap-2">
+              <li
+                data-testid="queue-row"
+                data-status={q.status}
+                class="flex items-center gap-2"
+              >
                 <span class="w-24 truncate">{q.lcsc}</span>
                 <span class={`px-2 py-0.5 rounded text-xs font-sans ${statusClass(q.status)}`}>
                   {q.status}
