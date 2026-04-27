@@ -2,6 +2,19 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.14] — 2026-04-27
+
+### Added
+- **Cancel/delete a downloaded part before committing.** Each row in *Bulk Assign to Libraries* now has a ✕ button (right-most column) that calls the new `parts.delete_staged` sidecar method to `rmtree(<workspace>/.kibrary/staging/<lcsc>)` *and* removes the queue entry. Previously the queue's own ✕ only dropped the row from the in-memory queue, leaving the staged files behind to clutter the workspace and forcing a manual `rm -rf` to retry a part. Idempotent — clicking ✕ on a row whose staging dir is already gone still cleanly dismisses the row.
+- **Footprint name shown for each part.** Bulk Assign now displays the `.kicad_mod` filename JLC2KiCadLib produced (e.g. `R0603`, `LQFP-48_7x7mm_P0.5mm`) so users can confirm the package before picking a library. Captured at download time by reading `<lcsc>.pretty/*.kicad_mod` and persisted to `meta.json`'s new `footprint` key. Falls back to em-dash for parts whose footprint couldn't be determined.
+- **Stock filter on the Search panel.** New **Stock** button opens a dropdown with two checkboxes — *In stock at LCSC* and *In stock at JLC*. Either, neither, or both can be active. Filter is purely client-side over the data already returned by `search.raph.io/api/search`, which now includes `stock` and `jlc_stock` numeric fields per result. Empty-state copy distinguishes "no matches" from "N matches filtered out by Stock" so users don't think their query broke.
+
+### Changed
+- **Add-room layout: Bulk Assign promoted to full width.** Previously: three-column grid with Bulk Assign squeezed under Import+Queue (≈2/3 width), forcing horizontal scrolling for the new Footprint and ✕ columns. Now: top row keeps Import + Queue (left, 2 cols) and Search (right, 1 col), but Search ends at the bottom of Queue rather than scrolling next to a tall table; Bulk Assign moves to its own full-width row below. Matches the user's "search module ends before the table" feedback.
+
+### Notes
+- No `search.raph.io` API change required for the stock filter — `stock` and `jlc_stock` are already in the `/api/search` response. If the JLC-app side ever wants to *narrow* search server-side (e.g. for paginated results where client-side filtering hides half the page), the API would need a `?in_stock=lcsc,jlc` query param; not pursued in this release.
+
 ## [26.4.27-alpha.13] — 2026-04-27
 
 ### Fixed

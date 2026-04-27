@@ -359,6 +359,34 @@ async function main() {
     }
     log('✅ Bulk-Assign LibPicker keeps focus across keystrokes');
 
+    // 9c. Footprint column is populated (alpha.14 added). C25804 lands as
+    //     R0603 (or similar) — assert the cell is non-empty.
+    log('asserting Bulk-Assign footprint column is populated');
+    const footprintEl = await findElement(sid, '[data-testid="bulk-footprint"]');
+    if (!footprintEl) throw new Error('bulk-footprint cell not found');
+    const footprint = (await elText(sid, footprintEl)).trim();
+    log(`  footprint = ${JSON.stringify(footprint)}`);
+    if (!footprint || footprint === '—') {
+      throw new Error(`Bulk-Assign footprint cell is empty for ${LCSC} — meta.footprint not captured`);
+    }
+    log(`✅ Bulk-Assign: footprint shown (${footprint})`);
+
+    // 9d. Cancel button deletes staged files + drops the queue row.
+    log('clicking Bulk-Assign cancel — should rmtree staging dir + dequeue');
+    const cancelBtn = await findElement(sid, '[data-testid="bulk-cancel"]');
+    if (!cancelBtn) throw new Error('bulk-cancel button not found');
+    await elClick(sid, cancelBtn);
+    // Poll for both side effects: bulk-row vanishes AND staging dir is gone.
+    await waitFor(
+      async () => {
+        const stillThere = await findElement(sid, '[data-testid="bulk-row"]');
+        const dirGone = !existsSync(join(STAGING, LCSC));
+        return stillThere == null && dirGone ? true : null;
+      },
+      10_000, 500, 'cancel removes row + staging dir',
+    );
+    log('✅ Bulk-Assign cancel: row + on-disk staging removed');
+
     // 10. Thumbnail asserts (alpha.12 regression coverage): probe the photo
     //     endpoint via the sidecar to prove the embedded API key works.
     //     alpha.11 shipped with the API key missing its leading `-`, which

@@ -128,6 +128,10 @@ async def run_batch(
                     api_key = os.environ.get("KIBRARY_SEARCH_API_KEY", "")
                     part = await asyncio.to_thread(search_client.get_part, lcsc, api_key)
                     if part:
+                        # Footprint name is the .pretty/<name>.kicad_mod stem
+                        # JLC2KiCadLib produced — surface it so the UI can
+                        # show users which footprint they're about to commit.
+                        footprint = staging_mod.footprint_name(staging / lcsc)
                         meta = {
                             "lcsc": lcsc,
                             "category": part.get("category"),
@@ -136,6 +140,7 @@ async def run_batch(
                             "mpn": part.get("mpn"),
                             "manufacturer": part.get("manufacturer"),
                             "package": part.get("package"),
+                            "footprint": footprint,
                         }
                         # Drop None-valued keys so meta.json stays compact.
                         meta = {k: v for k, v in meta.items() if v is not None}

@@ -36,6 +36,9 @@ interface SearchResult {
   mpn: string;
   description: string;
   photo_url?: string;
+  // search.raph.io stock fields. Numbers (0 = out of stock).
+  stock?: number;
+  jlc_stock?: number;
   [key: string]: unknown;
 }
 
@@ -175,6 +178,24 @@ export default function SearchPanel() {
   const [searchError, setSearchError] = createSignal<string | null>(null);
   const [searching, setSearching] = createSignal(false);
 
+  // Stock filter — applied client-side because search.raph.io's response
+  // already includes `stock` (LCSC) and `jlc_stock` (JLC) numeric fields.
+  // Independent toggles: when both off, show everything; when one on,
+  // require that source to be in stock; when both on, require BOTH > 0.
+  const [stockOpen, setStockOpen] = createSignal(false);
+  const [requireLcsc, setRequireLcsc] = createSignal(false);
+  const [requireJlc, setRequireJlc] = createSignal(false);
+  const stockActive = () => requireLcsc() || requireJlc();
+  const filteredResults = () => {
+    const all = results();
+    if (!stockActive()) return all;
+    return all.filter((r) => {
+      if (requireLcsc() && (r.stock ?? 0) <= 0) return false;
+      if (requireJlc() && (r.jlc_stock ?? 0) <= 0) return false;
+      return true;
+    });
+  };
+
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
   const runSearch = async (q: string) => {
@@ -263,14 +284,51 @@ export default function SearchPanel() {
             </a>
           </div>
 
-          {/* Search input */}
-          <input
-            type="text"
-            class="w-full bg-zinc-100 dark:bg-zinc-800 px-3 py-1.5 rounded text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500"
-            placeholder="MPN, description, LCSC…"
-            value={query()}
-            onInput={(e) => onInput(e.currentTarget.value)}
-          />
+          {/* Search input + Stock filter */}
+          <div class="flex items-stretch gap-2">
+            <input
+              type="text"
+              class="flex-1 bg-zinc-100 dark:bg-zinc-800 px-3 py-1.5 rounded text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500"
+              placeholder="MPN, description, LCSC…"
+              value={query()}
+              onInput={(e) => onInput(e.currentTarget.value)}
+            />
+            <div class="relative">
+              <button
+                type="button"
+                data-testid="stock-btn"
+                class="px-3 py-1.5 rounded text-sm font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                classList={{ 'ring-1 ring-emerald-500 text-emerald-700 dark:text-emerald-400': stockActive() }}
+                aria-label="Filter by in-stock"
+                title="Filter results by in-stock parts"
+                onClick={() => setStockOpen((v) => !v)}
+              >
+                Stock
+              </button>
+              <Show when={stockOpen()}>
+                <div class="absolute right-0 top-full mt-1 z-10 w-44 bg-zinc-900 border border-zinc-700 rounded shadow-lg p-2 space-y-1">
+                  <label class="flex items-center gap-2 text-xs text-zinc-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      data-testid="stock-lcsc"
+                      checked={requireLcsc()}
+                      onChange={(e) => setRequireLcsc(e.currentTarget.checked)}
+                    />
+                    <span>LCSC in stock</span>
+                  </label>
+                  <label class="flex items-center gap-2 text-xs text-zinc-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      data-testid="stock-jlc"
+                      checked={requireJlc()}
+                      onChange={(e) => setRequireJlc(e.currentTarget.checked)}
+                    />
+                    <span>JLC in stock</span>
+                  </label>
+                </div>
+              </Show>
+            </div>
+          </div>
 
           {/* Searching indicator */}
           <Show when={searching()}>
@@ -289,13 +347,22 @@ export default function SearchPanel() {
             <p class="text-xs text-zinc-400 dark:text-zinc-500 italic">No matches.</p>
           </Show>
 
+          {/* All results were filtered out by Stock toggles — surface that
+              instead of showing an empty list, otherwise the user thinks
+              their query had no matches. */}
+          <Show when={!searching() && !searchError() && results().length > 0 && filteredResults().length === 0}>
+            <p class="text-xs text-zinc-400 dark:text-zinc-500 italic">
+              All {results().length} matches filtered out by Stock — toggle off to see them.
+            </p>
+          </Show>
+
           {/* Result cards — scrollable list, ~6 cards visible */}
-          <Show when={results().length > 0}>
+          <Show when={filteredResults().length > 0}>
             <ul
               class="space-y-1.5 overflow-y-auto"
               style={{ 'max-height': '480px' }}
             >
-              <For each={results()}>
+              <For each={filteredResults()}>
                 {(result) => (
                   <li class="flex items-center gap-3 bg-zinc-100 dark:bg-zinc-800 rounded px-3 py-2 min-h-[80px]">
                     {/* Thumbnail */}

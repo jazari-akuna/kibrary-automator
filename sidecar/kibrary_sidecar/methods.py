@@ -67,6 +67,17 @@ def parts_read_meta(p: dict) -> dict:
     return {"meta": staging.read_meta(Path(p["staging_dir"]) / p["lcsc"])}
 
 
+def parts_delete_staged(p: dict) -> dict:
+    """Idempotently remove the staged-part directory `<staging_dir>/<lcsc>/`.
+
+    Used by the Bulk-Assign UI's ✕ button to cancel a downloaded part
+    before it gets committed to a library. Returns `{deleted: bool}`
+    where False means the directory was already absent (not an error).
+    """
+    removed = staging.delete_staged(Path(p["staging_dir"]) / p["lcsc"])
+    return {"deleted": removed}
+
+
 def parts_write_meta(p: dict) -> dict:
     staging.write_meta(Path(p["staging_dir"]) / p["lcsc"], p["meta"])
     return {"ok": True}
@@ -445,6 +456,7 @@ REGISTRY = {
     "parts.parse_input": parts_parse_input,
     "parts.read_meta": parts_read_meta,
     "parts.write_meta": parts_write_meta,
+    "parts.delete_staged": parts_delete_staged,
     "parts.read_props": parts_read_props,
     "parts.write_props": parts_write_props,
     "parts.read_file": parts_read_file,

@@ -20,7 +20,7 @@
 
 import { createSignal, createEffect, Index, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
-import { queueItems, setStatus } from '~/state/queue';
+import { queueItems, setStatus, dequeue } from '~/state/queue';
 import { currentWorkspace } from '~/state/workspace';
 import LibPicker from '~/components/LibPicker';
 
@@ -29,6 +29,7 @@ interface PartMeta {
   description?: string;
   category?: string;
   suggested_lib?: string;
+  footprint?: string;
   edits?: Record<string, string>;
   [key: string]: unknown;
 }
@@ -45,6 +46,7 @@ type RowSaveState = 'idle' | 'saving' | 'ok' | 'error';
 interface RowState {
   lcsc: string;
   description: string;
+  footprint: string;
   suggestedLib: string;
   isExisting: boolean;
   existingLibs: string[];
@@ -118,6 +120,7 @@ export default function ReviewBulkAssign() {
         return {
           lcsc,
           description: (meta.description as string) ?? '',
+          footprint: (meta.footprint as string) ?? '',
           suggestedLib,
           isExisting: suggest.is_existing,
           existingLibs: suggest.existing,
@@ -141,6 +144,28 @@ export default function ReviewBulkAssign() {
 
   function updateRow(lcsc: string, patch: Partial<RowState>) {
     setRows((prev) => prev.map((r) => (r.lcsc === lcsc ? { ...r, ...patch } : r)));
+  }
+
+  /**
+   * Cancel a downloaded part: remove its staging dir on disk AND drop the
+   * row from the queue. The Queue's own ✕ only does the latter, leaving
+   * the staged files behind to clutter `<workspace>/.kibrary/staging`.
+   * Best-effort: a delete-staged failure is logged but the queue row is
+   * removed regardless so the user isn't stuck with a row they can't
+   * dismiss.
+   */
+  async function cancelRow(lcsc: string) {
+    const ws = workspace();
+    if (!ws) return;
+    try {
+      await invoke('sidecar_call', {
+        method: 'parts.delete_staged',
+        params: { staging_dir: `${ws.root}/.kibrary/staging`, lcsc },
+      });
+    } catch (e) {
+      console.warn('[BulkAssign] delete_staged failed (non-fatal):', e);
+    }
+    dequeue(lcsc);
   }
 
   const anySaving = () => rows().some((r) => r.saveState === 'saving');
@@ -205,9 +230,11 @@ export default function ReviewBulkAssign() {
                 <tr class="text-left text-zinc-400 text-xs border-b border-zinc-700">
                   <th class="pb-1 pr-3 font-medium">LCSC</th>
                   <th class="pb-1 pr-3 font-medium">Description</th>
+                  <th class="pb-1 pr-3 font-medium">Footprint</th>
                   <th class="pb-1 pr-3 font-medium">Suggested</th>
                   <th class="pb-1 pr-3 font-medium">Library</th>
-                  <th class="pb-1 font-medium">Status</th>
+                  <th class="pb-1 pr-3 font-medium">Status</th>
+                  <th class="pb-1 font-medium w-8"></th>
                 </tr>
               </thead>
               <tbody>
@@ -225,6 +252,9 @@ export default function ReviewBulkAssign() {
                       <td class="py-1.5 pr-3 text-zinc-300 max-w-xs truncate" title={row().description}>
                         {row().description || <span class="text-zinc-600 italic">—</span>}
                       </td>
+                      <td class="py-1.5 pr-3 font-mono text-zinc-400 text-xs" data-testid="bulk-footprint">
+                        {row().footprint || <span class="text-zinc-600 italic">—</span>}
+                      </td>
                       <td class="py-1.5 pr-3 font-mono text-zinc-400" data-testid="bulk-suggested">
                         {row().suggestedLib}
                         <Show when={row().isExisting}>
@@ -241,7 +271,7 @@ export default function ReviewBulkAssign() {
                           onChange={(v) => updateRow(row().lcsc, { overrideLib: v })}
                         />
                       </td>
-                      <td class="py-1.5 text-center w-8">
+                      <td class="py-1.5 pr-3 text-center w-8">
                         <Show when={row().saveState === 'saving'}>
                           <span class="text-blue-400 text-xs animate-pulse">…</span>
                         </Show>
@@ -251,6 +281,19 @@ export default function ReviewBulkAssign() {
                         <Show when={row().saveState === 'error'}>
                           <span class="text-red-400 text-xs" title={row().errorMsg}>✗</span>
                         </Show>
+                      </td>
+                      <td class="py-1.5 text-center w-8">
+                        <button
+                          type="button"
+                          data-testid="bulk-cancel"
+                          class="px-1.5 py-0.5 text-zinc-500 hover:text-red-400 hover:bg-zinc-800 rounded text-sm disabled:opacity-30 disabled:cursor-not-allowed"
+                          aria-label={`Cancel and delete staged files for ${row().lcsc}`}
+                          title={`Cancel — delete downloaded files for ${row().lcsc}`}
+                          disabled={row().saveState === 'saving' || row().saveState === 'ok'}
+                          onClick={() => cancelRow(row().lcsc)}
+                        >
+                          ✕
+                        </button>
                       </td>
                     </tr>
                   )}
