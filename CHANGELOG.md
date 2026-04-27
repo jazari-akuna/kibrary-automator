@@ -2,6 +2,20 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.6] — 2026-04-27
+
+### Fixed
+- **Workspace now actually opens on launch.** The header showed the recent workspace path but the app stayed on the workspace picker because no `onMount` in `Shell.tsx` was calling `openWorkspace(recents()[0])`. Now the most-recent workspace is restored automatically once the sidecar is ready; if the path is gone or open fails, the picker is shown as a fallback. Regression: `bug 8 — last workspace auto-opens on launch`.
+- **Component view now actually previews symbol / footprint files.** `ComponentDetail.tsx` was passing `stagingDir = libDir` to the preview blocks, whose `parts.read_file` RPC expects the staging layout (`<staging>/<lcsc>/<lcsc>.kicad_sym`). Library files live at `<lib_dir>/<lib_name>.kicad_sym` + `<lib_dir>/<lib_name>.pretty/<comp>.kicad_mod`. Preview blocks now accept a dual-mode prop (`stagingDir`/`lcsc` OR `libDir`/`componentName`) and library mode hits a new sidecar RPC `library.read_file_content` that slices a single symbol out of the merged `.kicad_sym` via kiutils. Regression: `bug 11 — symbol preview renders for committed component`.
+- **3D model now has full position / rotation / scale controls** instead of just a Replace button. KiCad has no CLI flag to launch its 3D Model Properties dialog directly, so a new in-app `Model3DPositioner` block exposes 9 number inputs (XYZ for offset / rotation / scale) plus Reset and Save. Save calls a new RPC `library.set_3d_offset` that round-trips the first `(model …)` block through `kiutils.Footprint.from_file/.to_file`. Regression: `bug 12 — 3D positioner inputs are editable + Save fires the right RPC`.
+- **"Download all" now actually downloads.** The bundled binary was failing silently with `FileNotFoundError: [Errno 2] No such file or directory: 'JLC2KiCadLib'` because PyInstaller's `--collect-all JLC2KiCadLib` bundles the package but **not** the console-script shim — `shutil.which("JLC2KiCadLib")` returned nothing, and the `subprocess.run(...)` blew up before any progress event could fire. `jlc.py` now drives JLC2KiCadLib via its Python API (`add_component()`) with the CLI as a dev-only fallback. The Add room now also surfaces RPC failures via toast, shows `Downloading… (N of M)` on the button while in flight, and renders a per-row progress bar. Regressions: `bug 13/14/15`.
+
+### Added
+- **Settings → Versions card.** Shows the Frontend version (compile-time `__APP_VERSION__` from package.json via Vite `define:`), the Tauri shell version (new `app_version` Tauri command reading `app.package_info().version`), and the Python sidecar version (existing `system.version` RPC).
+- **Settings → Updates card.** Manual "Check for updates" button driving `checkForUpdate` / `installAndRestart`, with explicit idle / checking / up-to-date / available / installing / error states. Regressions: `bug 9 — Settings shows three versions`, `bug 10 — Settings has Check-for-updates button`.
+- **Per-part download progress events** wired from JLC2KiCadLib's internal phase callbacks (0 dispatched → 10 fetching symbol → 70 fetching footprint+3D → 100 done). The 0 and 100 endpoints are synthesised in `downloader.py` because the library only emits at phase boundaries. The frontend `Queue` block now listens for the `progress` field on `download.progress` events and renders a per-row bar.
+- **Sidecar tests:** 5 new `test_files.py` tests for `read_library_file` (sym slice / sym missing / fp text / fp missing / invalid kind), 3 new `test_model3d_ops.py` tests for `set_3d_offset` (round-trip / no-model error / missing-mod error), 5 new `test_jlc.py` tests (API path / progress callbacks / error contract / `_resolve_binary` contract / no-API-no-CLI fallback).
+
 ## [26.4.27-alpha.5] — 2026-04-27
 
 ### Fixed
