@@ -13,7 +13,7 @@
  *  - Inline error banner on result.error; "No matches" when results empty.
  */
 
-import { createSignal, createResource, For, Show } from 'solid-js';
+import { createSignal, createResource, For, Show, onCleanup } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { enqueue } from '~/state/queue';
 
@@ -44,9 +44,54 @@ interface SearchResponse {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Build a photo URL for an LCSC part number. */
+/**
+ * Build the auth-gated photo URL for an LCSC part number.
+ * The public `/api/parts/:lcsc/photo` endpoint was retired; thumbnails now
+ * live under `/api/kibrary/parts/:lcsc/photo` and require the Bearer key.
+ */
 function photoUrl(baseUrl: string, lcsc: string): string {
-  return `${baseUrl}/api/parts/${lcsc}/photo`;
+  return `${baseUrl}/api/kibrary/parts/${lcsc}/photo`;
+}
+
+// ---------------------------------------------------------------------------
+// AuthedThumbnail — fetch image with Bearer token, render via object URL.
+// ---------------------------------------------------------------------------
+
+interface AuthedThumbnailProps {
+  url: string;
+  apiKey: string;
+  alt: string;
+}
+
+function AuthedThumbnail(props: AuthedThumbnailProps) {
+  const [blobUrl] = createResource(
+    () => ({ url: props.url, apiKey: props.apiKey }),
+    async ({ url, apiKey }) => {
+      const resp = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      return URL.createObjectURL(blob);
+    },
+  );
+
+  onCleanup(() => {
+    const u = blobUrl();
+    if (u) URL.revokeObjectURL(u);
+  });
+
+  return (
+    <Show when={blobUrl()} fallback={<div class="w-full h-full" />}>
+      <img
+        src={blobUrl()!}
+        alt={props.alt}
+        class="w-full h-full object-contain"
+        loading="lazy"
+        onError={(e) => {
+          (e.currentTarget as HTMLImageElement).style.display = 'none';
+        }}
+      />
+    </Show>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -170,14 +215,10 @@ export default function SearchPanel() {
                   <li class="flex items-center gap-3 bg-zinc-100 dark:bg-zinc-800 rounded px-3 py-2 min-h-[80px]">
                     {/* Thumbnail */}
                     <div class="flex-shrink-0 w-14 h-14 bg-zinc-200 dark:bg-zinc-700 rounded overflow-hidden flex items-center justify-center">
-                      <img
-                        src={result.photo_url ?? photoUrl(baseUrl(), result.lcsc)}
+                      <AuthedThumbnail
+                        url={photoUrl(baseUrl(), result.lcsc)}
+                        apiKey={apiKey()}
                         alt={result.lcsc}
-                        class="w-full h-full object-contain"
-                        loading="lazy"
-                        onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).style.display = 'none';
-                        }}
                       />
                     </div>
 

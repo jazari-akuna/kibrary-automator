@@ -83,7 +83,7 @@ const tauriInitScript = `
           mpn: '0603WAF1002T5E',
           manufacturer: 'UNI-ROYAL',
           description: '10kΩ ±1% 100mW 0603 Thick Film Resistor',
-          photo_url: 'https://search.raph.io/api/parts/C25804/photo',
+          photo_url: 'https://search.raph.io/api/kibrary/parts/C25804/photo',
           in_stock: true,
         },
         {
@@ -91,7 +91,7 @@ const tauriInitScript = `
           mpn: 'CL05B104KO5NNNC',
           manufacturer: 'Samsung Electro-Mechanics',
           description: '100nF 16V X7R ±10% 0402 MLCC',
-          photo_url: 'https://search.raph.io/api/parts/C1525/photo',
+          photo_url: 'https://search.raph.io/api/kibrary/parts/C1525/photo',
           in_stock: true,
         },
         {
@@ -99,7 +99,7 @@ const tauriInitScript = `
           mpn: 'STM32G030F6P6',
           manufacturer: 'STMicroelectronics',
           description: 'STM32G030F6P6 ARM Cortex-M0+ 32KB Flash 8KB SRAM TSSOP-20',
-          photo_url: 'https://search.raph.io/api/parts/C19920/photo',
+          photo_url: 'https://search.raph.io/api/kibrary/parts/C19920/photo',
           in_stock: true,
         },
       ];
