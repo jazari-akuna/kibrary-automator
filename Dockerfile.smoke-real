@@ -1,0 +1,41 @@
+#
+# Dockerfile.smoke-real — full-pipeline integration test container for kibrary.
+#
+# Why this exists: alpha.5/6/7/8 each shipped a real-world bug (endpoint URL,
+# file layout, install routing, kicad-cli flag name) that mocked unit tests
+# could not catch because the sidecar binary, the real kicad-cli, and the
+# real JLC network were never exercised together. This image wires all three
+# into one container so a single docker run smoke-tests the entire flow.
+#
+# Build:
+#   docker build -f Dockerfile.smoke-real -t kibrary-smoke-real .
+#   docker run --rm --network host kibrary-smoke-real        # exits 0/non-0
+#
+# What it tests:
+#   - parts.download for several real LCSC parts (different footprint shapes)
+#   - File layout matches what the frontend's read_part_file expects
+#   - kicad-cli successfully renders the icon SVG
+#   - parts.read_file('sym'/'fp') returns content
+#
+
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Base + kicad-cli (via the official PPA — same source the user is on)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl python3 software-properties-common \
+        libwebkit2gtk-4.1-0 libayatana-appindicator3-1 librsvg2-2 file \
+    && add-apt-repository --yes ppa:kicad/kicad-9.0-releases \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends kicad \
+    && rm -rf /var/lib/apt/lists/*
+
+# Bundled sidecar (built by sidecar/build-binary.sh; staged at .smoke-build/
+# because the repo's .dockerignore excludes sidecar/dist).
+COPY .smoke-build/kibrary-sidecar /usr/local/bin/kibrary-sidecar
+RUN chmod +x /usr/local/bin/kibrary-sidecar
+
+COPY scripts/smoke-real.sh /usr/local/bin/smoke-real.sh
+RUN chmod +x /usr/local/bin/smoke-real.sh
+
+CMD ["/usr/local/bin/smoke-real.sh"]

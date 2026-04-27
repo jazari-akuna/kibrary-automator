@@ -162,3 +162,4 @@ CLAUDE-PROMPT-*.md
 # Container-test build context
 .test-ctx/
 build-flatpak/
+.smoke-build/

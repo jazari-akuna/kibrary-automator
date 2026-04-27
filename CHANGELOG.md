@@ -2,6 +2,14 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.9] — 2026-04-27
+
+### Fixed
+- **Footprint icons now actually render after `Download all`.** `kicad-cli fp export svg` accepts `--output` (or `-o`); we'd been passing `--output-dir` since day one, so KiCad 9.0 rejected every invocation with `Unknown argument: --output-dir` and exit 1. The error was caught by `render_for_part`'s `except Exception → log.warning` so the sidecar download still reported `ok:true`, but the UI surfaced the missing icon as a download failure for the user. Caught only after alpha.8 because no existing test exercised the real `kicad-cli` — mocks accepted whatever flag we passed.
+
+### Added
+- **`scripts/smoke-real.sh` + `Dockerfile.smoke-real`: a real-RPC integration test.** Spins up Ubuntu 24.04 + the official kicad-9.0 PPA + the freshly-built sidecar binary, then exercises `parts.download` + `parts.read_file` against the **real JLCPCB network** for two structurally different parts (C25804 — passive 0603; C193707 — IC LGA-48 with dots/dashes in the footprint name). Verifies on-disk file layout, icon SVG sizes, and RPC content lengths. **`scripts/release.sh` runs this against the freshly-built `.deb` before publishing the GitHub release** — any failure aborts the release. This is the test infrastructure that should have existed before alpha.5 and would have caught alpha.6 (file layout), alpha.7-class issues, and alpha.8 (icon flag).
+
 ## [26.4.27-alpha.8] — 2026-04-27
 
 ### Fixed

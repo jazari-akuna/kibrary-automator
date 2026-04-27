@@ -45,6 +45,13 @@ def render_footprint_icon(
     # kicad-cli writes the output file into a directory; we use a temp dir to
     # capture whatever file it creates, then move it to out_path.
     with tempfile.TemporaryDirectory() as tmp_dir:
+        # NB: the flag is `--output` (or `-o`), NOT `--output-dir`.
+        # KiCad 9.0 rejects `--output-dir` with `Unknown argument` and
+        # exits 1, leaving render_for_part to log a WARNING and return
+        # None — meaning every freshly-downloaded part has been showing
+        # the generic icon since this code was written. Caught only after
+        # alpha.8 because no tests exercised the real kicad-cli; mocks
+        # accepted whatever we passed.
         cmd = [
             "kicad-cli",
             "fp",
@@ -52,7 +59,7 @@ def render_footprint_icon(
             "svg",
             "--footprint", footprint_name,
             "--layers", _DEFAULT_LAYERS,
-            "--output-dir", tmp_dir,
+            "--output", tmp_dir,
             str(pretty_dir),
         ]
         log.debug("Rendering icon: %s", " ".join(cmd))
