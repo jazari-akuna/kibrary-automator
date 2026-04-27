@@ -29,6 +29,26 @@ interface MockOpts {
   photoDelayMs?: number;
   /** Bug 7: override the default 2-result search.query payload. */
   searchResults?: Array<{ lcsc: string; mpn: string; description: string }>;
+  /** Bug 8: override the recents list seeded into localStorage. When omitted,
+   *  the default ['/tmp/kib-regression-ws'] is seeded for backwards compat. */
+  recents?: string[];
+  /** Bug 9: version returned by the mocked sidecar `system.version` handler. */
+  sidecarVersion?: string;
+  /** Bug 9: version returned by the mocked Tauri `app_version` command. */
+  appVersion?: string;
+  /** Bug 10: when set, plugin:updater check returns this fake update payload
+   *  instead of `null`. Tests can use it to drive the "update available" UI. */
+  fakeUpdate?: { version: string } | null;
+  /** Bugs 13-15: parts.download handler behaviour. 'throw' rejects the RPC,
+   *  'slow' simulates per-part download.progress events with a delay before
+   *  resolving. Default is the no-op handler (resolves with empty results). */
+  partsDownloadMode?: 'ok' | 'throw' | 'slow' | 'progress50';
+  /** Bugs 11/12: extra per-test sidecar handlers. Each entry overrides the
+   *  default handler for that method. The body is serialised verbatim — pass
+   *  the raw source of a `function (params) { ... }` (or arrow). Keeping it as
+   *  a string lets each test bake its own bespoke fixtures without bloating
+   *  the shared base mock. */
+  extraHandlers?: Record<string, string>;
 }
 
 function buildTauriInitScript(opts: MockOpts = {}): string {
@@ -41,7 +61,22 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
     ],
     photoDelayMs = 0,
     searchResults,
+    recents,
+    sidecarVersion = '26.4.27-test-sc',
+    appVersion = '26.4.27-test',
+    fakeUpdate = null,
+    partsDownloadMode = 'ok',
+    extraHandlers = {},
   } = opts;
+
+  // Build the JS literal for the extra-handlers map. Each entry maps a
+  // sidecar method name to the verbatim source of a function expression.
+  const extraHandlersLiteral =
+    '{' +
+    Object.entries(extraHandlers)
+      .map(([m, body]) => `${JSON.stringify(m)}: (${body})`)
+      .join(',') +
+    '}';
 
   return `
 (function () {
@@ -51,6 +86,17 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
   const KICAD_INSTALLS = ${JSON.stringify(kicadInstalls)};
   const PHOTO_DELAY_MS = ${JSON.stringify(photoDelayMs)};
   const SEARCH_RESULTS_OVERRIDE = ${JSON.stringify(searchResults ?? null)};
+  const RECENTS = ${JSON.stringify(recents ?? null)};
+  const SIDECAR_VERSION = ${JSON.stringify(sidecarVersion)};
+  const APP_VERSION = ${JSON.stringify(appVersion)};
+  const FAKE_UPDATE = ${JSON.stringify(fakeUpdate)};
+  const PARTS_DOWNLOAD_MODE = ${JSON.stringify(partsDownloadMode)};
+
+  // Map<event-name, Map<eventId, transformedCallbackId>> — populated by
+  // plugin:event|listen calls and read by window.__emitTauri to dispatch
+  // events to all registered handlers. Mirrors the runtime contract.
+  const eventListeners = new Map();
+  let nextEventId = 1;
 
   const sidecarHandlers = {
     'library.list': () => ({ libraries: [] }),
@@ -59,6 +105,8 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
     // FirstRunWizard uses kicad.detect (the sidecar's actual JSON-RPC name).
     // Reuse the same fixture so tests written against either method work.
     'kicad.detect': () => ({ installs: KICAD_INSTALLS }),
+    // Bug 9: Settings room's Versions card shows the sidecar version here.
+    'system.version': () => ({ version: SIDECAR_VERSION }),
     'settings.get': () => ({
       settings: {
         theme: 'dark',
@@ -125,7 +173,31 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
       return { root: FAKE_WORKSPACE, settings: { kicad_target: null }, first_run: FIRST_RUN };
     }
     if (cmd === 'watch_workspace') return null;
-    if (cmd && (cmd.startsWith('plugin:updater') || cmd.startsWith('plugin:event'))) return null;
+    // Bug 9: Settings room's Versions card calls this Tauri command for the
+    // native shell version.
+    if (cmd === 'app_version') return APP_VERSION;
+    if (cmd && cmd.startsWith('plugin:updater')) {
+      // Bug 10: emulate the updater plugin check IPC. The JS binding
+      // contract: returns metadata when an update exists, null otherwise
+      // (see plugin-updater dist-js index.js). The Update constructor reads
+      // .rid, .currentVersion, .version, .date, .body, .rawJson.
+      if (cmd === 'plugin:updater|check') {
+        if (FAKE_UPDATE) {
+          return {
+            rid: 1,
+            currentVersion: APP_VERSION,
+            version: FAKE_UPDATE.version,
+            date: null,
+            body: null,
+            rawJson: {},
+          };
+        }
+        return null;
+      }
+      return null;
+    }
+    if (cmd === 'plugin:resources|close') return null;
+    if (cmd && cmd.startsWith('plugin:event')) return null;
     if (cmd && cmd.startsWith('plugin:dialog')) {
       // Simulate the directory picker resolving to FAKE_WORKSPACE.
       return FAKE_WORKSPACE;
@@ -172,7 +244,10 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
     },
   };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {};
-  localStorage.setItem('recents', JSON.stringify([FAKE_WORKSPACE]));
+  // Bug 8: tests can override the recents list (or pass [] for the empty
+  // case). Default keeps the previous behaviour so existing tests continue
+  // to pass.
+  localStorage.setItem('recents', JSON.stringify(RECENTS ?? [FAKE_WORKSPACE]));
 })();
 `;
 }
@@ -187,7 +262,9 @@ async function mountApp(page: Page, opts: MockOpts = {}) {
 // Bug 1 — opening a workspace must not lock the user out of Libraries/Settings.
 // ---------------------------------------------------------------------------
 test('bug 1 — Libraries room reachable after Open folder', async ({ page }) => {
-  await mountApp(page, { firstRun: false });
+  // Empty recents → no auto-open (bug 8) → "Open folder…" button is visible
+  // so we can exercise the manual-pick flow this test was written for.
+  await mountApp(page, { firstRun: false, recents: [] });
 
   // Click "Open folder…" — mock resolves to FAKE_WORKSPACE.
   await page.getByRole('button', { name: /open folder/i }).click();
@@ -206,7 +283,8 @@ test('bug 1 — Libraries room reachable after Open folder', async ({ page }) =>
 });
 
 test('bug 2 — Settings room reachable after Open folder', async ({ page }) => {
-  await mountApp(page, { firstRun: false });
+  // Empty recents → no auto-open (bug 8) → "Open folder…" button is visible.
+  await mountApp(page, { firstRun: false, recents: [] });
 
   await page.getByRole('button', { name: /open folder/i }).click();
   await page.waitForTimeout(300);
@@ -225,7 +303,10 @@ test('bug 2 — Settings room reachable after Open folder', async ({ page }) => 
 // Bug 3 — first-run wizard must auto-select the first detected KiCad install.
 // ---------------------------------------------------------------------------
 test('bug 3 — wizard auto-selects first detected KiCad install', async ({ page }) => {
-  await mountApp(page, { firstRun: true });
+  // Empty recents → no auto-open (bug 8) → manually click Open folder. With
+  // firstRun=true the workspace_open mock returns first_run=true, surfacing
+  // the FirstRunWizard for the assertions below.
+  await mountApp(page, { firstRun: true, recents: [] });
 
   // Surface the wizard by opening a workspace (the directory picker mock
   // resolves immediately to FAKE_WORKSPACE, and our workspace_open handler
@@ -456,4 +537,70 @@ test('bug 7 — multiple thumbnails load in parallel', async ({ page }) => {
       `burst (< 50ms). A wider spread means the frontend is awaiting each ` +
       `call before issuing the next.`,
   ).toBeLessThan(50);
+});
+
+// ---------------------------------------------------------------------------
+// Bug 8 — last workspace must auto-open on app launch.
+//
+// Root cause: Shell.tsx had no onMount that called openWorkspace(recents()[0]).
+// Recent paths were shown as clickable buttons in the WorkspacePicker but
+// nothing acted on them. Fix: Shell now invokes openWorkspace on the first
+// recent path (try/catch — failures fall back to the picker).
+// ---------------------------------------------------------------------------
+test('bug 8 — last workspace auto-opens on launch', async ({ page }) => {
+  await mountApp(page, { recents: ['/tmp/kib-regression-ws'] });
+
+  // The workspace path appears in the header (WorkspacePicker, "Show when
+  // currentWorkspace()" branch) once auto-open succeeds. Before the fix this
+  // path would only render after a manual click.
+  await expect(page.locator('header').getByText('/tmp/kib-regression-ws')).toBeVisible({
+    timeout: 3000,
+  });
+
+  // The "Open folder…" button (rendered by WorkspacePicker's fallback branch)
+  // should NOT be visible — we have a workspace open.
+  await expect(page.getByRole('button', { name: /open folder/i })).toHaveCount(0);
+});
+
+// ---------------------------------------------------------------------------
+// Bug 9 — Settings room shows the three independent version stamps.
+// ---------------------------------------------------------------------------
+test('bug 9 — Settings shows three versions', async ({ page }) => {
+  await mountApp(page, {
+    appVersion: '26.4.27-shell-test',
+    sidecarVersion: '26.4.27-sc-test',
+  });
+
+  await page.getByRole('button', { name: /^Settings$/, exact: true }).click();
+  await expect(page.getByRole('heading', { name: /^Settings$/ })).toBeVisible({ timeout: 3000 });
+
+  // All three labels render.
+  await expect(page.getByText(/^Frontend:/)).toBeVisible();
+  await expect(page.getByText(/^Tauri shell:/)).toBeVisible();
+  await expect(page.getByText(/^Sidecar:/)).toBeVisible();
+
+  // And the values are non-empty (the resources resolved).
+  const frontend = await page.getByTestId('version-frontend').textContent();
+  const tauri = await page.getByTestId('version-tauri').textContent();
+  const sidecar = await page.getByTestId('version-sidecar').textContent();
+  expect(frontend?.trim().length ?? 0).toBeGreaterThan(0);
+  expect(tauri?.trim()).toBe('26.4.27-shell-test');
+  expect(sidecar?.trim()).toBe('26.4.27-sc-test');
+});
+
+// ---------------------------------------------------------------------------
+// Bug 10 — Settings room offers a manual "Check for updates" button.
+// ---------------------------------------------------------------------------
+test('bug 10 — Settings has Check-for-updates button', async ({ page }) => {
+  await mountApp(page);
+  await page.getByRole('button', { name: /^Settings$/, exact: true }).click();
+  await expect(page.getByRole('heading', { name: /^Settings$/ })).toBeVisible({ timeout: 3000 });
+
+  const btn = page.getByRole('button', { name: /check.*update/i });
+  await expect(btn).toBeVisible();
+
+  // Click it — the mock's plugin:updater|check returns null (no update), so
+  // the UI should land on "You're up to date".
+  await btn.click();
+  await expect(page.getByText(/up to date/i)).toBeVisible({ timeout: 3000 });
 });

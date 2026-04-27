@@ -1,15 +1,40 @@
-import { Switch, Match, Show, lazy } from 'solid-js';
+import { Switch, Match, Show, lazy, onMount } from 'solid-js';
 import LeftRail from './LeftRail';
 import Header from './Header';
 import { room } from '~/state/room';
 import BlockHost from './BlockHost';
 import ToastHost from './ToastHost';
-import { firstRun } from '~/state/workspace';
+import {
+  firstRun,
+  currentWorkspace,
+  recentWorkspaces,
+  openWorkspace,
+} from '~/state/workspace';
 import UpdatePrompt from '~/blocks/UpdatePrompt';
 
 const FirstRunWizard = lazy(() => import('~/blocks/FirstRunWizard'));
 
 export default function Shell() {
+  // Bug 8 — auto-open the most recent workspace on launch.
+  //
+  // The header shows the last-opened workspace path because it's persisted to
+  // localStorage, but nothing actually re-opens it. Without a workspace, the
+  // Libraries / Settings rooms render empty stubs and the user has to click
+  // their recent path manually every launch.
+  //
+  // Fire once on mount; if it fails (path no longer exists, sidecar errors,
+  // …) leave currentWorkspace null so the WorkspacePicker stays visible.
+  onMount(async () => {
+    if (currentWorkspace()) return;
+    const recents = recentWorkspaces();
+    if (recents.length === 0) return;
+    try {
+      await openWorkspace(recents[0]);
+    } catch (e) {
+      console.warn('[shell] auto-open of last workspace failed:', e);
+    }
+  });
+
   return (
     <div class="h-screen flex flex-col">
       <Header />
