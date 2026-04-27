@@ -4,24 +4,24 @@
  * Composes PropertyEditor + SymbolPreview + FootprintPreview + Model3DPreview
  * for the selected component in the selected library.
  *
- * The P1 preview blocks expect (stagingDir, lcsc) props, so we derive a
- * virtual stagingDir from the library directory and use the component name
- * as the lcsc key. This means the blocks will attempt to read files at
- * <lib_dir>/<component_name>/<component_name>.kicad_sym etc., which matches
- * the per-component layout inside committed KSL libraries.
+ * The preview blocks are dual-mode (staging vs library). Here we always pass
+ * the library-mode props (libDir, componentName) so the blocks call
+ * `library.read_file_content` / `library.get_3d_info` against the committed
+ * library layout:
+ *   <lib_dir>/<lib>.kicad_sym                    (merged symbol library)
+ *   <lib_dir>/<lib>.pretty/<component>.kicad_mod (per-component footprint)
+ *   <lib_dir>/<lib>.3dshapes/<component>.<ext>   (per-component 3D model)
  *
- * PropertyEditor uses parts.read_props / parts.write_props which expect a
- * sym_path; it constructs that as `${stagingDir}/${lcsc}/${lcsc}.kicad_sym`.
- * For committed library components the sym is at <lib_dir>/<component>/<component>.kicad_sym
- * — that maps correctly when stagingDir = lib_dir.
+ * PropertyEditor still expects (stagingDir, lcsc) for now — the underlying
+ * `parts.read_props` happens to work because that handler reads
+ * `${stagingDir}/${lcsc}/${lcsc}.kicad_sym`, which doesn't exist in committed
+ * libraries.  TODO: route PropertyEditor through a library-mode RPC too.
  */
 
 import { createResource, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { currentWorkspace } from '~/state/workspace';
 import { selectedLib, selectedComponent } from '~/state/librariesRoom';
-import { pushToast } from '~/state/toasts';
 import PropertyEditor from '~/blocks/PropertyEditor';
 import SymbolPreview from '~/blocks/SymbolPreview';
 import FootprintPreview from '~/blocks/FootprintPreview';
@@ -51,7 +51,7 @@ export default function ComponentDetail() {
   };
 
   // Fetch component details when selection changes
-  const [detail] = createResource<ComponentDetailResult | null, string | null>(
+  const [_detail] = createResource<ComponentDetailResult | null, string | null>(
     () => {
       const dir = libDir();
       const name = comp();
@@ -69,39 +69,6 @@ export default function ComponentDetail() {
       });
     }
   );
-
-  // --------------------------------------------------------------------------
-  // Replace 3D model handler (library-room context)
-  // --------------------------------------------------------------------------
-
-  const handleReplace3D = async () => {
-    const dir = libDir();
-    const name = comp();
-    if (!dir || !name) return;
-
-    const picked = await openDialog({
-      title: 'Select 3D model',
-      filters: [{ name: '3D Models', extensions: ['step', 'stp', 'wrl', 'glb'] }],
-      multiple: false,
-    });
-    if (typeof picked !== 'string') return;
-
-    try {
-      const result = await invoke<{ path: string }>('sidecar_call', {
-        method: 'library.replace_3d',
-        params: {
-          lib_dir: dir,
-          component_name: name,
-          new_step_path: picked,
-        },
-      });
-      const filename = result.path.split('/').pop() ?? result.path;
-      pushToast({ kind: 'success', message: `Replaced 3D model: ${filename}` });
-    } catch (e: unknown) {
-      const reason = e instanceof Error ? e.message : String(e);
-      pushToast({ kind: 'error', message: `Replace failed: ${reason}` });
-    }
-  };
 
   return (
     <div class="flex flex-col h-full overflow-hidden">
@@ -134,32 +101,21 @@ export default function ComponentDetail() {
         <div class="flex-1 overflow-y-auto px-3 py-3 space-y-6">
           {/* Symbol Preview */}
           <SymbolPreview
-            stagingDir={libDir()!}
-            lcsc={comp()!}
+            libDir={libDir()!}
+            componentName={comp()!}
           />
 
           {/* Footprint Preview */}
           <FootprintPreview
-            stagingDir={libDir()!}
-            lcsc={comp()!}
+            libDir={libDir()!}
+            componentName={comp()!}
           />
 
-          {/* 3D Model Preview */}
-          <div class="flex flex-col gap-1">
-            <div class="flex items-center justify-between">
-              <span class="text-xs text-zinc-600 dark:text-zinc-400">3D Model</span>
-              <button
-                onClick={handleReplace3D}
-                class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 transition-colors"
-              >
-                Replace 3D model…
-              </button>
-            </div>
-            <Model3DPreview
-              stagingDir={libDir()!}
-              lcsc={comp()!}
-            />
-          </div>
+          {/* 3D Model Preview (Replace + positioner are inside the block) */}
+          <Model3DPreview
+            libDir={libDir()!}
+            componentName={comp()!}
+          />
 
           {/* Property Editor */}
           <div class="border-t border-zinc-300 dark:border-zinc-700 pt-4">

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from kibrary_sidecar.model3d_ops import add_3d_model, replace_3d_model
+from kibrary_sidecar.model3d_ops import add_3d_model, replace_3d_model, set_3d_offset
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -192,3 +192,67 @@ def test_invalid_source_extension_rejected(tmp_path: Path):
 
     with pytest.raises(ValueError, match="Unsupported"):
         replace_3d_model(lib_dir, _COMP, src)
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — set_3d_offset round-trip: offset / rotation / scale persist
+# ---------------------------------------------------------------------------
+
+def test_set_3d_offset_round_trip(tmp_path: Path):
+    """Updating offset / rotation / scale via kiutils round-trips through the
+    file: re-reading the kicad_mod returns the values we wrote."""
+    from kiutils.footprint import Footprint
+
+    lib_dir = _make_lib(
+        tmp_path / "lib", with_3d_ext=".step", kicad_mod_has_model=True
+    )
+
+    set_3d_offset(
+        lib_dir,
+        _COMP,
+        offset=(1.5, -2.25, 0.75),
+        rotation=(0.0, 90.0, 180.0),
+        scale=(1.1, 1.2, 1.3),
+    )
+
+    mod_path = lib_dir / f"{_LIB_NAME}.pretty" / f"{_COMP}.kicad_mod"
+    fp = Footprint().from_file(str(mod_path))
+
+    assert len(fp.models) == 1
+    m = fp.models[0]
+    assert (m.pos.X, m.pos.Y, m.pos.Z) == (1.5, -2.25, 0.75)
+    assert (m.rotate.X, m.rotate.Y, m.rotate.Z) == (0.0, 90.0, 180.0)
+    assert (m.scale.X, m.scale.Y, m.scale.Z) == (1.1, 1.2, 1.3)
+
+
+def test_set_3d_offset_raises_when_no_model_block(tmp_path: Path):
+    """No (model ...) block to update → ValueError."""
+    lib_dir = _make_lib(
+        tmp_path / "lib", with_3d_ext=None, kicad_mod_has_model=False
+    )
+
+    with pytest.raises(ValueError, match="no 3D model block"):
+        set_3d_offset(
+            lib_dir,
+            _COMP,
+            offset=(0, 0, 0),
+            rotation=(0, 0, 0),
+            scale=(1, 1, 1),
+        )
+
+
+def test_set_3d_offset_raises_when_kicad_mod_missing(tmp_path: Path):
+    """Library exists but the component's .kicad_mod doesn't → FileNotFoundError."""
+    lib_dir = _make_lib(tmp_path / "lib")
+    # Remove the .kicad_mod that _make_lib created.
+    mod_path = lib_dir / f"{_LIB_NAME}.pretty" / f"{_COMP}.kicad_mod"
+    mod_path.unlink()
+
+    with pytest.raises(FileNotFoundError):
+        set_3d_offset(
+            lib_dir,
+            _COMP,
+            offset=(0, 0, 0),
+            rotation=(0, 0, 0),
+            scale=(1, 1, 1),
+        )

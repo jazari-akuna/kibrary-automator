@@ -1,11 +1,20 @@
 /**
  * Model3DPreview — KiCad 3D model info card.
  *
- * Props: { stagingDir: string; lcsc: string }
+ * Two calling conventions:
+ *
+ *   Staging mode (Add / Review rooms):
+ *     <Model3DPreview stagingDir="/staging" lcsc="C25804" />
+ *
+ *   Library mode (Libraries room):
+ *     <Model3DPreview libDir="/ws/Resistors_KSL" componentName="R_10k_0402" />
  *
  * Calls `library.get_3d_info` to read the footprint's (model ...) block via
  * kiutils and renders an info card with offset/rotation/scale values plus
  * buttons to open KiCad's 3D viewer or replace the 3D model file.
+ *
+ * In library mode, the read-only offset/rotation/scale table is replaced
+ * with an editable Model3DPositioner block.
  */
 
 import { createMemo, createResource, Show } from 'solid-js';
@@ -13,10 +22,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { currentWorkspace } from '~/state/workspace';
 import { pushToast } from '~/state/toasts';
+import Model3DPositioner from '~/blocks/Model3DPositioner';
 
 interface Props {
-  stagingDir: string;
-  lcsc: string;
+  stagingDir?: string;
+  lcsc?: string;
+  libDir?: string;
+  componentName?: string;
 }
 
 interface Model3DInfo {
@@ -28,28 +40,31 @@ interface Model3DInfo {
   scale: [number, number, number];
 }
 
-function fmt(n: number, decimals = 3): string {
-  return n.toFixed(decimals);
-}
-
 export default function Model3DPreview(props: Props) {
+  const isLibraryMode = () => Boolean(props.libDir && props.componentName);
+
   // --------------------------------------------------------------------------
   // Data — fetched via sidecar RPC
   // --------------------------------------------------------------------------
 
   // Use a memo as the source signal so re-renders on prop changes retrigger the fetch.
-  const key = createMemo(() => `${props.stagingDir}/${props.lcsc}`);
+  const key = createMemo(() =>
+    isLibraryMode()
+      ? `lib:${props.libDir}:${props.componentName}`
+      : `staging:${props.stagingDir}:${props.lcsc}`,
+  );
 
   const [info, { refetch }] = createResource<Model3DInfo | null, string>(
     key,
-    (_key) =>
-      invoke<Model3DInfo | null>('sidecar_call', {
+    () =>
+      invoke<{ info: Model3DInfo | null }>('sidecar_call', {
         method: 'library.get_3d_info',
-        params: {
-          staging_dir: props.stagingDir,
-          lcsc: props.lcsc,
-        },
-      }).catch(() => null),
+        params: isLibraryMode()
+          ? { lib_dir: props.libDir, component_name: props.componentName }
+          : { staging_dir: props.stagingDir, lcsc: props.lcsc },
+      })
+        .then((r) => r?.info ?? null)
+        .catch(() => null),
   );
 
   // --------------------------------------------------------------------------
@@ -57,6 +72,16 @@ export default function Model3DPreview(props: Props) {
   // --------------------------------------------------------------------------
 
   const handleView3D = () => {
+    if (isLibraryMode()) {
+      // Library mode doesn't yet have a kicad-launch helper for
+      // committed footprints — surface a toast rather than fire a
+      // staging-shaped editor.open that would fail.
+      pushToast({
+        kind: 'info',
+        message: 'Open the library in KiCad to view this model in 3D',
+      });
+      return;
+    }
     const ws = currentWorkspace();
     invoke('sidecar_call', {
       method: 'editor.open',
@@ -80,13 +105,15 @@ export default function Model3DPreview(props: Props) {
     });
     if (typeof picked !== 'string') return;
 
-    const libDir = `${props.stagingDir}/${props.lcsc}`;
+    const lib_dir = isLibraryMode() ? props.libDir! : `${props.stagingDir}/${props.lcsc}`;
+    const component_name = isLibraryMode() ? props.componentName! : props.lcsc!;
+
     try {
       const result = await invoke<{ path: string }>('sidecar_call', {
         method: 'library.replace_3d',
         params: {
-          lib_dir: libDir,
-          component_name: props.lcsc,
+          lib_dir,
+          component_name,
           new_step_path: picked,
         },
       });
@@ -131,23 +158,37 @@ export default function Model3DPreview(props: Props) {
               {model().filename}
             </p>
 
-            {/* Offset / Rotation / Scale table */}
-            <div class="grid grid-cols-[auto_1fr_1fr_1fr] gap-x-3 gap-y-1 text-xs">
-              <span class="text-zinc-500 dark:text-zinc-500 self-center">Offset</span>
-              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().offset[0])} mm</span>
-              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().offset[1])} mm</span>
-              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().offset[2])} mm</span>
+            {/* Editable positioner (library mode) or read-only table (staging mode) */}
+            <Show
+              when={isLibraryMode()}
+              fallback={
+                <div class="grid grid-cols-[auto_1fr_1fr_1fr] gap-x-3 gap-y-1 text-xs">
+                  <span class="text-zinc-500 dark:text-zinc-500 self-center">Offset</span>
+                  <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{model().offset[0].toFixed(3)} mm</span>
+                  <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{model().offset[1].toFixed(3)} mm</span>
+                  <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{model().offset[2].toFixed(3)} mm</span>
 
-              <span class="text-zinc-500 dark:text-zinc-500 self-center">Rotation</span>
-              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().rotation[0], 1)}°</span>
-              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().rotation[1], 1)}°</span>
-              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().rotation[2], 1)}°</span>
+                  <span class="text-zinc-500 dark:text-zinc-500 self-center">Rotation</span>
+                  <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{model().rotation[0].toFixed(1)}°</span>
+                  <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{model().rotation[1].toFixed(1)}°</span>
+                  <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{model().rotation[2].toFixed(1)}°</span>
 
-              <span class="text-zinc-500 dark:text-zinc-500 self-center">Scale</span>
-              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().scale[0], 2)}</span>
-              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().scale[1], 2)}</span>
-              <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{fmt(model().scale[2], 2)}</span>
-            </div>
+                  <span class="text-zinc-500 dark:text-zinc-500 self-center">Scale</span>
+                  <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{model().scale[0].toFixed(2)}</span>
+                  <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{model().scale[1].toFixed(2)}</span>
+                  <span class="font-mono text-zinc-700 dark:text-zinc-300 text-right">{model().scale[2].toFixed(2)}</span>
+                </div>
+              }
+            >
+              <Model3DPositioner
+                libDir={props.libDir!}
+                componentName={props.componentName!}
+                offset={model().offset}
+                rotation={model().rotation}
+                scale={model().scale}
+                onSaved={() => refetch()}
+              />
+            </Show>
 
             {/* Full path */}
             <p
@@ -159,13 +200,15 @@ export default function Model3DPreview(props: Props) {
 
             {/* Actions */}
             <div class="flex items-center gap-2 pt-1">
-              <button
-                onClick={handleView3D}
-                title="Opens the footprint editor — press Alt+3 for the 3D viewer"
-                class="text-xs px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white transition-colors"
-              >
-                View 3D in KiCad
-              </button>
+              <Show when={!isLibraryMode()}>
+                <button
+                  onClick={handleView3D}
+                  title="Opens the footprint editor — press Alt+3 for the 3D viewer"
+                  class="text-xs px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white transition-colors"
+                >
+                  View 3D in KiCad
+                </button>
+              </Show>
               <button
                 onClick={handleReplace3D}
                 class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 transition-colors"

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from kibrary_sidecar.files import read_part_file, get_3d_info
+from kibrary_sidecar.files import read_library_file, read_part_file, get_3d_info
 
 LCSC = "C99999"
 
@@ -182,3 +182,80 @@ def test_get_3d_info_picks_first_when_multiple_models(tmp_path):
     assert result["offset"] == [0.0, 0.0, 0.0]
     assert result["rotation"] == [0.0, 0.0, 0.0]
     assert result["scale"] == [1.0, 1.0, 1.0]
+
+
+# ---------------------------------------------------------------------------
+# read_library_file (committed-library layout)
+# ---------------------------------------------------------------------------
+
+
+def _make_library_layout(base: Path) -> Path:
+    """Create a minimal committed-library layout for the read_library_file tests.
+
+    Layout:
+        base/Lib_KSL/
+            Lib_KSL.kicad_sym         (two symbols)
+            Lib_KSL.pretty/
+                A.kicad_mod
+                B.kicad_mod
+    """
+    from kiutils.symbol import Symbol, SymbolLib
+
+    lib_dir = base / "Lib_KSL"
+    lib_dir.mkdir(parents=True)
+
+    lib = SymbolLib()
+    lib.symbols.append(Symbol.create_new(id="A", reference="A", value="alpha"))
+    lib.symbols.append(Symbol.create_new(id="B", reference="B", value="beta"))
+    lib.to_file(str(lib_dir / "Lib_KSL.kicad_sym"))
+
+    pretty = lib_dir / "Lib_KSL.pretty"
+    pretty.mkdir()
+    (pretty / "A.kicad_mod").write_text(
+        '(footprint "A" (layer "F.Cu"))', encoding="utf-8"
+    )
+    (pretty / "B.kicad_mod").write_text(
+        '(footprint "B" (layer "F.Cu"))', encoding="utf-8"
+    )
+    return lib_dir
+
+
+def test_read_library_file_sym_returns_single_symbol(tmp_path):
+    lib_dir = _make_library_layout(tmp_path)
+
+    content = read_library_file(lib_dir, "A", "sym")
+
+    # The returned text is a single-symbol library.
+    assert "kicad_symbol_lib" in content
+    assert '"A"' in content
+    # B should NOT be in the sliced output.
+    assert '"B"' not in content
+
+
+def test_read_library_file_sym_missing_symbol_raises(tmp_path):
+    lib_dir = _make_library_layout(tmp_path)
+
+    with pytest.raises(FileNotFoundError):
+        read_library_file(lib_dir, "DoesNotExist", "sym")
+
+
+def test_read_library_file_fp_returns_kicad_mod_text(tmp_path):
+    lib_dir = _make_library_layout(tmp_path)
+
+    content = read_library_file(lib_dir, "B", "fp")
+
+    assert content == '(footprint "B" (layer "F.Cu"))'
+
+
+def test_read_library_file_fp_missing_raises(tmp_path):
+    lib_dir = _make_library_layout(tmp_path)
+
+    with pytest.raises(FileNotFoundError):
+        read_library_file(lib_dir, "DoesNotExist", "fp")
+
+
+def test_read_library_file_invalid_kind_raises(tmp_path):
+    lib_dir = _make_library_layout(tmp_path)
+
+    with pytest.raises(ValueError, match="Unsupported kind"):
+        read_library_file(lib_dir, "A", "3d")

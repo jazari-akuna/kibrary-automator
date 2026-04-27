@@ -4,6 +4,10 @@ Supported kinds:
   "sym" – <staging_dir>/<lcsc>/<lcsc>.kicad_sym
   "fp"  – first .kicad_mod found inside <staging_dir>/<lcsc>/<lcsc>.pretty/
   "3d"  – first .step (or .wrl) found inside <staging_dir>/<lcsc>/<lcsc>.3dshapes/
+
+There are also helpers for the *committed library* layout, where one merged
+``.kicad_sym`` lives next to a ``<lib>.pretty`` directory of footprints —
+see :func:`read_library_file`.
 """
 
 from __future__ import annotations
@@ -155,6 +159,67 @@ def _resolve_kicad_mod(
         return mod_path if mod_path.is_file() else None
 
     return None
+
+
+def read_library_file(lib_dir: Path, component_name: str, kind: str) -> str:
+    """Return the text content of a single component's KiCad source from a
+    *committed library* directory.
+
+    Library layout:
+        <lib_dir>/<lib_name>.kicad_sym                    (merged symbol library)
+        <lib_dir>/<lib_name>.pretty/<component>.kicad_mod (per-component footprint)
+
+    For ``kind="sym"`` we slice the merged ``.kicad_sym`` to extract just the
+    one matching ``(symbol "<component>" ...)`` and re-emit a single-symbol
+    library so kicanvas can render only that component.
+
+    For ``kind="fp"`` we return the matching ``.kicad_mod`` text verbatim.
+
+    Raises:
+        FileNotFoundError: if the expected library file or matching symbol /
+            footprint cannot be located.
+        ValueError: if *kind* is not one of ``"sym"`` / ``"fp"``.
+    """
+    lib_dir = Path(lib_dir)
+    lib_name = lib_dir.name
+
+    if kind == "sym":
+        path = lib_dir / f"{lib_name}.kicad_sym"
+        if not path.is_file():
+            raise FileNotFoundError(f"Symbol library not found: {path}")
+        from kiutils.symbol import SymbolLib
+
+        lib = SymbolLib.from_file(str(path))
+        sym = next(
+            (s for s in lib.symbols if s.entryName == component_name),
+            None,
+        )
+        if sym is None:
+            raise FileNotFoundError(
+                f"symbol {component_name!r} not in {path}"
+            )
+        # Wrap a single-symbol library so kicanvas can parse it.
+        single = SymbolLib(
+            symbols=[sym],
+            generator=lib.generator or "kibrary",
+            version=lib.version,
+        )
+        return single.to_sexpr()
+
+    if kind == "fp":
+        pretty = lib_dir / f"{lib_name}.pretty"
+        if not pretty.is_dir():
+            raise FileNotFoundError(f"Footprint directory not found: {pretty}")
+        path = pretty / f"{component_name}.kicad_mod"
+        if not path.is_file():
+            # Fallback: try files whose name starts with component_name
+            matches = sorted(pretty.glob(f"{component_name}*.kicad_mod"))
+            if not matches:
+                raise FileNotFoundError(str(path))
+            path = matches[0]
+        return path.read_text(encoding="utf-8")
+
+    raise ValueError(f"Unsupported kind {kind!r}; expected 'sym' or 'fp'")
 
 
 def list_part_dir(staging_dir: Path, lcsc: str, subdir: str = "") -> list[str]:

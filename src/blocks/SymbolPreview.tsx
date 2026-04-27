@@ -1,11 +1,25 @@
-import { createResource, onCleanup, Show } from 'solid-js';
+import { createMemo, createResource, onCleanup, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { currentWorkspace } from '~/state/workspace';
 
+/**
+ * Two calling conventions:
+ *
+ *   Staging mode (Add / Review rooms):
+ *     <SymbolPreview stagingDir="/path/to/staging" lcsc="C25804" />
+ *     → reads <staging>/<lcsc>/<lcsc>.kicad_sym via parts.read_file
+ *
+ *   Library mode (Libraries room):
+ *     <SymbolPreview libDir="/ws/Resistors_KSL" componentName="R_10k_0402" />
+ *     → reads the merged <lib>.kicad_sym, slices out the matching symbol,
+ *       and re-emits a single-symbol library via library.read_file_content
+ */
 interface Props {
-  stagingDir: string;
-  lcsc: string;
+  stagingDir?: string;
+  lcsc?: string;
+  libDir?: string;
+  componentName?: string;
 }
 
 interface ReadFileResult {
@@ -13,17 +27,42 @@ interface ReadFileResult {
 }
 
 export default function SymbolPreview(props: Props) {
-  const [file, { refetch }] = createResource<ReadFileResult>(() =>
-    invoke<ReadFileResult>('sidecar_call', {
-      method: 'parts.read_file',
-      params: { staging_dir: props.stagingDir, lcsc: props.lcsc, kind: 'sym' },
-    })
+  const isLibraryMode = () => Boolean(props.libDir && props.componentName);
+
+  const key = createMemo(() =>
+    isLibraryMode()
+      ? `lib:${props.libDir}:${props.componentName}`
+      : `staging:${props.stagingDir}:${props.lcsc}`,
+  );
+
+  const [file, { refetch }] = createResource<ReadFileResult, string>(
+    key,
+    () => {
+      if (isLibraryMode()) {
+        return invoke<ReadFileResult>('sidecar_call', {
+          method: 'library.read_file_content',
+          params: {
+            lib_dir: props.libDir,
+            component_name: props.componentName,
+            kind: 'sym',
+          },
+        });
+      }
+      return invoke<ReadFileResult>('sidecar_call', {
+        method: 'parts.read_file',
+        params: { staging_dir: props.stagingDir, lcsc: props.lcsc, kind: 'sym' },
+      });
+    },
   );
 
   // Refetch when KiCad's external editor saves changes to our file.
-  const symPath = () => `${props.stagingDir}/${props.lcsc}/${props.lcsc}.kicad_sym`;
+  const symPath = () =>
+    isLibraryMode()
+      ? `${props.libDir}/${props.libDir!.split('/').pop()}.kicad_sym`
+      : `${props.stagingDir}/${props.lcsc}/${props.lcsc}.kicad_sym`;
+  const matchKey = () => (isLibraryMode() ? props.componentName : props.lcsc);
   const unlisten = listen<{ path: string; lcsc: string }>('staging.changed', (e) => {
-    if (e.payload.path === symPath() || e.payload.lcsc === props.lcsc) refetch();
+    if (e.payload.path === symPath() || e.payload.lcsc === matchKey()) refetch();
   });
   onCleanup(() => { unlisten.then((fn) => fn()); });
 
@@ -31,23 +70,25 @@ export default function SymbolPreview(props: Props) {
     <div class="flex flex-col gap-2">
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-zinc-300">Symbol Preview</span>
-        <button
-          class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
-          onClick={() => {
-            const ws = currentWorkspace();
-            invoke('sidecar_call', {
-              method: 'editor.open',
-              params: {
-                workspace: ws?.root,
-                staging_dir: props.stagingDir,
-                lcsc: props.lcsc,
-                kind: 'symbol',
-              },
-            }).catch((e) => console.error('[editor] open symbol failed:', e));
-          }}
-        >
-          ✎ Edit in KiCad
-        </button>
+        <Show when={!isLibraryMode()}>
+          <button
+            class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
+            onClick={() => {
+              const ws = currentWorkspace();
+              invoke('sidecar_call', {
+                method: 'editor.open',
+                params: {
+                  workspace: ws?.root,
+                  staging_dir: props.stagingDir,
+                  lcsc: props.lcsc,
+                  kind: 'symbol',
+                },
+              }).catch((e) => console.error('[editor] open symbol failed:', e));
+            }}
+          >
+            ✎ Edit in KiCad
+          </button>
+        </Show>
       </div>
 
       <Show

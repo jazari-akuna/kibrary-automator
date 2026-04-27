@@ -280,6 +280,30 @@ def library_add_3d(p: dict) -> dict:
     return {"path": str(dst)}
 
 
+def library_read_file_content(p: dict) -> dict:
+    """Return the text content of a single component's symbol or footprint
+    file from a committed library directory (the Libraries-room equivalent of
+    ``parts.read_file`` for staging)."""
+    return {
+        "content": files.read_library_file(
+            Path(p["lib_dir"]), p["component_name"], p["kind"]
+        )
+    }
+
+
+def library_set_3d_offset(p: dict) -> dict:
+    """Update the offset / rotation / scale of the first 3D model block in
+    a committed component's ``.kicad_mod``."""
+    model3d_ops.set_3d_offset(
+        Path(p["lib_dir"]),
+        p["component_name"],
+        offset=tuple(p.get("offset", [0, 0, 0])),
+        rotation=tuple(p.get("rotation", [0, 0, 0])),
+        scale=tuple(p.get("scale", [1, 1, 1])),
+    )
+    return {"ok": True}
+
+
 def bootstrap_detect(p: dict) -> dict:
     candidates = p.get("candidate_paths") or []
     result = bootstrap.detect_python(candidates)
@@ -406,6 +430,8 @@ REGISTRY = {
     "library.replace_3d": library_replace_3d,
     "library.add_3d": library_add_3d,
     "library.get_3d_info": library_get_3d_info,
+    "library.read_file_content": library_read_file_content,
+    "library.set_3d_offset": library_set_3d_offset,
     "bootstrap.detect": bootstrap_detect,
     "bootstrap.install": bootstrap_install,
     "search.query": search_query,

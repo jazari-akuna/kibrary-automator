@@ -69,6 +69,42 @@ def replace_3d_model(lib_dir: Path, component_name: str, new_step_path: Path) ->
     return dst
 
 
+def set_3d_offset(
+    lib_dir: Path,
+    component_name: str,
+    offset: tuple[float, float, float],
+    rotation: tuple[float, float, float],
+    scale: tuple[float, float, float],
+) -> None:
+    """Update the offset / rotation / scale of the first ``(model ...)``
+    block in the component's ``.kicad_mod``.
+
+    Library layout (committed):
+        <lib_dir>/<lib_name>.pretty/<component>.kicad_mod
+
+    Raises
+    ------
+    FileNotFoundError
+        If the ``.kicad_mod`` file does not exist.
+    ValueError
+        If the footprint has no ``(model ...)`` block to update.
+    """
+    pretty = lib_dir / f"{lib_dir.name}.pretty"
+    mod_path = pretty / f"{component_name}.kicad_mod"
+    if not mod_path.exists():
+        raise FileNotFoundError(str(mod_path))
+
+    fp = Footprint().from_file(str(mod_path))
+    if not fp.models:
+        raise ValueError(f"no 3D model block in {mod_path}")
+
+    m = fp.models[0]
+    m.pos.X, m.pos.Y, m.pos.Z = offset
+    m.rotate.X, m.rotate.Y, m.rotate.Z = rotation
+    m.scale.X, m.scale.Y, m.scale.Z = scale
+    fp.to_file(str(mod_path))
+
+
 def add_3d_model(lib_dir: Path, component_name: str, src_path: Path) -> Path:
     """Same as :func:`replace_3d_model`, but intended for a component that
     previously had no 3D model.  Functionally identical — provided as a
