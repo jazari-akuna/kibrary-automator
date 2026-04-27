@@ -54,6 +54,11 @@ export function clearQueue(): void {
   setItems([]);
 }
 
+/** Remove a single item from the queue by LCSC. */
+export function dequeue(lcsc: string): void {
+  setItems((prev) => prev.filter((q) => q.lcsc !== lcsc));
+}
+
 /** Remove items whose status is in `keep` (e.g. clear out failed/committed). */
 export function pruneQueue(keep: QueueStatus[]): void {
   setItems((prev) => prev.filter((q) => keep.includes(q.status)));

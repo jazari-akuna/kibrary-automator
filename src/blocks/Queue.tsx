@@ -1,6 +1,6 @@
 import { For, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
-import { queueItems, setStatus, pruneQueue } from '~/state/queue';
+import { queueItems, setStatus, pruneQueue, clearQueue, dequeue } from '~/state/queue';
 import { currentWorkspace } from '~/state/workspace';
 
 function statusClass(status: string): string {
@@ -64,6 +64,13 @@ export default function Queue() {
               Clear done
             </button>
           </Show>
+          <button
+            class="px-2 py-1 text-xs bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={queueItems().length === 0}
+            onClick={() => clearQueue()}
+          >
+            Clear queue
+          </button>
           <Show
             when={!hasWorkspace()}
             fallback={
@@ -114,6 +121,14 @@ export default function Queue() {
                     {q.error}
                   </span>
                 </Show>
+                <button
+                  class="ml-auto px-1.5 py-0.5 text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded"
+                  aria-label="Remove"
+                  title="Remove from queue"
+                  onClick={() => dequeue(q.lcsc)}
+                >
+                  ✕
+                </button>
               </li>
             )}
           </For>

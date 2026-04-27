@@ -176,7 +176,17 @@ export default function SearchPanel() {
       {/* If no API key is set, degrade gracefully — render nothing. */}
       <Show when={apiKey() !== ''}>
         <div class="space-y-2">
-          <h2 class="font-semibold text-sm">Search Parts</h2>
+          <div class="flex items-center justify-between">
+            <h2 class="font-semibold text-sm">Search Parts</h2>
+            <a
+              href={baseUrl()}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-xs text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 underline"
+            >
+              Visit search.raph.io ↗
+            </a>
+          </div>
 
           {/* Search input */}
           <input
