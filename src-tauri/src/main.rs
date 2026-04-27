@@ -130,7 +130,8 @@ fn main() -> anyhow::Result<()> {
         // Watcher state: starts inactive; activated by the `watch_workspace` command.
         .manage(watcher::WatcherState::new())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build());
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_shell::init());
 
     builder
         .invoke_handler(tauri::generate_handler![

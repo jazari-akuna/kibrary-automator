@@ -110,6 +110,14 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
       // Simulate the directory picker resolving to FAKE_WORKSPACE.
       return FAKE_WORKSPACE;
     }
+    if (cmd && cmd.startsWith('plugin:shell')) {
+      // Swallow shell-plugin invocations (openUrl etc.) and record them so
+      // tests can assert the click handler fired without an actual browser
+      // opening on the headless CI box.
+      (window).__shellCalls = (window).__shellCalls || [];
+      (window).__shellCalls.push(payload);
+      return null;
+    }
     if (cmd === 'sidecar_call') {
       const method = payload && payload.method;
       const params = (payload && payload.params) || {};
@@ -283,6 +291,21 @@ test('bug 5 — SearchPanel has visit-site link in header', async ({ page }) => 
   await expect(link).toBeVisible();
   await expect(link).toHaveAttribute('href', /search\.raph\.io/);
   await expect(link).toHaveAttribute('target', '_blank');
+
+  // When the user has typed a query, the href should reactively carry it
+  // forward as ?q=<encoded query> so they land on the pre-filtered web view.
+  const searchInput = page.getByPlaceholder(/MPN.*description.*LCSC/i).first();
+  await searchInput.fill('esp32');
+  await page.waitForTimeout(300);
+  await expect(link).toHaveAttribute('href', /\?q=esp32/);
+
+  // Clicking the link must actually invoke the shell plugin (Tauri 2
+  // webviews don't open target="_blank" via the OS browser otherwise).
+  await link.click();
+  const shellCalls = await page.evaluate(
+    () => (window as unknown as { __shellCalls?: unknown[] }).__shellCalls?.length ?? 0,
+  );
+  expect(shellCalls).toBeGreaterThanOrEqual(1);
 });
 
 // ---------------------------------------------------------------------------

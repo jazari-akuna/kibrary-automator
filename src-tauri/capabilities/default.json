@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "dialog:default",
-    "updater:default"
+    "updater:default",
+    "shell:allow-open"
   ]
 }

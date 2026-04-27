@@ -15,6 +15,10 @@
 
 import { createSignal, createResource, For, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
+// `open` from plugin-shell opens a URL/path in the OS default app. Aliased
+// to `openUrl` for readability at the call site (and to match the Tauri 1.x
+// name some docs still reference).
+import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { enqueue } from '~/state/queue';
 
 // ---------------------------------------------------------------------------
@@ -139,6 +143,14 @@ export default function SearchPanel() {
 
   // Search UI state.
   const [query, setQuery] = createSignal('');
+
+  // Reactive URL for the "search.raph.io" pill: forwards the current query
+  // when present (so users land on the pre-filtered web view), otherwise
+  // points at the bare base URL.
+  const targetUrl = () => {
+    const q = query().trim();
+    return q === '' ? baseUrl() : `${baseUrl()}/?q=${encodeURIComponent(q)}`;
+  };
   const [results, setResults] = createSignal<SearchResult[]>([]);
   const [searchError, setSearchError] = createSignal<string | null>(null);
   const [searching, setSearching] = createSignal(false);
@@ -199,9 +211,17 @@ export default function SearchPanel() {
           <div class="flex items-center justify-between">
             <h2 class="font-semibold text-sm">Search Parts</h2>
             <a
-              href={baseUrl()}
+              href={targetUrl()}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={async (e) => {
+                // Tauri 2 webviews don't open target="_blank" via the OS
+                // browser by default — the click is a no-op unless we route
+                // through the shell plugin's openUrl. Keep the href so right-
+                // click "Copy link" and screen-readers still see the URL.
+                e.preventDefault();
+                await openUrl(targetUrl());
+              }}
               class="group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 ring-1 ring-inset ring-zinc-200 dark:ring-zinc-700 shadow-sm hover:bg-white dark:hover:bg-zinc-700/70 hover:text-emerald-700 dark:hover:text-emerald-400 hover:ring-emerald-500/40 hover:shadow transition-all duration-150"
             >
               <span>search.raph.io</span>
