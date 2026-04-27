@@ -73,8 +73,34 @@ function AuthedThumbnail(props: AuthedThumbnailProps) {
       }),
   );
 
+  // Failure modes the fallback distinguishes (alpha.3 user feedback: a
+  // silent grey square is indistinguishable from "still loading"):
+  //   • photo() undefined           — request still in flight, render nothing
+  //   • photo().error truthy        — sidecar errored (e.g. server 5xx, no key)
+  //                                   show a "!" so the user knows it's broken
+  //                                   and the title surfaces the message
+  //   • photo().data_url === null   — server returned 404 (no photo for part)
+  //                                   render a quiet empty square (correct UX)
+  //   • photo().data_url is string  — render the <img>
+  const fallback = () => {
+    const p = photo();
+    if (!p) return <div class="w-full h-full" />;
+    if (p.error) {
+      return (
+        <div
+          class="w-full h-full flex items-center justify-center text-red-500 text-xs"
+          title={`Photo fetch failed: ${p.error}`}
+          aria-label={`Photo fetch failed: ${p.error}`}
+        >
+          !
+        </div>
+      );
+    }
+    return <div class="w-full h-full" />;
+  };
+
   return (
-    <Show when={photo()?.data_url} fallback={<div class="w-full h-full" />}>
+    <Show when={photo()?.data_url} fallback={fallback()}>
       <img
         src={photo()!.data_url!}
         alt={props.alt}

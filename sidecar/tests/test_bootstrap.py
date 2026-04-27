@@ -34,7 +34,13 @@ class TestDetectPython:
         assert result is not None
         # Either PATH python3 or the venv python succeeded — both are valid
         assert result["python_path"] in ("python3", venv_python)
-        assert result["sidecar_version"] == "0.1.0"
+        # The exact version is whatever pyproject.toml currently says — we
+        # used to hard-code "0.1.0" here, but `__version__` is now sourced
+        # from importlib.metadata to fix the alpha.3 stale-version bug, so
+        # we just assert it parses as a non-empty PEP-440-ish string.
+        assert isinstance(result["sidecar_version"], str)
+        assert result["sidecar_version"]
+        assert result["sidecar_version"] != "0.0.0+unknown"
 
     def test_detect_python_returns_none_when_sidecar_missing(self, monkeypatch):
         """Simulate a python that doesn't have kibrary_sidecar installed."""
