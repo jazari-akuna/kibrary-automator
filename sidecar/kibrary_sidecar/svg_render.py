@@ -25,11 +25,16 @@ log = logging.getLogger(__name__)
 
 
 def _system_env() -> dict[str, str]:
-    """Return an env dict with PyInstaller's library-path overrides undone.
+    """Return an env dict with PyInstaller's runtime overrides undone.
 
-    See module docstring — without this kicad-cli inherits the bundle's
-    ``LD_LIBRARY_PATH`` and aborts when system libcurl mismatches the
-    bundled libssl.
+    Strips:
+      - LD_LIBRARY_PATH (restored from _ORIG): kicad-cli's libcurl loaded
+        the bundled libssl and failed on OPENSSL_3.2.0 symbol.
+      - DYLD_LIBRARY_PATH (macOS analogue).
+      - PYTHONHOME / PYTHONPATH: when render_3d shells out to system
+        python3 to import pcbnew, an inherited PyInstaller PYTHONHOME
+        points at the bundle's _MEIPASS dir and breaks system Python's
+        site-packages discovery (FootprintLoad silently returns None).
     """
     env = os.environ.copy()
     orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
@@ -37,12 +42,13 @@ def _system_env() -> dict[str, str]:
         env["LD_LIBRARY_PATH"] = orig
     else:
         env.pop("LD_LIBRARY_PATH", None)
-    # PyInstaller also sets DYLD_LIBRARY_PATH on macOS — same treatment.
     orig_d = env.pop("DYLD_LIBRARY_PATH_ORIG", None)
     if orig_d is not None:
         env["DYLD_LIBRARY_PATH"] = orig_d
     else:
         env.pop("DYLD_LIBRARY_PATH", None)
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
     return env
 
 # Footprints — full layer set so previews show silkscreen, mask, fab, etc.

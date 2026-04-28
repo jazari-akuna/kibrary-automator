@@ -69,6 +69,26 @@ export default function Model3DPreview(props: Props) {
         .catch(() => null),
   );
 
+  // alpha.22: in library mode, also render the actual 3D PNG via kicad-cli
+  // pcb render. This is more expensive than reading the (model …) info, so
+  // gate it on library mode + a present model.
+  const [renderedPng] = createResource(
+    () => (isLibraryMode() && info() ? key() : null),
+    async (k: string | null) => {
+      if (!k) return null;
+      try {
+        const r = await invoke<{ png_data_url: string }>('sidecar_call', {
+          method: 'library.render_3d_png',
+          params: { lib_dir: props.libDir, component_name: props.componentName },
+        });
+        return r.png_data_url;
+      } catch (e) {
+        console.warn('[3D render] failed:', e);
+        return null;
+      }
+    },
+  );
+
   // --------------------------------------------------------------------------
   // Handlers
   // --------------------------------------------------------------------------
@@ -155,6 +175,32 @@ export default function Model3DPreview(props: Props) {
       <Show when={!info.loading && info()}>
         {(model) => (
           <div class="space-y-2">
+            {/* alpha.22: render actual 3D PNG (library mode only — staging
+                doesn't yet have a registered KSL_ROOT, so the .step's
+                (model) path won't resolve at render time). */}
+            <Show when={isLibraryMode()}>
+              <Show
+                when={!renderedPng.loading && renderedPng()}
+                fallback={
+                  <div
+                    data-testid="3d-render-fallback"
+                    class="flex items-center justify-center h-40 rounded bg-zinc-200 dark:bg-zinc-800 text-xs text-zinc-500 dark:text-zinc-400"
+                  >
+                    {renderedPng.loading ? 'Rendering 3D…' : '3D render unavailable'}
+                  </div>
+                }
+              >
+                <div class="rounded overflow-hidden bg-white dark:bg-zinc-950">
+                  <img
+                    data-testid="3d-render-png"
+                    src={renderedPng() ?? ''}
+                    alt={`3D render of ${model().filename}`}
+                    style={{ width: '100%', height: '240px', 'object-fit': 'contain' }}
+                  />
+                </div>
+              </Show>
+            </Show>
+
             {/* Filename */}
             <p class="text-sm text-zinc-900 dark:text-zinc-100 font-mono truncate" title={model().filename}>
               {model().filename}

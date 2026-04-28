@@ -18,11 +18,13 @@
  * because download never captured the part's category metadata.
  */
 
-import { createSignal, createEffect, Index, Show } from 'solid-js';
+import { createSignal, createEffect, Index, Show, untrack } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { queueItems, setStatus, dequeue } from '~/state/queue';
 import { currentWorkspace } from '~/state/workspace';
 import { refreshLcscIndex } from '~/state/lcscIndex';
+import { setRoom } from '~/state/room';
+import { setSelectedLib, setSelectedComponent } from '~/state/librariesRoom';
 import LibPicker from '~/components/LibPicker';
 
 interface PartMeta {
@@ -56,6 +58,10 @@ interface RowState {
   edits: Record<string, string>;
   saveState: RowSaveState;
   errorMsg: string;
+  // alpha.22: post-commit destination so the "Open in library" button knows
+  // where to navigate after the row is saved.
+  committedLib?: string;
+  committedComponent?: string;
 }
 
 const FALLBACK_LIB = 'Misc_KSL';
@@ -89,11 +95,16 @@ export default function ReviewBulkAssign() {
   const [loading, setLoading] = createSignal(false);
   const [loadErr, setLoadErr] = createSignal<string | null>(null);
 
-  const readyItems = () => queueItems().filter((q) => q.status === 'ready');
+  // alpha.22: keep COMMITTED rows visible alongside ready ones so the user
+  // can see what was just saved and click "Open in library" to navigate to
+  // the new entry. Previously only ready items showed → committed rows
+  // silently disappeared and the user lost the ability to fix offsets.
+  const visibleItems = () =>
+    queueItems().filter((q) => q.status === 'ready' || q.status === 'committed');
 
   createEffect(() => {
     const ws = workspace();
-    const items = readyItems();
+    const items = visibleItems();
     if (!ws || items.length === 0) {
       setRows([]);
       return;
@@ -103,8 +114,19 @@ export default function ReviewBulkAssign() {
     setLoading(true);
     setLoadErr(null);
 
+    // Snapshot prior rows so we preserve saveState='ok' + committed* fields
+    // across re-runs (status changes from ready → committed during save).
+    // untrack — we WRITE to rows() inside this effect; reading reactively
+    // would loop.
+    const prevByLcsc = untrack(() =>
+      Object.fromEntries(rows().map((r) => [r.lcsc, r])),
+    );
+
     Promise.all(
       items.map(async ({ lcsc }) => {
+        const prev = prevByLcsc[lcsc];
+        if (prev?.saveState === 'ok') return prev;  // freeze saved rows
+
         let meta: PartMeta;
         try {
           meta = await fetchMeta(stagingDir, lcsc);
@@ -113,9 +135,6 @@ export default function ReviewBulkAssign() {
         }
 
         const suggest = await fetchSuggest(meta.category ?? '', ws.root);
-        // Honor an explicit suggested_lib override in meta.json (manual edit)
-        // by treating it as the picked value but still showing the workspace
-        // existing-libs list for context.
         const suggestedLib = meta.suggested_lib ?? suggest.library;
 
         return {
@@ -130,7 +149,7 @@ export default function ReviewBulkAssign() {
           edits: (meta.edits as Record<string, string>) ?? {},
           saveState: 'idle' as RowSaveState,
           errorMsg: '',
-        };
+        } as RowState;
       }),
     )
       .then((built) => {
@@ -178,11 +197,16 @@ export default function ReviewBulkAssign() {
 
     await Promise.all(
       rows().map(async (row) => {
+        if (row.saveState === 'ok') return;  // skip already-saved rows
         const targetLib = row.overrideLib.trim() || row.suggestedLib;
         updateRow(row.lcsc, { saveState: 'saving', errorMsg: '' });
         setStatus(row.lcsc, 'committing');
         try {
-          await invoke('sidecar_call', {
+          const result = await invoke<{
+            committed_path: string;
+            target_lib?: string;
+            component_name?: string | null;
+          }>('sidecar_call', {
             method: 'library.commit',
             params: {
               workspace: ws.root,
@@ -192,7 +216,11 @@ export default function ReviewBulkAssign() {
               edits: row.edits,
             },
           });
-          updateRow(row.lcsc, { saveState: 'ok' });
+          updateRow(row.lcsc, {
+            saveState: 'ok',
+            committedLib: result.target_lib ?? targetLib,
+            committedComponent: result.component_name ?? row.lcsc,
+          });
           setStatus(row.lcsc, 'committed');
         } catch (e) {
           const msg = String(e);
@@ -228,7 +256,7 @@ export default function ReviewBulkAssign() {
           <p class="text-sm text-red-400">Error loading metadata: {loadErr()}</p>
         </Show>
 
-        <Show when={!loading() && readyItems().length === 0}>
+        <Show when={!loading() && visibleItems().length === 0}>
           <p class="text-sm text-zinc-500 italic">No ready items in queue.</p>
         </Show>
 
@@ -276,15 +304,35 @@ export default function ReviewBulkAssign() {
                           onChange={(v) => updateRow(row().lcsc, { overrideLib: v })}
                         />
                       </td>
-                      <td class="py-1.5 pr-3 text-center w-8">
+                      <td class="py-1.5 pr-3 text-center">
                         <Show when={row().saveState === 'saving'}>
                           <span class="text-blue-400 text-xs animate-pulse">…</span>
                         </Show>
                         <Show when={row().saveState === 'ok'}>
-                          <span class="text-emerald-400 text-xs">✓</span>
+                          <span class="inline-flex items-center gap-1.5">
+                            <span
+                              class="px-1.5 py-0.5 rounded text-[10px] font-sans bg-emerald-700 text-emerald-100"
+                              data-testid="bulk-saved-pill"
+                            >
+                              saved
+                            </span>
+                            <button
+                              type="button"
+                              data-testid="bulk-open-in-library"
+                              class="text-xs px-2 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200"
+                              onClick={() => {
+                                if (row().committedLib) setSelectedLib(row().committedLib!);
+                                if (row().committedComponent)
+                                  setSelectedComponent(row().committedComponent!);
+                                setRoom('libraries');
+                              }}
+                            >
+                              Open in library
+                            </button>
+                          </span>
                         </Show>
                         <Show when={row().saveState === 'error'}>
-                          <span class="text-red-400 text-xs" title={row().errorMsg}>✗</span>
+                          <span class="text-red-400 text-xs" title={row().errorMsg}>✗ {row().errorMsg.slice(0, 60)}</span>
                         </Show>
                       </td>
                       <td class="py-1.5 text-center w-8">

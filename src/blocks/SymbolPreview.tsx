@@ -81,25 +81,29 @@ export default function SymbolPreview(props: Props) {
     <div class="flex flex-col gap-2">
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-zinc-300">Symbol Preview</span>
-        <Show when={!isLibraryMode()}>
-          <button
-            class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
-            onClick={() => {
-              const ws = currentWorkspace();
-              invoke('sidecar_call', {
-                method: 'editor.open',
-                params: {
+        <button
+          class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
+          onClick={() => {
+            const ws = currentWorkspace();
+            const params = isLibraryMode()
+              ? {
+                  workspace: ws?.root,
+                  lib_dir: props.libDir,
+                  component_name: props.componentName,
+                  kind: 'symbol',
+                }
+              : {
                   workspace: ws?.root,
                   staging_dir: props.stagingDir,
                   lcsc: props.lcsc,
                   kind: 'symbol',
-                },
-              }).catch((e) => console.error('[editor] open symbol failed:', e));
-            }}
-          >
-            ✎ Edit in KiCad
-          </button>
-        </Show>
+                };
+            invoke('sidecar_call', { method: 'editor.open', params })
+              .catch((e) => console.error('[editor] open symbol failed:', e));
+          }}
+        >
+          ✎ Edit in KiCad
+        </button>
       </div>
 
       <Show

@@ -25,3 +25,37 @@ def write_properties(path: Path, edits: dict[str, str]) -> None:
         else:
             sym.properties.append(Property(key=k, value=v))
     lib.to_file(str(path))
+
+
+def read_properties_named(path: Path, component_name: str) -> dict[str, str]:
+    """Return key→value for the symbol named *component_name* in a multi-symbol
+    library file. Skips unit sub-symbols. Returns {} if the symbol is missing.
+    """
+    lib = SymbolLib().from_file(str(path))
+    for sym in lib.symbols:
+        if sym.entryName == component_name and sym.unitId is None:
+            return {p.key: p.value for p in sym.properties}
+    return {}
+
+
+def write_properties_named(
+    path: Path, component_name: str, edits: dict[str, str]
+) -> None:
+    """Update (or add) properties on the symbol named *component_name* in a
+    multi-symbol library file, then save. No-op if the symbol is missing.
+    """
+    lib = SymbolLib().from_file(str(path))
+    target = None
+    for sym in lib.symbols:
+        if sym.entryName == component_name and sym.unitId is None:
+            target = sym
+            break
+    if target is None:
+        return
+    by_key = {p.key: p for p in target.properties}
+    for k, v in edits.items():
+        if k in by_key:
+            by_key[k].value = v
+        else:
+            target.properties.append(Property(key=k, value=v))
+    lib.to_file(str(path))

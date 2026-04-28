@@ -948,6 +948,64 @@ async function main() {
     `);
     await new Promise((r) => setTimeout(r, 400));
     await screenshot(sid, `${OUT}/preview-symbol-footprint.png`);
+
+    // alpha.22: REAL-WORLD probes for the three reported regressions.
+    log('alpha.22: probes — properties editor + edit-in-KiCad buttons in library mode');
+    const a22State = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      done({
+        propsLoadingStuck: !!Array.from(document.querySelectorAll('p, span, div'))
+          .find(function(n){ return (n.textContent || '').trim() === 'Loading properties…'; }),
+        propsTitleHasMpn: (document.body.innerText || '').includes(${JSON.stringify(realComponentName)}),
+        editButtons: Array.from(document.querySelectorAll('button'))
+          .filter(function(b){ return (b.textContent || '').includes('Edit in KiCad'); }).length,
+      });
+    `);
+    log(`  alpha.22 state: ${JSON.stringify(a22State)}`);
+    if (a22State?.propsLoadingStuck) {
+      throw new Error('alpha.22: PropertyEditor is stuck on "Loading properties…" in library mode (parts.read_meta probably hanging)');
+    }
+    if (a22State?.editButtons < 2) {
+      throw new Error(`alpha.22: expected 2 Edit-in-KiCad buttons (symbol + footprint), got ${a22State?.editButtons}`);
+    }
+    log(`✅ alpha.22 properties not stuck + ${a22State.editButtons} Edit buttons present`);
+
+    // alpha.22 actual 3D render via kicad-cli pcb render (NEW).
+    log('alpha.22: 3D render PNG probe');
+    const render3d = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      window.__TAURI_INTERNALS__.invoke('sidecar_call', {
+        method: 'library.render_3d_png',
+        params: { lib_dir: ${JSON.stringify(realLibDir)}, component_name: ${JSON.stringify(realComponentName)} },
+      }).then(function(r){ done({ ok: true, len: (r.png_data_url || '').length, prefix: (r.png_data_url || '').slice(0, 30) }); })
+        .catch(function(e){ done({ ok: false, err: String(e) }); });
+    `);
+    log(`  3D render result: ${JSON.stringify(render3d)}`);
+    if (!render3d?.ok) throw new Error(`alpha.22 3D render RPC failed: ${render3d?.err}`);
+    if (!String(render3d.prefix).startsWith('data:image/png')) {
+      throw new Error(`alpha.22 3D render did not return a PNG data URL: ${render3d.prefix}`);
+    }
+    log(`✅ alpha.22 3D render PNG returned (${render3d.len} bytes data URL)`);
+    // Wait for the UI <img data-testid="3d-render-png"> to mount + paint,
+    // then scroll IT into view (scrolling its scrollable ancestor to the
+    // image's offsetTop). Earlier "scroll each .overflow-y-auto to bottom"
+    // pushed the image above the viewport.
+    await new Promise((r) => setTimeout(r, 1500));
+    const scrollResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        var img = document.querySelector('[data-testid="3d-render-png"]');
+        if (!img) { done({ok:false, reason:'img not found'}); return; }
+        img.scrollIntoView({block: 'center', inline: 'center'});
+        done({ok:true, complete: img.complete, naturalWidth: img.naturalWidth});
+      } catch (e) { done({ok:false, reason:String(e)}); }
+    `);
+    log(`  3D render scroll-into-view: ${JSON.stringify(scrollResult)}`);
+    if (!scrollResult?.ok) throw new Error(`alpha.22 3D render <img> not in DOM: ${scrollResult?.reason}`);
+    if (!scrollResult?.naturalWidth) throw new Error(`alpha.22 3D render <img> not painted (naturalWidth=0)`);
+    await new Promise((r) => setTimeout(r, 600));
+    await screenshot(sid, `${OUT}/renderers-3d-render.png`);
+
     if (has3DCard?.showsNoModelMsg) {
       throw new Error(
         `REAL-WORLD 3D card shows "No 3D model attached" even though library.get_3d_info ` +

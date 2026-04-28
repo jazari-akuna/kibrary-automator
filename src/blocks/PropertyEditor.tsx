@@ -2,8 +2,12 @@ import { createResource, createSignal, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 
 interface Props {
-  stagingDir: string;
-  lcsc: string;
+  // Staging mode (Add room) — both required
+  stagingDir?: string;
+  lcsc?: string;
+  // Library mode (Libraries room) — both required
+  libDir?: string;
+  componentName?: string;
 }
 
 interface PropsResult {
@@ -25,21 +29,34 @@ const EDITABLE_FIELDS = [
 ] as const;
 
 export default function PropertyEditor(props: Props) {
+  const isLibraryMode = () => Boolean(props.libDir && props.componentName);
   const symPath = () => `${props.stagingDir}/${props.lcsc}/${props.lcsc}.kicad_sym`;
 
-  const [propsData] = createResource<PropsResult>(() =>
-    invoke<PropsResult>('sidecar_call', {
+  const [propsData] = createResource<PropsResult>(() => {
+    if (isLibraryMode()) {
+      return invoke<PropsResult>('sidecar_call', {
+        method: 'library.read_props',
+        params: { lib_dir: props.libDir, component_name: props.componentName },
+      });
+    }
+    return invoke<PropsResult>('sidecar_call', {
       method: 'parts.read_props',
       params: { sym_path: symPath() },
-    })
-  );
+    });
+  });
 
-  const [metaData] = createResource<MetaResult>(() =>
-    invoke<MetaResult>('sidecar_call', {
+  const [metaData] = createResource<MetaResult>(() => {
+    if (isLibraryMode()) {
+      // Library mode: no per-component meta.json (the merged lib has no
+      // per-symbol staging meta). Resolve immediately so the loading guard
+      // releases — the meta.edits override only matters for staging.
+      return Promise.resolve({ meta: {} } as MetaResult);
+    }
+    return invoke<MetaResult>('sidecar_call', {
       method: 'parts.read_meta',
       params: { staging_dir: props.stagingDir, lcsc: props.lcsc },
-    })
-  );
+    });
+  });
 
   // Local edits on top of fetched properties
   const [edits, setEdits] = createSignal<Record<string, string>>({});
@@ -60,18 +77,29 @@ export default function PropertyEditor(props: Props) {
       if (Object.keys(changed).length === 0) return;
       setSaveStatus('saving');
       try {
-        await invoke('sidecar_call', {
-          method: 'parts.write_props',
-          params: { sym_path: symPath(), edits: changed },
-        });
-        await invoke('sidecar_call', {
-          method: 'parts.write_meta',
-          params: {
-            staging_dir: props.stagingDir,
-            lcsc: props.lcsc,
-            meta: { edits: changed },
-          },
-        });
+        if (isLibraryMode()) {
+          await invoke('sidecar_call', {
+            method: 'library.write_props',
+            params: {
+              lib_dir: props.libDir,
+              component_name: props.componentName,
+              edits: changed,
+            },
+          });
+        } else {
+          await invoke('sidecar_call', {
+            method: 'parts.write_props',
+            params: { sym_path: symPath(), edits: changed },
+          });
+          await invoke('sidecar_call', {
+            method: 'parts.write_meta',
+            params: {
+              staging_dir: props.stagingDir,
+              lcsc: props.lcsc,
+              meta: { edits: changed },
+            },
+          });
+        }
         setSaveStatus('saved');
         // Clear "Saved ✓" indicator after 2 s
         setTimeout(() => setSaveStatus('idle'), 2000);
@@ -93,7 +121,7 @@ export default function PropertyEditor(props: Props) {
     >
       <div class="space-y-4 max-w-xl">
         <div class="flex items-center justify-between">
-          <h2 class="text-base font-medium text-zinc-700 dark:text-zinc-200">{props.lcsc}</h2>
+          <h2 class="text-base font-medium text-zinc-700 dark:text-zinc-200">{props.componentName ?? props.lcsc}</h2>
           <span class="text-xs text-zinc-600 dark:text-zinc-400">
             {saveStatus() === 'saving' && 'Saving…'}
             {saveStatus() === 'saved' && 'Saved ✓'}

@@ -2,6 +2,21 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.22] — 2026-04-28
+
+### Added
+- **3D preview renders for real now.** The 3D card in the Library view now shows an actual `kicad-cli pcb render` PNG of the footprint with its STEP body loaded — not just the offset/rotation table. Implementation builds a temporary `.kicad_pcb` by splicing the sanitised `.kicad_mod` directly into a static empty-board template (no pcbnew dependency, no `python3 -c` round-trip — those produced boards kicad-cli refused to load due to a `Pgm()`-not-initialised codepath in scripted pcbnew).
+- **Saved-pill + Open-in-library after commit.** Committed rows in the Review/Bulk-Assign table no longer disappear; instead they show a "saved" pill plus an **Open in library** button that jumps to Libraries → `<lib>` → `<component>`, where you can edit offsets, replace 3D models, or open the symbol/footprint in KiCad — all without re-staging.
+- **Edit-in-KiCad buttons in library mode.** SymbolPreview and FootprintPreview now expose the **Edit in KiCad** button regardless of staging vs library context (previously buttons were only visible in staging mode).
+
+### Fixed
+- **PropertyEditor stuck on "Loading properties…" in library mode.** It was calling `parts.read_meta` with a staging-mode path. Library mode now routes through `library.read_props` / `library.write_props` against the committed `.kicad_sym`.
+- **Legacy layer aliases broke 3D render on real JLC2KiCadLib output.** `kicad-cli pcb render` rejects boards whose embedded footprints reference legacy layer names like `(layer "User.Comments")` (it rescues unknown names to `"Rescue"`, then refuses to load). The new render path rewrites both bare and quoted forms (`User.Comments → Cmts.User`, `User.Drawings → Dwgs.User`, etc.) before splicing.
+
+### Notes
+- The previous `pcbnew`/`python3 -c` board-build pipeline is gone — the sidecar no longer needs the system pcbnew Python module at runtime, simplifying the bundled-deb shape.
+- `render_3d.py` unit tests were rewritten to mock only `subprocess.run` (kicad-cli) — no more `_dual_subprocess_mock`. 8 tests cover command shape, error capture, FileNotFoundError, model-path resolution, layer-alias rewrites in both forms, spliced-board structure validity, env scrub, and missing-footprint guard.
+
 ## [26.4.27-alpha.21] — 2026-04-28
 
 ### Fixed

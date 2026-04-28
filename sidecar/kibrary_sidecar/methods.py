@@ -88,6 +88,24 @@ def parts_read_props(p: dict) -> dict:
     return {"properties": symfile.read_properties(Path(p["sym_path"]))}
 
 
+def library_read_props(p: dict) -> dict:
+    """Read properties for a single component out of a multi-symbol library
+    file. Library mode counterpart of parts.read_props (which reads the first
+    symbol in a single-symbol staged file)."""
+    lib_dir = Path(p["lib_dir"])
+    sym_path = lib_dir / f"{lib_dir.name}.kicad_sym"
+    return {"properties": symfile.read_properties_named(sym_path, p["component_name"])}
+
+
+def library_write_props(p: dict) -> dict:
+    """Update properties for a single component in a multi-symbol library
+    file (in place). Library mode counterpart of parts.write_props."""
+    lib_dir = Path(p["lib_dir"])
+    sym_path = lib_dir / f"{lib_dir.name}.kicad_sym"
+    symfile.write_properties_named(sym_path, p["component_name"], p["edits"])
+    return {"ok": True}
+
+
 def parts_write_props(p: dict) -> dict:
     symfile.write_properties(Path(p["sym_path"]), p["edits"])
     return {"ok": True}
@@ -235,7 +253,37 @@ def library_commit(p: dict) -> dict:
         ]
         sha = git_ops.auto_commit(workspace, message, paths_to_stage, enabled=True)
 
-    return {"committed_path": str(committed_path), "git_sha": sha}
+    # alpha.22: surface the post-commit symbol entryName so the frontend can
+    # navigate to it in the Libraries room. JLC2KiCadLib names symbols by MPN
+    # (e.g. 0603WAF1002T5E) — the LCSC alone isn't enough to pick the row.
+    component_name: str | None = None
+    try:
+        from kiutils.symbol import SymbolLib
+        sym_file = committed_path / f"{committed_path.name}.kicad_sym"
+        sym_lib = SymbolLib.from_file(str(sym_file))
+        # The just-committed symbol is typically the last one merged; we
+        # match by LCSC (entryName ^C\d+$ OR LCSC property == lcsc).
+        for sym in sym_lib.symbols:
+            if sym.unitId is not None:
+                continue
+            if sym.entryName == lcsc:
+                component_name = sym.entryName
+                break
+            for prop in sym.properties:
+                if prop.key == "LCSC" and prop.value == lcsc:
+                    component_name = sym.entryName
+                    break
+            if component_name:
+                break
+    except Exception as exc:  # noqa: BLE001 — diagnostic only
+        log.warning("library.commit: could not resolve component_name: %s", exc)
+
+    return {
+        "committed_path": str(committed_path),
+        "git_sha": sha,
+        "target_lib": target_lib,
+        "component_name": component_name,
+    }
 
 
 def git_init(p: dict) -> dict:
@@ -315,20 +363,39 @@ def editor_open(p: dict) -> dict:
     """
     workspace_root = p.get("workspace")
     kind = p["kind"]
-    staging_dir = Path(p["staging_dir"])
-    lcsc = p["lcsc"]
-    part_dir = staging_dir / lcsc
 
-    if kind == "symbol":
-        file_path = part_dir / f"{lcsc}.kicad_sym"
-    elif kind == "footprint":
-        pretty_dir = part_dir / f"{lcsc}.pretty"
-        mods = sorted(pretty_dir.glob("*.kicad_mod"))
-        if not mods:
-            raise FileNotFoundError(f"No .kicad_mod under {pretty_dir}")
-        file_path = mods[0]
+    # Library mode (Libraries room): {lib_dir, component_name, kind}
+    if "lib_dir" in p and "component_name" in p:
+        from kibrary_sidecar import lib_scanner
+        lib_dir = Path(p["lib_dir"])
+        component_name = p["component_name"]
+        if workspace_root is None:
+            workspace_root = str(lib_dir.parent)
+        if kind == "symbol":
+            file_path = lib_dir / f"{lib_dir.name}.kicad_sym"
+        elif kind == "footprint":
+            fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
+            if fp_path is None:
+                raise FileNotFoundError(
+                    f"No .kicad_mod for symbol {component_name!r} in {lib_dir}"
+                )
+            file_path = fp_path
+        else:
+            raise ValueError(f"Unsupported kind {kind!r}")
     else:
-        raise ValueError(f"Unsupported kind {kind!r}")
+        staging_dir = Path(p["staging_dir"])
+        lcsc = p["lcsc"]
+        part_dir = staging_dir / lcsc
+        if kind == "symbol":
+            file_path = part_dir / f"{lcsc}.kicad_sym"
+        elif kind == "footprint":
+            pretty_dir = part_dir / f"{lcsc}.pretty"
+            mods = sorted(pretty_dir.glob("*.kicad_mod"))
+            if not mods:
+                raise FileNotFoundError(f"No .kicad_mod under {pretty_dir}")
+            file_path = mods[0]
+        else:
+            raise ValueError(f"Unsupported kind {kind!r}")
 
     if not file_path.is_file():
         raise FileNotFoundError(str(file_path))
@@ -500,6 +567,41 @@ def parts_render_footprint_svg(p: dict) -> dict:
     return {"svg": svg}
 
 
+def library_render_3d_png(p: dict) -> dict:
+    """Render a footprint's 3D view to PNG via kicad-cli pcb render and
+    return the PNG bytes as a base64 data URL the frontend can drop into
+    ``<img src=…>``.
+    """
+    from kibrary_sidecar import lib_scanner, render_3d
+    import base64
+    import tempfile
+    lib_dir = Path(p["lib_dir"])
+    component_name = p["component_name"]
+    fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
+    if fp_path is None:
+        raise FileNotFoundError(
+            f"No .kicad_mod for symbol {component_name!r} in {lib_dir}"
+        )
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        render_3d.render_footprint_3d_png(
+            lib_dir=lib_dir,
+            footprint_file=fp_path,
+            output_png=tmp_path,
+            side=p.get("side", "top"),
+            width=p.get("width", 600),
+            height=p.get("height", 400),
+        )
+        b64 = base64.b64encode(tmp_path.read_bytes()).decode("ascii")
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+    return {"png_data_url": f"data:image/png;base64,{b64}"}
+
+
 def library_set_3d_offset(p: dict) -> dict:
     """Update the offset / rotation / scale of the first 3D model block in
     a committed component's ``.kicad_mod``."""
@@ -630,6 +732,9 @@ REGISTRY = {
     "parts.parse_input": parts_parse_input,
     "parts.read_meta": parts_read_meta,
     "parts.write_meta": parts_write_meta,
+    "library.read_props": library_read_props,
+    "library.write_props": library_write_props,
+    "library.render_3d_png": library_render_3d_png,
     "parts.delete_staged": parts_delete_staged,
     "parts.read_props": parts_read_props,
     "parts.write_props": parts_write_props,

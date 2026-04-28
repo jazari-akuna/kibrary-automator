@@ -120,8 +120,8 @@ export default function ComponentDetail() {
           {/* Property Editor */}
           <div class="border-t border-zinc-300 dark:border-zinc-700 pt-4">
             <PropertyEditor
-              stagingDir={libDir()!}
-              lcsc={comp()!}
+              libDir={libDir()!}
+              componentName={comp()!}
             />
           </div>
         </div>

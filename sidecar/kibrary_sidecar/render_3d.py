@@ -1,0 +1,323 @@
+"""render_3d.py — Render a single KiCad footprint as a 3D PNG via kicad-cli.
+
+Used by the 3D card in the Library view to produce an inline preview of
+the part with its STEP model loaded.
+
+Pipeline
+--------
+``kicad-cli pcb render`` is the only kicad-cli sub-command that emits a
+3D PNG, but it requires a fully-formed ``.kicad_pcb`` (just feeding it a
+``.kicad_mod`` doesn't work). To keep the call site simple, this module:
+
+1. Sanitises the ``.kicad_mod`` so kicad-cli's pcb loader will accept it
+   when embedded in a board:
+
+   * Legacy layer aliases such as ``User.Comments`` → ``Cmts.User`` (in
+     both bare and quoted forms). Without this, ``kicad-cli fp upgrade``
+     and the pcb loader rescue them to the literal ``"Rescue"`` layer,
+     which the pcb loader then rejects with "Failed to load board".
+   * ``(model …)`` paths are rewritten to absolute filesystem paths,
+     resolving ``${KSL_ROOT}`` (committed-library form) or treating bare
+     ``./foo.step`` as a staging-form sibling of the .pretty.
+
+2. Splices the sanitised footprint S-expression directly into a static
+   empty-board template (just before the closing ``)`` of the
+   ``(kicad_pcb …)`` form). This avoids a separate pcbnew Python dep,
+   which previously had to shell out to ``python3 -c`` because pcbnew
+   isn't pip-installable, and which had a Pgm()-not-initialised
+   assertion path that produced boards kicad-cli couldn't load.
+
+3. Runs ``kicad-cli pcb render`` against the spliced board.
+
+LD_LIBRARY_PATH handling mirrors :mod:`svg_render` — see its module
+docstring for the PyInstaller leak it works around.
+"""
+from __future__ import annotations
+
+import logging
+import re
+import subprocess
+import tempfile
+from pathlib import Path
+
+from kibrary_sidecar.svg_render import _system_env
+
+log = logging.getLogger(__name__)
+
+
+def render_footprint_3d_png(
+    lib_dir: Path,
+    footprint_file: Path,
+    output_png: Path,
+    *,
+    side: str = "top",
+    width: int = 600,
+    height: int = 400,
+) -> None:
+    """Render a footprint's 3D view to PNG via ``kicad-cli pcb render``.
+
+    Parameters
+    ----------
+    lib_dir:
+        The committed library directory (e.g. ``<workspace>/Connector_KSL``)
+        OR a staging part directory (e.g. ``.../staging/C2950``). In both
+        layouts the .3dshapes/ sits alongside the .pretty/.
+    footprint_file:
+        Path to the ``.kicad_mod`` file to render.
+    output_png:
+        Destination for the rendered PNG. Parent dir is created if needed.
+    side:
+        ``"top"`` for an isometric top view (the default — uses kicad-cli's
+        ``--rotate`` for a slight tilt so 3D bodies are visible above the
+        PCB). Pass ``"flat"`` for a strict orthographic top-down render
+        (no rotate). Other values pass straight through to kicad-cli.
+    width, height:
+        Image dimensions in pixels.
+
+    Raises
+    ------
+    RuntimeError
+        kicad-cli exited non-zero (the stderr is included in the message).
+    FileNotFoundError
+        kicad-cli produced no PNG at the expected path.
+    """
+    if not footprint_file.is_file():
+        raise FileNotFoundError(
+            f"render_footprint_3d_png: footprint file not found: {footprint_file}"
+        )
+
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
+        # 1. Sanitise + splice into the empty-board template.
+        sanitised = _sanitise_footprint(footprint_file, lib_dir)
+        board_path = tmp_dir / "preview.kicad_pcb"
+        board_path.write_text(_splice_into_template(sanitised), encoding="utf-8")
+
+        fp_name = footprint_file.stem
+
+        # 2. Render.
+        cmd = [
+            "kicad-cli",
+            "pcb",
+            "render",
+            "--output", str(output_png),
+            "--width", str(width),
+            "--height", str(height),
+            "--quality", "basic",
+        ]
+        if side == "flat":
+            cmd += ["--side", "top"]
+        elif side == "top":
+            # Isometric-ish top — slight tilt so 3D bodies are visible
+            # above the PCB. Matches eeschema's default 3D view angle.
+            cmd += [
+                "--side", "top",
+                "--rotate", "-25,0,-25",
+                "--perspective",
+            ]
+        else:
+            cmd += ["--side", side]
+
+        cmd.append(str(board_path))
+
+        log.debug("Rendering 3D PNG: %s", " ".join(cmd))
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=_system_env())
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(
+                f"kicad-cli pcb render failed (exit {proc.returncode}) "
+                f"for footprint {fp_name!r}: {err}"
+            )
+
+        if not output_png.is_file():
+            raise FileNotFoundError(
+                f"kicad-cli produced no PNG at {output_png} "
+                f"for footprint {fp_name!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
+
+# Regex for any (model "..." …) or (model ./foo.step …) form, capturing the
+# path argument in group(2). The path may be quoted or bare (no whitespace).
+_MODEL_PATH_RE = re.compile(
+    r'(\(model\s+)("[^"]+"|[^\s\(\)]+)',
+    flags=re.IGNORECASE,
+)
+
+# Legacy layer aliases. ``kicad-cli fp upgrade`` and the pcb loader rescue
+# unknown-by-canonical-name layers to the literal ``"Rescue"`` layer, which
+# the pcb loader then refuses to render. JLC2KiCadLib emits the legacy
+# aliases (e.g. ``"User.Comments"``) in both bare and quoted form, so we
+# rewrite both shapes back to the canonical name before splice.
+_LAYER_ALIASES = {
+    "User.Comments": "Cmts.User",
+    "User.Drawings": "Dwgs.User",
+    "User.Eco1":     "Eco1.User",
+    "User.Eco2":     "Eco2.User",
+}
+
+
+def _sanitise_footprint(footprint_file: Path, lib_dir: Path) -> str:
+    """Read the .kicad_mod and return a string ready to splice into a board.
+
+    * Legacy layer aliases (bare and quoted) → canonical name.
+    * ``(model …)`` paths → absolute filesystem paths (``${KSL_ROOT}``
+      expanded, ``./foo.step`` resolved against ``lib_dir/*.3dshapes``).
+    """
+    text = footprint_file.read_text(encoding="utf-8")
+    for alias, canonical in _LAYER_ALIASES.items():
+        text = re.sub(
+            rf'\(layer\s+{re.escape(alias)}\)',
+            f'(layer "{canonical}")',
+            text,
+        )
+        text = re.sub(
+            rf'\(layer\s+"{re.escape(alias)}"\)',
+            f'(layer "{canonical}")',
+            text,
+        )
+    text = _MODEL_PATH_RE.sub(
+        lambda m: m.group(1) + '"' + _resolve_model_path(m.group(2), lib_dir) + '"',
+        text,
+    )
+    return text
+
+
+def _resolve_model_path(raw: str, lib_dir: Path) -> str:
+    """Turn a ``(model …)`` path argument into an absolute filesystem path.
+
+    Accepts the path token as kicad-cli sees it (quoted or bare) and
+    returns just the resolved string (no surrounding quotes).
+
+    Resolution rules
+    ----------------
+    * ``${KSL_ROOT}/<lib>/<lib>.3dshapes/foo.step`` → ``<lib_dir.parent>/<lib>/<lib>.3dshapes/foo.step``
+    * ``./foo.step`` or ``foo.step`` (staging form) → ``<lib_dir>/<lcsc>.3dshapes/foo.step``
+      (we look for any ``*.3dshapes`` dir under lib_dir and pick the first
+      that contains ``foo.step``)
+    * Already-absolute paths pass through unchanged.
+    """
+    raw = raw.strip().strip('"').strip("'")
+    ksl_root = str(lib_dir.parent)
+    expanded = raw.replace("${KSL_ROOT}", ksl_root).replace("$KSL_ROOT", ksl_root)
+
+    p = Path(expanded)
+    if p.is_absolute():
+        return str(p)
+
+    bare = expanded.lstrip("./").lstrip(".\\")
+    bare_name = Path(bare).name
+
+    for shapes_dir in sorted(lib_dir.glob("*.3dshapes")):
+        cand = shapes_dir / bare_name
+        if cand.is_file():
+            return str(cand)
+
+    return str((lib_dir / bare).resolve())
+
+
+def _splice_into_template(footprint_text: str) -> str:
+    """Insert *footprint_text* (a ``(footprint …)`` S-expression) into the
+    static empty-board template, just before the closing ``)`` of the
+    outer ``(kicad_pcb …)`` form.
+    """
+    template = _EMPTY_BOARD_TEMPLATE.rstrip()
+    assert template.endswith(")"), "empty board template must end with )"
+    body = template[:-1].rstrip()
+    return body + "\n" + footprint_text.strip() + "\n)\n"
+
+
+# A complete empty .kicad_pcb (KiCad 9.0 format, version 20241229),
+# generated once by ``pcbnew.SaveBoard(p, pcbnew.NewBoard(p))`` and
+# embedded here to avoid depending on the system pcbnew Python module at
+# render time. The (layers) table defines all canonical layer names so a
+# spliced footprint that references e.g. ``"Cmts.User"`` resolves cleanly.
+_EMPTY_BOARD_TEMPLATE = """\
+(kicad_pcb
+\t(version 20241229)
+\t(generator "pcbnew")
+\t(generator_version "9.0")
+\t(general
+\t\t(thickness 1.6)
+\t\t(legacy_teardrops no)
+\t)
+\t(paper "A4")
+\t(layers
+\t\t(0 "F.Cu" signal)
+\t\t(2 "B.Cu" signal)
+\t\t(9 "F.Adhes" user "F.Adhesive")
+\t\t(11 "B.Adhes" user "B.Adhesive")
+\t\t(13 "F.Paste" user)
+\t\t(15 "B.Paste" user)
+\t\t(5 "F.SilkS" user "F.Silkscreen")
+\t\t(7 "B.SilkS" user "B.Silkscreen")
+\t\t(1 "F.Mask" user)
+\t\t(3 "B.Mask" user)
+\t\t(17 "Dwgs.User" user "User.Drawings")
+\t\t(19 "Cmts.User" user "User.Comments")
+\t\t(21 "Eco1.User" user "User.Eco1")
+\t\t(23 "Eco2.User" user "User.Eco2")
+\t\t(25 "Edge.Cuts" user)
+\t\t(27 "Margin" user)
+\t\t(31 "F.CrtYd" user "F.Courtyard")
+\t\t(29 "B.CrtYd" user "B.Courtyard")
+\t\t(35 "F.Fab" user)
+\t\t(33 "B.Fab" user)
+\t\t(39 "User.1" user)
+\t\t(41 "User.2" user)
+\t\t(43 "User.3" user)
+\t\t(45 "User.4" user)
+\t)
+\t(setup
+\t\t(pad_to_mask_clearance 0)
+\t\t(allow_soldermask_bridges_in_footprints no)
+\t\t(tenting front back)
+\t\t(pcbplotparams
+\t\t\t(layerselection 0x00000000_00000000_55555555_5755f5ff)
+\t\t\t(plot_on_all_layers_selection 0x00000000_00000000_00000000_00000000)
+\t\t\t(disableapertmacros no)
+\t\t\t(usegerberextensions no)
+\t\t\t(usegerberattributes yes)
+\t\t\t(usegerberadvancedattributes yes)
+\t\t\t(creategerberjobfile yes)
+\t\t\t(dashed_line_dash_ratio 12.000000)
+\t\t\t(dashed_line_gap_ratio 3.000000)
+\t\t\t(svgprecision 4)
+\t\t\t(plotframeref no)
+\t\t\t(mode 1)
+\t\t\t(useauxorigin no)
+\t\t\t(hpglpennumber 1)
+\t\t\t(hpglpenspeed 20)
+\t\t\t(hpglpendiameter 15.000000)
+\t\t\t(pdf_front_fp_property_popups yes)
+\t\t\t(pdf_back_fp_property_popups yes)
+\t\t\t(pdf_metadata yes)
+\t\t\t(pdf_single_document no)
+\t\t\t(dxfpolygonmode yes)
+\t\t\t(dxfimperialunits yes)
+\t\t\t(dxfusepcbnewfont yes)
+\t\t\t(psnegative no)
+\t\t\t(psa4output no)
+\t\t\t(plot_black_and_white yes)
+\t\t\t(sketchpadsonfab no)
+\t\t\t(plotpadnumbers no)
+\t\t\t(hidednponfab no)
+\t\t\t(sketchdnponfab yes)
+\t\t\t(crossoutdnponfab yes)
+\t\t\t(subtractmaskfromsilk no)
+\t\t\t(outputformat 1)
+\t\t\t(mirror no)
+\t\t\t(drillshape 1)
+\t\t\t(scaleselection 1)
+\t\t\t(outputdirectory "")
+\t\t)
+\t)
+\t(net 0 "")
+\t(embedded_fonts no)
+)
+"""
