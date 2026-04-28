@@ -49,15 +49,17 @@ export async function openWorkspace(path: string) {
 // bug is in queue.ts; if no events arrive then the Rust→webview emit path
 // is broken. Either way the smoke test surfaces it.
 if (typeof window !== 'undefined') {
-  (window as any).__kibraryTest = {
-    openWorkspace,
-    capturedProgress: [] as any[],
-    armProgressCapture: async () => {
-      const { listen } = await import('@tauri-apps/api/event');
-      await listen('download.progress', (e: any) => {
-        (window as any).__kibraryTest.capturedProgress.push(e.payload);
-      });
-    },
+  // Merge into the existing test bag (other state modules — e.g. lcscIndex.ts —
+  // also publish hooks here). Earlier alphas overwrote the object outright,
+  // which silently dropped keys whose modules happened to load first.
+  const bag = ((window as any).__kibraryTest = (window as any).__kibraryTest ?? {});
+  bag.openWorkspace = openWorkspace;
+  bag.capturedProgress = bag.capturedProgress ?? ([] as any[]);
+  bag.armProgressCapture = async () => {
+    const { listen } = await import('@tauri-apps/api/event');
+    await listen('download.progress', (e: any) => {
+      bag.capturedProgress.push(e.payload);
+    });
   };
 }
 
