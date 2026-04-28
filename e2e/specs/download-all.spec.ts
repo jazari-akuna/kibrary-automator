@@ -628,6 +628,17 @@ async function main() {
     log('✅ alpha.17 duplicate-indicator pill renders + names the right library');
     await screenshot(sid, `${OUT}/lcsc-in-library-pill.png`);
 
+    // Re-collapse the search pane so Bulk-Assign reclaims width before the
+    // cancel-button click in step 9d. Otherwise the cancel button can sit
+    // off-screen with the pane open + the search-results scroll area
+    // covering its layout flow, and WebDriver flags it "not interactable".
+    const togglePost = await findElement(sid, '[data-testid="search-pane-toggle"]');
+    if (togglePost && (await elAttr(sid, togglePost, 'aria-expanded')) === 'true') {
+      log('  re-collapsing search pane to free Bulk-Assign width');
+      await elClick(sid, togglePost);
+      await new Promise((r) => setTimeout(r, 350));
+    }
+
     // 9d. Cancel button deletes staged files + drops the queue row.
     log('clicking Bulk-Assign cancel — should rmtree staging dir + dequeue');
     const cancelBtn = await findElement(sid, '[data-testid="bulk-cancel"]');
