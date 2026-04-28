@@ -581,9 +581,21 @@ async function main() {
     if (!searchInput) throw new Error('search input not found (alpha.17 pill probe)');
     await elClear(sid, searchInput);
     await elType(sid, searchInput, 'C25804');
+    // Wait for any result row to appear before asserting the pill — gives
+    // search.raph.io time to respond and Solid time to render the <For>.
+    await waitFor(
+      async () => {
+        const rows = await findElements(sid, 'ul li');
+        // The result list is the only ul inside the pane that yields >0 rows
+        // for the C25804 query; counting >0 lis is robust enough.
+        return rows.length > 0 ? true : null;
+      },
+      6_000, 200, 'at least one result row rendered for C25804',
+    );
+    await screenshot(sid, `${OUT}/lcsc-in-library-pill-pre.png`);
     await waitFor(
       () => findElement(sid, '[data-testid="lcsc-in-library-pill"]'),
-      8_000, 200, 'duplicate-indicator pill rendered for C25804',
+      4_000, 200, 'duplicate-indicator pill rendered for C25804',
     );
     const pillEl = await findElement(sid, '[data-testid="lcsc-in-library-pill"]');
     const pillText = pillEl ? await elText(sid, pillEl) : '';

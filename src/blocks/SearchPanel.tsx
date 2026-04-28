@@ -573,15 +573,13 @@ export default function SearchPanel() {
                               it differs from the LCSC code. Purely informational;
                               the user can still click "+ Add" to re-download. */}
                           <Show when={lcscIndex()[result.lcsc]}>
-                            {(entry) => (
-                              <span
-                                data-testid="lcsc-in-library-pill"
-                                class="inline-flex items-center rounded-md bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600 normal-case font-sans"
-                                title={`${entry().library} / ${entry().component_name}`}
-                              >
-                                In library: {entry().library}
-                              </span>
-                            )}
+                            <span
+                              data-testid="lcsc-in-library-pill"
+                              class="inline-flex items-center rounded-md bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600 normal-case font-sans"
+                              title={`${lcscIndex()[result.lcsc]?.library} / ${lcscIndex()[result.lcsc]?.component_name}`}
+                            >
+                              In library: {lcscIndex()[result.lcsc]?.library}
+                            </span>
                           </Show>
                         </p>
                       </div>
