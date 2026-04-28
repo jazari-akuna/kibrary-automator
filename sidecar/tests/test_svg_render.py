@@ -17,25 +17,8 @@ import pytest
 from kibrary_sidecar import svg_render
 
 
-def _seed_dir_with_svg(svg_text: str = '<svg>x</svg>'):
-    """Patch kicad-cli to drop a single .svg in the tmp output dir."""
-    def _fake_run(cmd, check, capture_output):  # noqa: ARG001 — match real signature
-        # cmd[-2] is `--output <tmp_dir>` ... actually find by flag.
-        out_dir = None
-        for i, a in enumerate(cmd):
-            if a == "--output" and i + 1 < len(cmd):
-                out_dir = Path(cmd[i + 1])
-                break
-        # Find the symbol/footprint name to make the filename right.
-        name = None
-        for flag in ("--symbol", "--footprint"):
-            if flag in cmd:
-                name = cmd[cmd.index(flag) + 1]
-                break
-        assert out_dir is not None
-        (out_dir / f"{name or 'out'}.svg").write_text(svg_text, encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
-    return _fake_run
+def _ok_proc(cmd):
+    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
 
 def test_render_symbol_invokes_kicad_cli_correctly(tmp_path: Path):
@@ -43,12 +26,12 @@ def test_render_symbol_invokes_kicad_cli_correctly(tmp_path: Path):
     sym.write_text("(kicad_symbol_lib)\n")  # content is irrelevant, kicad-cli is mocked
 
     captured = {}
-    def _spy(cmd, check, capture_output):  # noqa: ARG001
+    def _spy(cmd, capture_output, text):  # noqa: ARG001
         captured["cmd"] = list(cmd)
         # Simulate kicad-cli writing the SVG.
         out_dir = Path(cmd[cmd.index("--output") + 1])
         (out_dir / "C25804.svg").write_text("<svg>OK</svg>", encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     with patch("subprocess.run", side_effect=_spy):
         svg = svg_render.render_symbol_svg(sym, "C25804")
@@ -66,11 +49,11 @@ def test_render_footprint_invokes_kicad_cli_correctly(tmp_path: Path):
     pretty.mkdir()
 
     captured = {}
-    def _spy(cmd, check, capture_output):  # noqa: ARG001
+    def _spy(cmd, capture_output, text):  # noqa: ARG001
         captured["cmd"] = list(cmd)
         out_dir = Path(cmd[cmd.index("--output") + 1])
         (out_dir / "C25804.svg").write_text("<svg>FP</svg>", encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     with patch("subprocess.run", side_effect=_spy):
         svg = svg_render.render_footprint_svg(pretty, "C25804")
@@ -86,11 +69,13 @@ def test_render_symbol_raises_when_kicad_cli_fails(tmp_path: Path):
     sym = tmp_path / "Demo.kicad_sym"
     sym.write_text("(kicad_symbol_lib)\n")
 
-    with patch(
-        "subprocess.run",
-        side_effect=subprocess.CalledProcessError(1, "kicad-cli", b"", b"err"),
-    ):
-        with pytest.raises(subprocess.CalledProcessError):
+    def _fail(cmd, capture_output, text):  # noqa: ARG001
+        return subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="symbol 'C25804' not found in library"
+        )
+
+    with patch("subprocess.run", side_effect=_fail):
+        with pytest.raises(RuntimeError, match="symbol 'C25804' not found"):
             svg_render.render_symbol_svg(sym, "C25804")
 
 
@@ -98,9 +83,9 @@ def test_render_symbol_raises_when_no_svg_produced(tmp_path: Path):
     sym = tmp_path / "Demo.kicad_sym"
     sym.write_text("(kicad_symbol_lib)\n")
 
-    def _no_output(cmd, check, capture_output):  # noqa: ARG001
+    def _no_output(cmd, capture_output, text):  # noqa: ARG001
         # Don't write anything; simulate kicad-cli silently producing nothing.
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     with patch("subprocess.run", side_effect=_no_output):
         with pytest.raises(FileNotFoundError):
@@ -112,7 +97,7 @@ def test_render_symbol_picks_most_recent_svg_by_mtime(tmp_path: Path):
     sym = tmp_path / "Demo.kicad_sym"
     sym.write_text("(kicad_symbol_lib)\n")
 
-    def _two_svgs(cmd, check, capture_output):  # noqa: ARG001
+    def _two_svgs(cmd, capture_output, text):  # noqa: ARG001
         import time
         out_dir = Path(cmd[cmd.index("--output") + 1])
         old = out_dir / "stale.svg"
@@ -120,7 +105,7 @@ def test_render_symbol_picks_most_recent_svg_by_mtime(tmp_path: Path):
         time.sleep(0.02)  # ensure mtime differs
         new = out_dir / "C25804.svg"
         new.write_text("NEW", encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     with patch("subprocess.run", side_effect=_two_svgs):
         svg = svg_render.render_symbol_svg(sym, "C25804")

@@ -84,6 +84,13 @@ def list_components(lib_dir: Path) -> list[dict]:
 
     results: list[dict] = []
     for sym in lib.symbols:
+        # Skip unit sub-symbols (entries like `MyPart_0_1`, `MyPart_1_1`).
+        # They share an entryName base with the parent and aren't renderable
+        # via `kicad-cli sym export svg --symbol <name>` — kicad-cli expects
+        # the top-level symbol. Including them in this list is what made the
+        # alpha.18 renderer fail with "exit 1" when the user clicked one.
+        if sym.unitId is not None:
+            continue
         props = {p.key: p.value for p in sym.properties}
         results.append(
             {

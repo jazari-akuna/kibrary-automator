@@ -68,7 +68,16 @@ def render_symbol_svg(sym_path: Path, component_name: str) -> str:
             str(sym_path),
         ]
         log.debug("Rendering symbol SVG: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True, capture_output=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            # Surface kicad-cli's own diagnostic (it tells you whether the
+            # symbol was missing, the file was unreadable, the format was
+            # wrong, etc.) — without this the UI just sees "exit 1".
+            err = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(
+                f"kicad-cli sym export svg failed (exit {proc.returncode}) "
+                f"for symbol {component_name!r} in {sym_path.name}: {err}"
+            )
 
         # kicad-cli names the output file after the library, e.g.
         # `<sym_path stem>.svg` or `<symbol>.svg` depending on version.
@@ -105,7 +114,13 @@ def render_footprint_svg(pretty_dir: Path, footprint_name: str) -> str:
             str(pretty_dir),
         ]
         log.debug("Rendering footprint SVG: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True, capture_output=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(
+                f"kicad-cli fp export svg failed (exit {proc.returncode}) "
+                f"for footprint {footprint_name!r} in {pretty_dir.name}: {err}"
+            )
 
         expected = Path(tmp_dir) / f"{footprint_name}.svg"
         if expected.is_file():

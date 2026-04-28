@@ -793,6 +793,98 @@ async function main() {
     }
     log('✅ alpha.18 renderers: symbol + footprint <img> mounted with data: URLs');
 
+    // -------------------------------------------------------------------------
+    // 11b. alpha.18.1 REAL-WORLD renderer probe — the previous probe used a
+    //      synthetic seed with a hand-crafted (symbol "C25804" ...) entry,
+    //      which doesn't catch the alpha.18 bug where JLC2KiCadLib names
+    //      symbols after the MPN (not the LCSC). This probe commits the
+    //      staged C25804 to a fresh library via library.commit (the same
+    //      path the user clicks "Commit" through), then renders the symbol
+    //      by its real MPN name, end-to-end through kicad-cli.
+    // -------------------------------------------------------------------------
+    log('alpha.18.1: REAL-WORLD renderer probe — commit C25804 then render by MPN');
+    const REAL_LIB = 'RealRenderProbe_KSL';
+    const realCommit = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      window.__TAURI_INTERNALS__.invoke('sidecar_call', {
+        method: 'library.commit',
+        params: {
+          workspace: ${JSON.stringify(WORKSPACE)},
+          lcsc: 'C25804',
+          staging_dir: ${JSON.stringify(STAGING)},
+          target_lib: ${JSON.stringify(REAL_LIB)},
+        },
+      }).then(function(r){done({ok:true, r:r});}).catch(function(e){done({ok:false, e:String(e)});});
+    `);
+    if (!realCommit?.ok) throw new Error(`real-world commit failed: ${JSON.stringify(realCommit)}`);
+    log(`  ✅ committed C25804 → ${REAL_LIB}`);
+
+    // Discover the symbol name JLC2KiCadLib gave us — it's the MPN, not
+    // 'C25804'. We use library.list_components and pick the first non-unit
+    // entry (alpha.18.1 also filtered _0_1 / _1_1 sub-symbols out).
+    const realLibDir = join(WORKSPACE, REAL_LIB);
+    const realLibList = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      window.__TAURI_INTERNALS__.invoke('sidecar_call', {
+        method: 'library.list_components',
+        params: { lib_dir: ${JSON.stringify(realLibDir)} },
+      }).then(function(r){done({ok:true, r:r});}).catch(function(e){done({ok:false, e:String(e)});});
+    `);
+    if (!realLibList?.ok || !realLibList.r?.components?.length) {
+      throw new Error(`real-world list_components empty: ${JSON.stringify(realLibList)}`);
+    }
+    const realComponentName = realLibList.r.components[0].name;
+    log(`  real-world symbol name (from JLC2KiCadLib): "${realComponentName}"`);
+    if (realComponentName === 'C25804') {
+      log(`  ⚠️ symbol named C25804 — JLC2KiCadLib usually names by MPN; test still proceeds`);
+    }
+    // Also assert no _0_1 sub-symbols leaked into the list (alpha.18.1 fix).
+    const subSymsInList = realLibList.r.components.filter((c: any) => /_\d+_\d+$/.test(c.name));
+    if (subSymsInList.length > 0) {
+      throw new Error(`alpha.18.1 sub-symbol filter regressed — list has unit entries: ${JSON.stringify(subSymsInList.map((c: any) => c.name))}`);
+    }
+    log(`  ✅ no unit sub-symbols (_X_Y suffix) in list`);
+
+    // Navigate to the real lib + part and assert renderers mount with data: URLs.
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        window.__kibraryTest.setRoom('libraries');
+        window.__kibraryTest.selectLibrary(${JSON.stringify(REAL_LIB)});
+        window.__kibraryTest.selectComponent(${JSON.stringify(realComponentName)});
+        done(true);
+      } catch (e) { done(String(e)); }
+    `);
+    await new Promise((r) => setTimeout(r, 1500));
+    const realPreviews = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var sym = document.querySelector('[data-testid="symbol-preview-svg"]');
+      var fp = document.querySelector('[data-testid="footprint-preview-svg"]');
+      var symFb = document.querySelector('[data-testid="symbol-preview-fallback"]');
+      var fpFb = document.querySelector('[data-testid="footprint-preview-fallback"]');
+      done({
+        symMounted: !!sym, fpMounted: !!fp,
+        symFallbackText: symFb ? symFb.textContent : null,
+        fpFallbackText: fpFb ? fpFb.textContent : null,
+        symLen: sym ? (sym.getAttribute('src') || '').length : 0,
+        fpLen: fp ? (fp.getAttribute('src') || '').length : 0,
+      });
+    `);
+    log(`  real-world preview state: ${JSON.stringify(realPreviews)}`);
+    await screenshot(sid, `${OUT}/renderers-real-world.png`);
+    if (!realPreviews?.symMounted) {
+      throw new Error(
+        `REAL-WORLD: symbol preview did not mount. Fallback text: "${realPreviews?.symFallbackText}". ` +
+        `This is the alpha.18 user-reported bug — synthetic test wasn't catching it.`,
+      );
+    }
+    if (!realPreviews?.fpMounted) {
+      throw new Error(
+        `REAL-WORLD: footprint preview did not mount. Fallback text: "${realPreviews?.fpFallbackText}".`,
+      );
+    }
+    log(`✅ alpha.18.1 REAL-WORLD: kicad-cli renders MPN-named symbol "${realComponentName}" without error`);
+
     // ---------------------------------------------------------------------
     // 12. alpha.18 fuzzy library_suggest — when an existing lib resembles
     //     the category-derived name, the sidecar promotes it to top.

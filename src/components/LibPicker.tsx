@@ -80,7 +80,13 @@ export default function LibPicker(props: LibPickerProps) {
     for (const m of props.matches) {
       if (seen.has(m)) continue;
       if (q && !m.toLowerCase().includes(qLower)) continue;
-      items.push({ name: m, kind: 'match' });
+      // alpha.18.1: when the fuzzy boost fires, the sidecar demotes the
+      // category-derived name (e.g. `Connectors_KSL` losing to existing
+      // `Connector_KSL`) into `matches[]` so the user can still choose
+      // "create new" — but `Connectors_KSL` doesn't exist in workspace, so
+      // labelling it `match` is wrong. Pick the badge by actual membership.
+      const existsInWorkspace = props.existing.includes(m);
+      items.push({ name: m, kind: existsInWorkspace ? 'match' : 'new' });
       seen.add(m);
     }
     for (const e of props.existing) {

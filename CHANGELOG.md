@@ -2,6 +2,18 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.19] — 2026-04-28
+
+### Fixed
+- **Footprint renderer was using the symbol name as the footprint name.** alpha.18 shipped with a smoke test that hand-renamed `<package>.kicad_mod` → `C25804.kicad_mod` in the seed library, so kicad-cli matched it by filename and the test passed even though the production code path was broken. On a real committed library the .kicad_mod file keeps its package name (e.g. `R0603.kicad_mod`), the symbol's entry name is the MPN (e.g. `0603WAF1002T5E`), and asking kicad-cli for `--footprint 0603WAF1002T5E` fails because no such file exists. The handler now reads the symbol's `Footprint` property (`<library>:<footprint_name>`), strips the prefix, and passes the actual footprint name. Empirically verified: kicad-cli matches by FILE basename in the .pretty dir, not the internal `(footprint "name" ...)` header — so the strategy is "pass the file stem".
+- **Unit sub-symbols leaked into the Libraries tree.** `lib_scanner.list_components` was returning every entry in the .kicad_sym, including the `_0_1`/`_1_1` unit definitions that share an entryName base with their parent. Clicking one called `kicad-cli sym export svg --symbol <name>_0_1`, which kicad-cli rejects with "There is no symbol selected to save" because units aren't standalone exports. List now filters by `unitId is None`, matching what `lcsc_index` already did.
+- **kicad-cli stderr was swallowed.** Failed renders surfaced as `subprocess.CalledProcessError: ... returned non-zero exit status 1` in the UI — no clue what kicad-cli was complaining about. Code now captures stdout/stderr and raises a `RuntimeError` with the actual diagnostic ("There is no symbol selected to save", "Footprint X not found", etc.). When the renderer fails for the user reading this changelog, the `Preview failed:` message now says *why*.
+- **LibPicker labelled fuzzy-boost-demoted derived name as "match" when it doesn't exist yet.** alpha.18's fuzzy boost demotes the category-derived name (e.g. `Connectors_KSL`) into `matches[]` when an existing close match (`Connector_KSL`) wins. But `Connectors_KSL` doesn't exist in the workspace — picking it would *create* a new library — so the amber **match** badge was wrong. LibPicker now checks workspace membership when assigning the badge: existing → `match`, not-existing → `new`.
+
+### Notes
+- The smoke spec now includes a REAL-WORLD probe (`renderers-real-world.png`) that actually commits a downloaded JLC part via `library.commit` and renders the resulting committed library by its MPN-named symbol — exactly the path that broke in alpha.18. Synthetic seeds remain (alpha.17 pill probe needs them) but they no longer mask production code paths.
+- 3D model previews are still pending — `kicad-cli pcb render` exists and works on real PCBs, but requires a fully-formed `.kicad_pcb` skeleton wrapping the footprint that's hard to hand-write reliably. Deferred to a later alpha.
+
 ## [26.4.27-alpha.18] — 2026-04-28
 
 ### Added
