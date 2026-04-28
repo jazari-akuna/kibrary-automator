@@ -38,3 +38,13 @@ export function toggleSelect(name: string): void {
     return next;
   });
 }
+
+// alpha.18: expose tree+list selection to the smoke harness so it can drive
+// to a specific component without LibraryTree / ComponentList testids.
+if (typeof window !== 'undefined') {
+  const bag = ((window as any).__kibraryTest = (window as any).__kibraryTest ?? {});
+  bag.selectLibrary = setSelectedLib;
+  bag.selectComponent = setSelectedComponent;
+  bag.getSelectedLib = () => selectedLib();
+  bag.getSelectedComponent = () => selectedComponent();
+}

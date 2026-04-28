@@ -4,8 +4,9 @@ import { listen } from '@tauri-apps/api/event';
 import { currentWorkspace } from '~/state/workspace';
 
 /**
- * Two calling conventions: staging (parts.read_file) and library
- * (library.read_file_content). See SymbolPreview for the detailed contract.
+ * FootprintPreview — alpha.18: renders kicad-cli-exported SVG inside an
+ * <img>. See SymbolPreview for the rationale (kicanvas-embed depended on
+ * WebGL2 in webkit2gtk and rendered blank/cyan in too many environments).
  */
 interface Props {
   stagingDir?: string;
@@ -14,8 +15,8 @@ interface Props {
   componentName?: string;
 }
 
-interface ReadFileResult {
-  content: string;
+interface SvgResult {
+  svg: string;
 }
 
 export default function FootprintPreview(props: Props) {
@@ -27,22 +28,18 @@ export default function FootprintPreview(props: Props) {
       : `staging:${props.stagingDir}:${props.lcsc}`,
   );
 
-  const [file, { refetch }] = createResource<ReadFileResult, string>(
+  const [svgRes, { refetch }] = createResource<SvgResult, string>(
     key,
     () => {
       if (isLibraryMode()) {
-        return invoke<ReadFileResult>('sidecar_call', {
-          method: 'library.read_file_content',
-          params: {
-            lib_dir: props.libDir,
-            component_name: props.componentName,
-            kind: 'fp',
-          },
+        return invoke<SvgResult>('sidecar_call', {
+          method: 'library.render_footprint_svg',
+          params: { lib_dir: props.libDir, component_name: props.componentName },
         });
       }
-      return invoke<ReadFileResult>('sidecar_call', {
-        method: 'parts.read_file',
-        params: { staging_dir: props.stagingDir, lcsc: props.lcsc, kind: 'fp' },
+      return invoke<SvgResult>('sidecar_call', {
+        method: 'parts.render_footprint_svg',
+        params: { staging_dir: props.stagingDir, lcsc: props.lcsc },
       });
     },
   );
@@ -53,6 +50,12 @@ export default function FootprintPreview(props: Props) {
     if (e.payload.lcsc === matchKey()) refetch();
   });
   onCleanup(() => { unlisten.then((fn) => fn()); });
+
+  const svgDataUrl = () => {
+    const svg = svgRes()?.svg;
+    if (!svg) return '';
+    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
+  };
 
   return (
     <div class="flex flex-col gap-2">
@@ -80,7 +83,7 @@ export default function FootprintPreview(props: Props) {
       </div>
 
       <Show
-        when={!file.loading}
+        when={!svgRes.loading}
         fallback={
           <div class="flex items-center justify-center h-48 rounded bg-zinc-800 text-sm text-zinc-400">
             Loading…
@@ -88,17 +91,23 @@ export default function FootprintPreview(props: Props) {
         }
       >
         <Show
-          when={!file.error && file()?.content}
+          when={!svgRes.error && svgRes()?.svg}
           fallback={
-            <div class="flex items-center justify-center h-48 rounded bg-zinc-800 text-sm text-zinc-500">
-              Preview unavailable
+            <div
+              data-testid="footprint-preview-fallback"
+              class="flex items-center justify-center h-48 rounded bg-zinc-800 text-sm text-zinc-500"
+            >
+              {svgRes.error ? `Preview failed: ${String(svgRes.error)}` : 'Preview unavailable'}
             </div>
           }
         >
-          <div class="rounded overflow-hidden" style={{ height: '320px' }}>
-            <kicanvas-embed controls="basic" style={{ width: '100%', height: '100%' }}>
-              <kicanvas-source>{file()!.content}</kicanvas-source>
-            </kicanvas-embed>
+          <div class="rounded overflow-hidden bg-white" style={{ height: '320px' }}>
+            <img
+              data-testid="footprint-preview-svg"
+              src={svgDataUrl()}
+              alt={`Footprint ${props.componentName ?? props.lcsc}`}
+              style={{ width: '100%', height: '100%', 'object-fit': 'contain' }}
+            />
           </div>
         </Show>
       </Show>

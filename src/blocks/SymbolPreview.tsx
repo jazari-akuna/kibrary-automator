@@ -4,16 +4,22 @@ import { listen } from '@tauri-apps/api/event';
 import { currentWorkspace } from '~/state/workspace';
 
 /**
+ * SymbolPreview — alpha.18: renders the symbol as an SVG returned by the
+ * sidecar (which shells out to ``kicad-cli sym export svg``). The previous
+ * implementation embedded ``<kicanvas-embed>`` which depends on WebGL2 in
+ * webkit2gtk and rendered blank/cyan in a meaningful fraction of Linux
+ * Tauri environments. The kicad-cli path produces the exact same vector
+ * art eeschema would display and only needs an ``<img>`` to render.
+ *
  * Two calling conventions:
  *
  *   Staging mode (Add / Review rooms):
  *     <SymbolPreview stagingDir="/path/to/staging" lcsc="C25804" />
- *     → reads <staging>/<lcsc>/<lcsc>.kicad_sym via parts.read_file
+ *     → `parts.render_symbol_svg`
  *
  *   Library mode (Libraries room):
  *     <SymbolPreview libDir="/ws/Resistors_KSL" componentName="R_10k_0402" />
- *     → reads the merged <lib>.kicad_sym, slices out the matching symbol,
- *       and re-emits a single-symbol library via library.read_file_content
+ *     → `library.render_symbol_svg`
  */
 interface Props {
   stagingDir?: string;
@@ -22,8 +28,8 @@ interface Props {
   componentName?: string;
 }
 
-interface ReadFileResult {
-  content: string;
+interface SvgResult {
+  svg: string;
 }
 
 export default function SymbolPreview(props: Props) {
@@ -35,22 +41,18 @@ export default function SymbolPreview(props: Props) {
       : `staging:${props.stagingDir}:${props.lcsc}`,
   );
 
-  const [file, { refetch }] = createResource<ReadFileResult, string>(
+  const [svgRes, { refetch }] = createResource<SvgResult, string>(
     key,
     () => {
       if (isLibraryMode()) {
-        return invoke<ReadFileResult>('sidecar_call', {
-          method: 'library.read_file_content',
-          params: {
-            lib_dir: props.libDir,
-            component_name: props.componentName,
-            kind: 'sym',
-          },
+        return invoke<SvgResult>('sidecar_call', {
+          method: 'library.render_symbol_svg',
+          params: { lib_dir: props.libDir, component_name: props.componentName },
         });
       }
-      return invoke<ReadFileResult>('sidecar_call', {
-        method: 'parts.read_file',
-        params: { staging_dir: props.stagingDir, lcsc: props.lcsc, kind: 'sym' },
+      return invoke<SvgResult>('sidecar_call', {
+        method: 'parts.render_symbol_svg',
+        params: { staging_dir: props.stagingDir, lcsc: props.lcsc },
       });
     },
   );
@@ -65,6 +67,15 @@ export default function SymbolPreview(props: Props) {
     if (e.payload.path === symPath() || e.payload.lcsc === matchKey()) refetch();
   });
   onCleanup(() => { unlisten.then((fn) => fn()); });
+
+  // Wrap the SVG in a data URL so we can use a plain <img>. This avoids
+  // bringing user-supplied markup into the SolidJS reactive tree (no XSS
+  // surface) and lets the browser cache repeat fetches naturally.
+  const svgDataUrl = () => {
+    const svg = svgRes()?.svg;
+    if (!svg) return '';
+    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
+  };
 
   return (
     <div class="flex flex-col gap-2">
@@ -92,7 +103,7 @@ export default function SymbolPreview(props: Props) {
       </div>
 
       <Show
-        when={!file.loading}
+        when={!svgRes.loading}
         fallback={
           <div class="flex items-center justify-center h-48 rounded bg-zinc-800 text-sm text-zinc-400">
             Loading…
@@ -100,17 +111,23 @@ export default function SymbolPreview(props: Props) {
         }
       >
         <Show
-          when={!file.error && file()?.content}
+          when={!svgRes.error && svgRes()?.svg}
           fallback={
-            <div class="flex items-center justify-center h-48 rounded bg-zinc-800 text-sm text-zinc-500">
-              Preview unavailable
+            <div
+              data-testid="symbol-preview-fallback"
+              class="flex items-center justify-center h-48 rounded bg-zinc-800 text-sm text-zinc-500"
+            >
+              {svgRes.error ? `Preview failed: ${String(svgRes.error)}` : 'Preview unavailable'}
             </div>
           }
         >
-          <div class="rounded overflow-hidden" style={{ height: '320px' }}>
-            <kicanvas-embed controls="basic" style={{ width: '100%', height: '100%' }}>
-              <kicanvas-source>{file()!.content}</kicanvas-source>
-            </kicanvas-embed>
+          <div class="rounded overflow-hidden bg-white" style={{ height: '320px' }}>
+            <img
+              data-testid="symbol-preview-svg"
+              src={svgDataUrl()}
+              alt={`Symbol ${props.componentName ?? props.lcsc}`}
+              style={{ width: '100%', height: '100%', 'object-fit': 'contain' }}
+            />
           </div>
         </Show>
       </Show>

@@ -8,6 +8,17 @@ interface Settings {
   theme: string;
   search_raph_io: { enabled: boolean; base_url: string };
   concurrency: number;
+  kicad_install: string | null;
+}
+
+interface KiCadInstall {
+  id: string;
+  type: string;
+  version: string;
+  config_dir: string;
+  sym_table: string;
+  fp_table: string;
+  kicad_bin: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +62,71 @@ function VersionsCard() {
         <span class="text-zinc-600 dark:text-zinc-400">Sidecar:</span>{' '}
         <span data-testid="version-sidecar">{sidecarVersion() ?? '…'}</span>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// KiCad install picker (alpha.18).
+//
+// Lists every detected KiCad install and lets the user pick which one
+// kibrary should auto-link new libraries against (sym-lib-table /
+// fp-lib-table). Mirrors the predecessor CLI's behaviour of "use the first
+// install detected" — but exposes the selection so users with multiple
+// KiCad versions side-by-side (e.g. flatpak + system) can choose.
+// ---------------------------------------------------------------------------
+function KiCadInstallCard() {
+  const [data, { refetch }] = createResource(() =>
+    invoke<{ installs: KiCadInstall[]; active: string | null }>('sidecar_call', {
+      method: 'kicad.detect',
+      params: {},
+    }).catch(() => ({ installs: [] as KiCadInstall[], active: null })),
+  );
+
+  const setActive = async (id: string) => {
+    await invoke('sidecar_call', {
+      method: 'kicad.set_active',
+      params: { id },
+    });
+    await refetch();
+  };
+
+  return (
+    <div class="rounded border border-zinc-300 dark:border-zinc-700 p-3 space-y-2 text-sm">
+      <h3 class="font-semibold mb-1">KiCad install</h3>
+      <p class="text-xs text-zinc-600 dark:text-zinc-400">
+        New libraries are auto-linked to this install's sym-lib-table and
+        fp-lib-table so they appear in eeschema/pcbnew without manual
+        editing.
+      </p>
+      <Show
+        when={data() && data()!.installs.length > 0}
+        fallback={
+          <p class="text-amber-600 dark:text-amber-400" data-testid="kicad-none">
+            No KiCad install detected. Install KiCad and restart kibrary, or
+            point at a custom install location via the env file in your
+            workspace.
+          </p>
+        }
+      >
+        <select
+          data-testid="kicad-install-select"
+          class="block bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded mt-1 w-full"
+          value={data()!.active ?? ''}
+          onChange={(e) => setActive(e.currentTarget.value)}
+        >
+          {data()!.installs.map((ins) => (
+            <option value={ins.id}>
+              {ins.type} {ins.version} ({ins.kicad_bin})
+            </option>
+          ))}
+        </select>
+        <Show when={data()!.active}>
+          <p class="text-xs text-zinc-500 dark:text-zinc-500 font-mono break-all">
+            sym-lib-table: {data()!.installs.find((i) => i.id === data()!.active)?.sym_table}
+          </p>
+        </Show>
+      </Show>
     </div>
   );
 }
@@ -212,6 +288,7 @@ export default function RoomSettings() {
               class="block bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded mt-1"
               onChange={(e) => save({ ...s, concurrency: +e.currentTarget.value })}/>
           </label>
+          <KiCadInstallCard />
           <VersionsCard />
           <UpdateCard />
         </div>

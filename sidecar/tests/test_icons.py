@@ -39,8 +39,8 @@ def test_render_footprint_icon_invokes_kicad_cli(tmp_path: Path):
 
     def fake_run(cmd, **kwargs):
         captured.append(cmd)
-        # cmd[-1] is the pretty_dir; the temp dir is at cmd[cmd.index('--output-dir') + 1]
-        output_dir_idx = cmd.index("--output-dir") + 1
+        # cmd[-1] is the pretty_dir; the temp dir is at cmd[cmd.index('--output') + 1]
+        output_dir_idx = cmd.index("--output") + 1
         output_dir = Path(cmd[output_dir_idx])
         footprint_name_idx = cmd.index("--footprint") + 1
         fp_name = cmd[footprint_name_idx]
@@ -70,8 +70,8 @@ def test_render_footprint_icon_invokes_kicad_cli(tmp_path: Path):
     # --layers flag
     assert "--layers" in cmd
 
-    # --output-dir flag
-    assert "--output-dir" in cmd
+    # --output flag
+    assert "--output" in cmd
 
     # The pretty_dir is the last positional argument
     assert cmd[-1] == str(pretty_dir)
@@ -124,7 +124,7 @@ def test_render_for_part_returns_path_on_success(tmp_path: Path):
     _make_pretty(part_dir, "C7777")
 
     def fake_run_ok(cmd, **kwargs):
-        output_dir_idx = cmd.index("--output-dir") + 1
+        output_dir_idx = cmd.index("--output") + 1
         output_dir = Path(cmd[output_dir_idx])
         fp_name_idx = cmd.index("--footprint") + 1
         fp_name = cmd[fp_name_idx]

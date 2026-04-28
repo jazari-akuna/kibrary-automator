@@ -678,6 +678,179 @@ async function main() {
     }
     log('✅ thumbnails: search.fetch_photo returned a data URL');
 
+    // 11. alpha.18 renderer probe — Symbol/Footprint/3D previews in the
+    //     Libraries room. We seed Existing_KSL/C25804 (already done above
+    //     for the pill probe) with a real symbol + footprint + 3D model
+    //     copied from the staged C25804 the smoke earlier downloaded, then
+    //     drive the app to Libraries → Existing_KSL → C25804 and assert the
+    //     three preview blocks render content.
+    log('alpha.18: renderer probe — adding footprint + 3D model to seed library');
+    {
+      // Re-create staging since cancel deleted it; fastest re-fetch is via
+      // sidecar parts.download (real network). The handler takes `lcscs`
+      // (plural list) + `staging_dir` — see downloader.parts_download.
+      const reDl = await execAsync(sid, `
+        var done = arguments[arguments.length - 1];
+        window.__TAURI_INTERNALS__.invoke('sidecar_call', {
+          method: 'parts.download',
+          params: {
+            lcscs: ['C25804'],
+            staging_dir: ${JSON.stringify(STAGING)},
+            concurrency: 1,
+          },
+        }).then(function(r){done({ok:true, r:r});}).catch(function(e){done({ok:false, e:String(e)});});
+      `);
+      if (!reDl?.ok) throw new Error(`re-download for renderer probe failed: ${JSON.stringify(reDl)}`);
+      // Wait for files to land — parts.download progress events fire async.
+      await waitFor(
+        () => existsSync(join(STAGING, 'C25804', 'C25804.kicad_sym')) ? Promise.resolve(true) : Promise.resolve(null),
+        60_000, 1000, 'C25804 staging materialised after re-download',
+      );
+    }
+
+    // Plant a richer Existing_KSL containing the actual staged artefacts.
+    // The alpha.17 pill probe already wrote a synthetic Existing_KSL.kicad_sym
+    // with entryName="C25804" — keep that intact (JLC2KiCadLib's staged sym
+    // names the symbol after the MPN, e.g. 0603WAF1002T5E, not the LCSC, and
+    // SymbolPreview looks the entry up by LCSC). We just add a real footprint
+    // + 3D model from the staged dir so FootprintPreview has data to render.
+    {
+      const stagedDir = `${WORKSPACE}/.kibrary/staging/C25804`;
+      const libDirHere = `${WORKSPACE}/Existing_KSL`;
+      const fs = await import('node:fs');
+      // Footprint: copy <staged>.pretty/<lcsc>.kicad_mod into
+      // <lib>.pretty/<component_name>.kicad_mod. Sidecar reads
+      // `<lib>.pretty/<component_name>.kicad_mod` so the file MUST be
+      // named after the entry name (C25804) — copy with that filename.
+      fs.mkdirSync(`${libDirHere}/Existing_KSL.pretty`, { recursive: true });
+      const stagedPretty = `${stagedDir}/C25804.pretty`;
+      if (fs.existsSync(stagedPretty)) {
+        const fpFiles = fs.readdirSync(stagedPretty)
+          .filter((f) => f.endsWith('.kicad_mod'));
+        if (fpFiles.length > 0) {
+          fs.copyFileSync(
+            `${stagedPretty}/${fpFiles[0]}`,
+            `${libDirHere}/Existing_KSL.pretty/C25804.kicad_mod`,
+          );
+        }
+      }
+      // 3D model: copy whatever extension arrived.
+      const stagedShapes = `${stagedDir}/C25804.3dshapes`;
+      if (fs.existsSync(stagedShapes)) {
+        fs.mkdirSync(`${libDirHere}/Existing_KSL.3dshapes`, { recursive: true });
+        for (const f of fs.readdirSync(stagedShapes)) {
+          fs.copyFileSync(`${stagedShapes}/${f}`, `${libDirHere}/Existing_KSL.3dshapes/${f}`);
+        }
+      }
+      const hasFp = fs.existsSync(`${libDirHere}/Existing_KSL.pretty/C25804.kicad_mod`);
+      const has3d = fs.existsSync(`${libDirHere}/Existing_KSL.3dshapes`);
+      log(`  seeded Existing_KSL with sym (synth)${hasFp ? ' + fp' : ''}${has3d ? ' + 3D' : ''}`);
+    }
+
+    // Switch to Libraries room and select Existing_KSL / C25804 via test hooks.
+    log('  navigating to Libraries → Existing_KSL → C25804');
+    await execScript(sid, `window.__kibraryTest.setRoom('libraries');`);
+    // Let SolidJS render the Libraries layout before we set selections.
+    await new Promise((r) => setTimeout(r, 150));
+    await execScript(sid, `window.__kibraryTest.selectLibrary('Existing_KSL');`);
+    await new Promise((r) => setTimeout(r, 150));
+    await execScript(sid, `window.__kibraryTest.selectComponent('C25804');`);
+
+    // Wait for SymbolPreview's <img> to mount (alpha.18: kicad-cli-rendered SVG).
+    await waitFor(
+      () => findElement(sid, '[data-testid="symbol-preview-svg"]'),
+      15_000, 300, 'symbol-preview-svg <img> mounted',
+    );
+    await waitFor(
+      () => findElement(sid, '[data-testid="footprint-preview-svg"]'),
+      15_000, 300, 'footprint-preview-svg <img> mounted',
+    );
+
+    // Pre-screenshot so a regression captures the as-rendered state.
+    await screenshot(sid, `${OUT}/renderers-libraries-room.png`);
+
+    // Verify both <img>s actually carry data: URLs (would be empty src on RPC error).
+    const previewState = await execScript(sid, `
+      var sym = document.querySelector('[data-testid="symbol-preview-svg"]');
+      var fp = document.querySelector('[data-testid="footprint-preview-svg"]');
+      return {
+        symHasDataUrl: !!(sym && (sym.src || '').startsWith('data:image/svg+xml')),
+        symLen: sym ? (sym.src || '').length : 0,
+        fpHasDataUrl: !!(fp && (fp.src || '').startsWith('data:image/svg+xml')),
+        fpLen: fp ? (fp.src || '').length : 0,
+      };
+    `);
+    log(`  preview state = ${JSON.stringify(previewState)}`);
+    if (!previewState?.symHasDataUrl) {
+      throw new Error(
+        `SymbolPreview has no data: URL (length=${previewState?.symLen}) — kicad-cli SVG render failed`,
+      );
+    }
+    if (!previewState?.fpHasDataUrl) {
+      throw new Error(
+        `FootprintPreview has no data: URL (length=${previewState?.fpLen}) — kicad-cli SVG render failed`,
+      );
+    }
+    log('✅ alpha.18 renderers: symbol + footprint <img> mounted with data: URLs');
+
+    // ---------------------------------------------------------------------
+    // 12. alpha.18 fuzzy library_suggest — when an existing lib resembles
+    //     the category-derived name, the sidecar promotes it to top.
+    // ---------------------------------------------------------------------
+    log('alpha.18: fuzzy library_suggest probe — seed Connector_KSL, expect boost');
+    // Seed a Connector_KSL library (singular) — when the category-derived
+    // name is "Connectors_KSL" (plural), the fuzzy ≥50% boost should promote
+    // the existing Connector_KSL to the `library` field.
+    const connLibDir = join(WORKSPACE, 'Connector_KSL');
+    mkdirSync(connLibDir, { recursive: true });
+    writeFileSync(
+      join(connLibDir, 'Connector_KSL.kicad_sym'),
+      '(kicad_symbol_lib (version 20211014) (generator None))\n',
+    );
+    const fuzzy = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      window.__TAURI_INTERNALS__.invoke('sidecar_call', {
+        method: 'library.suggest',
+        params: { workspace: '/tmp/e2e-workspace', category: 'Connectors' },
+      }).then(function(r) {
+        done({ ok: true, result: r });
+      }).catch(function(e) { done({ ok: false, error: String(e) }); });
+    `);
+    log(`  suggest result: ${JSON.stringify(fuzzy)}`);
+    if (!fuzzy?.ok || !fuzzy.result || typeof fuzzy.result.library !== 'string') {
+      throw new Error(`library.suggest RPC malformed: ${JSON.stringify(fuzzy)}`);
+    }
+    if (fuzzy.result.library !== 'Connector_KSL') {
+      throw new Error(
+        `alpha.18 fuzzy boost mis-fired: expected library="Connector_KSL" (boosted from existing) ` +
+        `but got "${fuzzy.result.library}". matches=${JSON.stringify(fuzzy.result.matches)}`,
+      );
+    }
+    log(`✅ alpha.18 fuzzy boost: derived "Connectors_KSL" promoted to existing "Connector_KSL"`);
+
+    // ---------------------------------------------------------------------
+    // 13. alpha.18 Settings → KiCad install picker (or "no install" warning).
+    // ---------------------------------------------------------------------
+    log('alpha.18: Settings → KiCad install picker probe');
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try { window.__kibraryTest.setRoom('settings'); done(true); }
+      catch (e) { done(String(e)); }
+    `);
+    await new Promise((r) => setTimeout(r, 800));
+    const kicadCard = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var sel = document.querySelector('[data-testid="kicad-install-select"]');
+      var none = document.querySelector('[data-testid="kicad-none"]');
+      done({ hasSelect: !!sel, hasNone: !!none, cardPresent: !!(sel || none) });
+    `);
+    log(`  kicad install card: ${JSON.stringify(kicadCard)}`);
+    await screenshot(sid, `${OUT}/settings-kicad-install.png`);
+    if (!kicadCard?.cardPresent) {
+      throw new Error('Settings → KiCad install card missing (neither select nor "no install" warning rendered)');
+    }
+    log('✅ alpha.18 Settings shows KiCad install card');
+
     await screenshot(sid, `${OUT}/download-all.png`);
     log('ALL UI SMOKE TESTS PASSED');
   } catch (e) {

@@ -64,3 +64,37 @@ def write_settings(s: dict) -> None:
     p = settings_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(s, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Active KiCad install (alpha.18)
+# ---------------------------------------------------------------------------
+#
+# `kicad_install` settings key holds the *id* of the install the rest of the
+# app should use (the install dict itself comes from kicad_install.cached_installs()).
+# Helpers below abstract that lookup so callers don't have to do the
+# settings-read + cache-walk dance every time.
+
+def get_active_install() -> dict | None:
+    """Return the active KiCad install dict, or None if none is set or the
+    persisted id no longer matches any detected install (e.g. KiCad was
+    uninstalled between sessions)."""
+    # Local import to avoid a circular dependency at module load time
+    # (kicad_install imports nothing from settings, but a cycle could
+    # appear if either module grows).
+    from kibrary_sidecar import kicad_install  # noqa: PLC0415
+
+    install_id = read_settings().get("kicad_install")
+    if not install_id:
+        return None
+    for ins in kicad_install.cached_installs():
+        if ins.get("id") == install_id:
+            return ins
+    return None
+
+
+def set_active_install(install_id: str | None) -> None:
+    """Persist the active install id (or clear it when ``install_id`` is None)."""
+    s = read_settings()
+    s["kicad_install"] = install_id
+    write_settings(s)

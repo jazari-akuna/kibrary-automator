@@ -1,3 +1,4 @@
+import difflib
 import logging
 import os
 import sys
@@ -127,6 +128,13 @@ def library_suggest(p: dict) -> dict:
         matches      (list[str])   — existing libs that fuzzy-match the suggestion,
                                       sorted by relevance (best match first)
 
+    Fuzzy boost (alpha.18): when an existing lib is ≥ 50 % similar to the
+    category-derived name (e.g. ``Connector_KSL`` for derived
+    ``Connectors_KSL``), promote that existing lib to the recommended
+    ``library`` field. The original derived name still surfaces in
+    ``matches`` so the LibPicker dropdown lets the user pick "create new"
+    if the boost mis-fires.
+
     `workspace` is optional for backwards compat with old callers — when
     omitted, only the category-derived name comes back (no matching).
     """
@@ -142,15 +150,51 @@ def library_suggest(p: dict) -> dict:
         log.warning("library.suggest: list_libraries failed: %s", exc)
         return {"library": derived, "is_existing": False, "existing": [], "matches": []}
 
-    is_existing = derived in existing_names
-    # Fuzzy matches: case-insensitive prefix or substring on the derived name
-    # without the _KSL suffix (so `Resistors_KSL` matches `Resistors`,
+    # Substring matches: case-insensitive prefix or substring on the derived
+    # name without the _KSL suffix (so `Resistors_KSL` matches `Resistors`,
     # `Resistors_v2`, `MyResistors`). Cheap O(n) scan — workspaces have <1000 libs.
     needle = derived.lower().replace("_ksl", "")
     matches = sorted(
         (n for n in existing_names if needle in n.lower() and n != derived),
         key=lambda n: (not n.lower().startswith(needle), len(n)),
     )
+
+    # Fuzzy boost: when one of the existing libs is sufficiently similar to
+    # the derived name, that's the lib the user almost certainly wants. We
+    # score on the de-suffixed form ONLY — every kibrary lib ends in `_KSL`
+    # so the suffix is shared noise that artificially inflates ratios for
+    # unrelated libs (`Resistors_KSL` ↔ `Tools_KSL` would score > 0.5
+    # purely from the shared 4-character suffix). De-suffixing makes the
+    # ratio reflect actual semantic similarity: `Connectors` ↔ `Connector`
+    # scores 0.95, `Resistors` ↔ `Tools` scores 0.28.
+    def _score(a: str, b: str) -> float:
+        a_bare = a.lower().replace("_ksl", "")
+        b_bare = b.lower().replace("_ksl", "")
+        return difflib.SequenceMatcher(None, a_bare, b_bare).ratio()
+
+    is_existing = derived in existing_names
+    boost: str | None = None
+    if not is_existing and existing_names:
+        scored = [(name, _score(derived, name)) for name in existing_names]
+        # Sort by score desc, then alphabetical for stable tie-break.
+        scored.sort(key=lambda t: (-t[1], t[0]))
+        best_name, best_score = scored[0]
+        if best_score > 0.5:
+            boost = best_name
+
+    if boost is not None:
+        # Demote the original derived name into matches so the LibPicker
+        # still offers it as a "create new" option, and surface it before
+        # other less-relevant existing matches.
+        recommended = boost
+        boosted_matches = [derived] + [m for m in matches if m != boost]
+        return {
+            "library": recommended,
+            "is_existing": True,
+            "existing": existing_names,
+            "matches": boosted_matches,
+        }
+
     return {
         "library": derived,
         "is_existing": is_existing,
@@ -209,11 +253,39 @@ def git_undo_last(p: dict) -> dict:
 
 
 def kicad_detect(_: dict) -> dict:
-    return {"installs": kicad_install.cached_installs()}
+    """Return all detected KiCad installs (cached) AND the active install id.
+
+    alpha.18: when no active install is set yet, auto-pick the first detected
+    install and persist it. This mirrors the predecessor CLI's behaviour and
+    means a freshly-installed kibrary "just works" against the user's primary
+    KiCad without an explicit settings step.
+    """
+    installs = kicad_install.cached_installs()
+    active_id = st.read_settings().get("kicad_install")
+    if active_id and not any(i.get("id") == active_id for i in installs):
+        # Persisted id no longer matches any install (KiCad uninstalled, etc.)
+        # — clear it so the auto-pick below kicks in.
+        active_id = None
+        st.set_active_install(None)
+    if active_id is None and installs:
+        active_id = installs[0]["id"]
+        st.set_active_install(active_id)
+    return {"installs": installs, "active": active_id}
 
 
 def kicad_refresh(_: dict) -> dict:
     return {"installs": kicad_install.refresh_cache()}
+
+
+def kicad_get_active(_: dict) -> dict:
+    """Return the active install dict (or None) without re-running detection."""
+    return {"install": st.get_active_install()}
+
+
+def kicad_set_active(p: dict) -> dict:
+    """Persist a new active install id. Pass id=None to clear."""
+    st.set_active_install(p.get("id"))
+    return {"active": p.get("id")}
 
 
 def kicad_register_lib(p: dict) -> dict:
@@ -346,6 +418,62 @@ def library_read_file_content(p: dict) -> dict:
             Path(p["lib_dir"]), p["component_name"], p["kind"]
         )
     }
+
+
+def library_render_symbol_svg(p: dict) -> dict:
+    """Render a single symbol from a committed library to SVG via kicad-cli.
+
+    alpha.18: replaces the kicanvas-embed render path because WebGL2 is
+    unreliable in webkit2gtk on Linux (renders blank/cyan even when the
+    custom element loads cleanly). kicad-cli produces the same vector data
+    eeschema would show, then the UI displays it as a plain ``<img>``.
+    """
+    from kibrary_sidecar import svg_render
+    lib_dir = Path(p["lib_dir"])
+    sym_path = lib_dir / f"{lib_dir.name}.kicad_sym"
+    svg = svg_render.render_symbol_svg(sym_path, p["component_name"])
+    return {"svg": svg}
+
+
+def library_render_footprint_svg(p: dict) -> dict:
+    """Render a single footprint from a committed library to SVG via kicad-cli."""
+    from kibrary_sidecar import svg_render
+    lib_dir = Path(p["lib_dir"])
+    pretty = lib_dir / f"{lib_dir.name}.pretty"
+    svg = svg_render.render_footprint_svg(pretty, p["component_name"])
+    return {"svg": svg}
+
+
+def parts_render_symbol_svg(p: dict) -> dict:
+    """Render the staged symbol for a part (Add room) to SVG via kicad-cli."""
+    from kibrary_sidecar import svg_render
+    staging_part = Path(p["staging_dir"]) / p["lcsc"]
+    sym_path = staging_part / f"{p['lcsc']}.kicad_sym"
+    # JLC2KiCadLib names the symbol after the manufacturer part / title;
+    # auto-detect the entry name by reading the first symbol in the file
+    # rather than assuming it matches the LCSC.
+    from kiutils.symbol import SymbolLib
+    lib = SymbolLib.from_file(str(sym_path))
+    if not lib.symbols:
+        raise FileNotFoundError(f"No symbols in {sym_path}")
+    component_name = lib.symbols[0].entryName
+    svg = svg_render.render_symbol_svg(sym_path, component_name)
+    return {"svg": svg}
+
+
+def parts_render_footprint_svg(p: dict) -> dict:
+    """Render the staged footprint for a part to SVG via kicad-cli."""
+    from kibrary_sidecar import svg_render
+    staging_part = Path(p["staging_dir"]) / p["lcsc"]
+    pretty = staging_part / f"{p['lcsc']}.pretty"
+    if not pretty.is_dir():
+        raise FileNotFoundError(f"No .pretty dir in {staging_part}")
+    # Pick the first .kicad_mod and use its stem as the footprint name.
+    mods = sorted(pretty.glob("*.kicad_mod"))
+    if not mods:
+        raise FileNotFoundError(f"No .kicad_mod in {pretty}")
+    svg = svg_render.render_footprint_svg(pretty, mods[0].stem)
+    return {"svg": svg}
 
 
 def library_set_3d_offset(p: dict) -> dict:
@@ -489,6 +617,8 @@ REGISTRY = {
     "git.is_safe": git_is_safe,
     "git.undo_last": git_undo_last,
     "kicad.detect": kicad_detect,
+    "kicad.get_active": kicad_get_active,
+    "kicad.set_active": kicad_set_active,
     "kicad.refresh": kicad_refresh,
     "kicad.register": kicad_register_lib,
     "kicad.unregister": kicad_unregister_lib,
@@ -508,6 +638,10 @@ REGISTRY = {
     "library.add_3d": library_add_3d,
     "library.get_3d_info": library_get_3d_info,
     "library.read_file_content": library_read_file_content,
+    "library.render_symbol_svg": library_render_symbol_svg,
+    "library.render_footprint_svg": library_render_footprint_svg,
+    "parts.render_symbol_svg": parts_render_symbol_svg,
+    "parts.render_footprint_svg": parts_render_footprint_svg,
     "library.set_3d_offset": library_set_3d_offset,
     "bootstrap.detect": bootstrap_detect,
     "bootstrap.install": bootstrap_install,

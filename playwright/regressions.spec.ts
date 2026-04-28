@@ -831,16 +831,15 @@ test('bug 15 — per-item progress bar appears for downloading items', async ({ 
 // library mode.
 // ---------------------------------------------------------------------------
 test('bug 11 — symbol preview renders for committed component', async ({ page }) => {
-  // A minimal but valid kicad_symbol_lib stub. kicanvas-embed copies the
-  // <kicanvas-source> child into its shadow DOM, so we just need it to be
-  // non-empty for the assertion.
-  const stubSym =
-    '(kicad_symbol_lib (version 20231120) (generator kibrary)\n' +
-    '  (symbol "R_10k_0402"\n' +
-    '    (property "Reference" "R" (id 0) (at 0 0 0))\n' +
-    '    (property "Value" "10k" (id 1) (at 0 0 0))\n' +
-    '  )\n' +
-    ')';
+  // alpha.18: SymbolPreview was switched from kicanvas-embed (WebGL2,
+  // unreliable in webkit2gtk) to kicad-cli-rendered SVG inside an <img>.
+  // Mock library.render_symbol_svg to return a tiny but valid SVG and
+  // assert the <img data-testid="symbol-preview-svg"> mounts with a
+  // data: URL — and that the "Preview unavailable" fallback is NOT
+  // visible.
+  const stubSvg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">' +
+    '<rect width="40" height="40" fill="#0f0"/></svg>';
 
   await mountApp(page, {
     extraHandlers: {
@@ -862,17 +861,11 @@ test('bug 11 — symbol preview renders for committed component', async ({ page 
           footprint: 'Resistor_SMD:R_0402',
         }],
       })`,
-      'library.read_file_content': `(params) => {
-        if (params.kind === 'sym') {
-          return { content: ${JSON.stringify(stubSym)} };
-        }
-        return { content: '(footprint "R_10k_0402" (layer "F.Cu"))' };
-      }`,
+      'library.render_symbol_svg': `() => ({ svg: ${JSON.stringify(stubSvg)} })`,
+      'library.render_footprint_svg': `() => ({ svg: ${JSON.stringify(stubSvg)} })`,
       'library.get_3d_info': `() => ({ info: null })`,
       'library.get_component': `() => ({ properties: { Reference: 'R', Value: '10k' }, footprint_path: null, model3d_path: null })`,
       'library.get_component_icon': `() => ({ svg: null })`,
-      // PropertyEditor still uses parts.read_props/read_meta — return empty
-      // stubs so its resource resolves rather than throwing.
       'parts.read_props': `() => ({ properties: {} })`,
       'parts.read_meta': `() => ({ meta: {} })`,
     },
@@ -884,17 +877,14 @@ test('bug 11 — symbol preview renders for committed component', async ({ page 
   await page.getByRole('button', { name: /Resistors_KSL/ }).first().click();
   await page.locator('text=R_10k_0402').first().click();
 
-  // The kicanvas-embed element should mount with our stub content. A simple,
-  // implementation-agnostic check: the matching <kicanvas-source> exists and
-  // its textContent includes our symbol name.
-  const source = page.locator('kicanvas-source').first();
-  await expect(source).toBeAttached({ timeout: 3000 });
-  const text = await source.textContent();
-  expect(text ?? '').toContain('R_10k_0402');
+  // The <img data-testid="symbol-preview-svg"> should mount with a data: URL.
+  const img = page.locator('[data-testid="symbol-preview-svg"]').first();
+  await expect(img).toBeAttached({ timeout: 3000 });
+  const src = await img.getAttribute('src');
+  expect(src ?? '').toMatch(/^data:image\/svg\+xml;base64,/);
 
-  // And — most importantly for this regression — the "Preview unavailable"
-  // fallback must NOT be visible.
-  await expect(page.getByText(/Preview unavailable/i)).toHaveCount(0);
+  // And — most importantly for this regression — the fallback must NOT be visible.
+  await expect(page.getByText(/Preview unavailable|Preview failed/i)).toHaveCount(0);
 });
 
 // ---------------------------------------------------------------------------

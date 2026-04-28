@@ -14,6 +14,7 @@ from pathlib import Path
 
 from kiutils.symbol import SymbolLib
 
+from kibrary_sidecar import kicad_register, settings as st
 from kibrary_sidecar.symfile import write_properties
 
 log = logging.getLogger(__name__)
@@ -75,6 +76,29 @@ def commit_to_library(
             target_lib=target_lib,
             edits=edits,
         )
+
+    # alpha.18: register the library against the active KiCad install so the
+    # symbol/footprint show up in eeschema/pcbnew without manual lib-table
+    # editing — same auto-link the predecessor CLI script did. Idempotent
+    # (kicad_register.register_library skips entries that are already there),
+    # so calling it on every commit is safe and self-healing.
+    #
+    # Failure here MUST NOT abort the commit: if KiCad's lib-table is
+    # corrupt or absent, we still want the part on disk, and the user can
+    # re-register later via Settings → KiCad. Same for the no-active-install
+    # case (headless smoke runs, CI, fresh install before first detect).
+    try:
+        active = st.get_active_install()
+        if active is not None:
+            kicad_register.register_library(active, target_lib, lib_dir)
+    except Exception as exc:  # noqa: BLE001 — diagnostic logging, not flow control
+        log.warning(
+            "library.commit: kicad_register.register_library failed for %s "
+            "(continuing anyway): %s",
+            target_lib,
+            exc,
+        )
+
     return lib_dir
 
 
