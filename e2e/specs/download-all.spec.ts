@@ -580,6 +580,23 @@ async function main() {
       await new Promise((r) => setTimeout(r, 350));
     }
 
+    // C25804 has stock=0 at LCSC (only JLC has stock), so the alpha.17
+    // default of "both stock filters checked" excludes it server-side.
+    // Untick "LCSC in stock" before driving the search input so the row
+    // makes it back from the API.
+    log('  unchecking LCSC-stock filter (C25804 has stock=0 at LCSC)');
+    const stockBtn = await findElement(sid, '[data-testid="stock-btn"]');
+    if (!stockBtn) throw new Error('stock-btn not found before pill probe');
+    await elClick(sid, stockBtn);
+    const lcscChk = await findElement(sid, '[data-testid="stock-lcsc"]');
+    if (!lcscChk) throw new Error('stock-lcsc checkbox not found');
+    const lcscChecked = await elAttr(sid, lcscChk, 'checked');
+    if (lcscChecked === 'true' || lcscChecked === '') {
+      await elClick(sid, lcscChk);
+    }
+    // Close the dropdown so it doesn't visually clip the pill probe.
+    await elClick(sid, stockBtn);
+
     // Type C25804 into the search input and wait for at least one result row.
     const searchInput = await findElement(sid, '[data-testid="search-input"]');
     if (!searchInput) throw new Error('search input not found (alpha.17 pill probe)');
