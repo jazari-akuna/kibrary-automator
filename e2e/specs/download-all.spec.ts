@@ -585,17 +585,17 @@ async function main() {
     // Untick "LCSC in stock" before driving the search input so the row
     // makes it back from the API.
     log('  unchecking LCSC-stock filter (C25804 has stock=0 at LCSC)');
-    const stockBtn = await findElement(sid, '[data-testid="stock-btn"]');
-    if (!stockBtn) throw new Error('stock-btn not found before pill probe');
-    await elClick(sid, stockBtn);
-    const lcscChk = await findElement(sid, '[data-testid="stock-lcsc"]');
-    if (!lcscChk) throw new Error('stock-lcsc checkbox not found');
-    const lcscChecked = await elAttr(sid, lcscChk, 'checked');
-    if (lcscChecked === 'true' || lcscChecked === '') {
-      await elClick(sid, lcscChk);
+    const stockBtnPill = await findElement(sid, '[data-testid="stock-btn"]');
+    if (!stockBtnPill) throw new Error('stock-btn not found before pill probe');
+    await elClick(sid, stockBtnPill);
+    const lcscChkPill = await findElement(sid, '[data-testid="stock-lcsc"]');
+    if (!lcscChkPill) throw new Error('stock-lcsc checkbox not found');
+    const lcscCheckedPill = await elAttr(sid, lcscChkPill, 'checked');
+    if (lcscCheckedPill === 'true' || lcscCheckedPill === '') {
+      await elClick(sid, lcscChkPill);
     }
     // Close the dropdown so it doesn't visually clip the pill probe.
-    await elClick(sid, stockBtn);
+    await elClick(sid, stockBtnPill);
 
     // Type C25804 into the search input and wait for at least one result row.
     const searchInput = await findElement(sid, '[data-testid="search-input"]');
