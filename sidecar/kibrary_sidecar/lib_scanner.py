@@ -237,6 +237,10 @@ def _find_footprint(lib_dir: Path, component_name: str) -> Path | None:
        ``<pretty>/<fp_name>.kicad_mod``  (correct path post-commit)
     2. ``<pretty>/<component_name>.kicad_mod``  (synthetic / hand-named)
     3. Any ``.kicad_mod`` whose stem equals ``component_name``
+    4. Any ``.kicad_mod`` whose internal ``(footprint "X" …)`` /
+       ``(module "X" …)`` header matches the Footprint property or symbol name.
+       (Catches user-edited libs where the file was renamed but the
+       internal header still has the original package name.)
     """
     pretty_dir = lib_dir / f"{lib_dir.name}.pretty"
     if not pretty_dir.is_dir():
@@ -255,6 +259,22 @@ def _find_footprint(lib_dir: Path, component_name: str) -> Path | None:
     for fp in pretty_dir.glob("*.kicad_mod"):
         if fp.stem == component_name:
             return fp
+
+    # Last-resort: scan internal headers
+    import re
+    needle_set = {component_name}
+    if fp_name:
+        needle_set.add(fp_name)
+    pattern = re.compile(r'\((?:footprint|module)\s+"([^"]+)"')
+    for fp in pretty_dir.glob("*.kicad_mod"):
+        try:
+            head = fp.read_text(encoding="utf-8", errors="replace")[:2000]
+        except OSError:
+            continue
+        m = pattern.search(head)
+        if m and m.group(1) in needle_set:
+            return fp
+
     return None
 
 

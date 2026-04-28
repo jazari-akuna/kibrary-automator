@@ -125,8 +125,27 @@ def get_3d_info(
     filename = Path(model.path.replace("\\", "/")).name
     fmt = Path(filename).suffix.lstrip(".").lower()
 
+    # Resolve ${KSL_ROOT} → workspace root for human display + existence check.
+    # KSL_ROOT is the workspace; in library mode the workspace is `lib_dir.parent`.
+    raw_path = model.path
+    resolved_path = raw_path
+    file_exists: bool | None = None
+    if "${KSL_ROOT}" in raw_path:
+        if lib_dir is not None:
+            ksl_root = str(Path(lib_dir).parent)
+            resolved_path = raw_path.replace("${KSL_ROOT}", ksl_root)
+        elif staging_dir is not None:
+            # Staging mode: KSL_ROOT not yet bound; leave as raw + can't check.
+            resolved_path = raw_path
+        try:
+            file_exists = Path(resolved_path).is_file() if resolved_path != raw_path else None
+        except OSError:
+            file_exists = False
+
     return {
-        "model_path": model.path,
+        "model_path": raw_path,
+        "resolved_path": resolved_path,
+        "file_exists": file_exists,
         "filename": filename,
         "format": fmt,
         "offset": [model.pos.X, model.pos.Y, model.pos.Z],

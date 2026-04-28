@@ -6,11 +6,17 @@ File format:
     (lib (name "MyLib")(type "KiCad")(uri "/path/to/MyLib.kicad_sym")(options "")(descr ""))
   )
 
+Also manages KiCad's path-variable map under ``kicad_common.json``'s
+``environment.vars`` — kibrary commits 3D model paths as
+``${KSL_ROOT}/<lib>/<lib>.3dshapes/<file>``, so KSL_ROOT must point at
+the workspace root for KiCad's PCB editor / 3D viewer to find them.
+
 Ported from legacy kibrary_automator.py:add_library_to_table /
 install_libraries_to_kicad.
 """
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -125,6 +131,43 @@ def register_library(install: dict, lib_name: str, lib_dir: Path) -> dict:
         fp_added = _insert_entry(fp_table, lib_name, "KiCad", str(fp_dir), fp_desc)
 
     return {"sym_added": sym_added, "fp_added": fp_added, "backup_path": backup_path}
+
+
+def set_path_var(install: dict, name: str, value: str) -> bool:
+    """Set a KiCad path variable under ``environment.vars`` in
+    ``kicad_common.json``. Returns True iff the file was modified.
+
+    KiCad's PCB editor / 3D viewer resolves ``${VAR_NAME}`` references in
+    footprint model paths through this map. kibrary commits 3D model paths
+    as ``${KSL_ROOT}/<lib>/<lib>.3dshapes/<file>`` so KSL_ROOT must be set
+    to the workspace root.
+
+    Idempotent: if the var already has the same value, no write occurs.
+    Backs up ``kicad_common.json`` to ``.backup`` on first modification.
+    """
+    config_dir = install.get("config_dir")
+    if not config_dir:
+        return False
+    common_path = Path(config_dir) / "kicad_common.json"
+    if not common_path.is_file():
+        return False
+    try:
+        data = json.loads(common_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    env = data.setdefault("environment", {})
+    vars_ = env.get("vars")
+    if vars_ is None or not isinstance(vars_, dict):
+        vars_ = {}
+        env["vars"] = vars_
+    if vars_.get(name) == value:
+        return False
+    backup = Path(str(common_path) + ".backup")
+    if not backup.exists():
+        shutil.copy2(common_path, backup)
+    vars_[name] = value
+    common_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return True
 
 
 def list_registered(install: dict) -> list[str]:

@@ -91,6 +91,11 @@ def commit_to_library(
         active = st.get_active_install()
         if active is not None:
             kicad_register.register_library(active, target_lib, lib_dir)
+            # alpha.21: also register KSL_ROOT path variable so KiCad can
+            # resolve `${KSL_ROOT}/<lib>/<lib>.3dshapes/X.step` references
+            # — without this, eeschema/pcbnew load the footprints but the
+            # PCB editor's 3D viewer shows them as untextured placeholders.
+            kicad_register.set_path_var(active, "KSL_ROOT", str(workspace))
     except Exception as exc:  # noqa: BLE001 — diagnostic logging, not flow control
         log.warning(
             "library.commit: kicad_register.register_library failed for %s "

@@ -2,6 +2,18 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.21] — 2026-04-28
+
+### Fixed
+- **Symbol preview failed with `OPENSSL_3.2.0 not found` on the user's machine.** The PyInstaller-bundled sidecar sets `LD_LIBRARY_PATH` to its `_MEIPASS` extraction dir (which contains the libssl/libcrypto frozen at build time). When the sidecar shells out to system kicad-cli, that env var leaks in — kicad-cli's libcurl loads PyInstaller's bundled libssl, finds it doesn't export `OPENSSL_3.2.0`, and aborts. PyInstaller exposes the unmodified value as `LD_LIBRARY_PATH_ORIG`; we now restore it (or unset it entirely) before spawning kicad-cli for both symbol/footprint render and footprint-icon thumbnail generation. Same treatment for `DYLD_LIBRARY_PATH` on macOS.
+- **Footprint preview "No .kicad_mod could be matched" was a dead-end error.** When the symbol's `Footprint` property pointed somewhere that didn't resolve and no fallback matched, the user got `No .kicad_mod could be matched for symbol 'X' in <path>` with no clue what to fix. Improved error: now shows the Footprint property kibrary saw and lists the actual files in the `.pretty` directory (truncated past 6) so the user can spot the mismatch. Also added a fourth fallback that scans every `.kicad_mod` in the dir and matches by *internal* `(footprint "X" …)` / `(module "X" …)` header — picks up libraries where the file was renamed but the embedded name still matches.
+- **3D Model card showed literal `${KSL_ROOT}/...` instead of the resolved workspace path.** `library.get_3d_info` now returns `resolved_path` (with `${KSL_ROOT}` expanded to the workspace root) and `file_exists` (whether the .step/.wrl actually lives there). Model3DPreview displays the resolved path, and surfaces a *⚠ Model file not found at this path* warning when `file_exists` is false — so when the .step is missing on disk the user knows that's why pcbnew's 3D viewer shows nothing.
+- **`KSL_ROOT` was never registered with KiCad.** kibrary commits 3D paths as `${KSL_ROOT}/<lib>/<lib>.3dshapes/<file>` — but unless KiCad's `kicad_common.json` has `environment.vars.KSL_ROOT = <workspace_root>`, neither pcbnew nor the 3D viewer can resolve them. Auto-register now writes that path variable on every `library.commit` (idempotent — same-value writes are skipped, file is backed up to `.backup` on first modification). Original CLI parity restored.
+
+### Notes
+- The diagnostic `Files in <pretty>:` summary truncates past 6 entries to keep the toast readable. Full list is logged to the sidecar stderr.
+- README screenshots regenerated to show the resolved path (`/tmp/e2e-workspace/...`) instead of the previous literal `${KSL_ROOT}`.
+
 ## [26.4.27-alpha.20] — 2026-04-28
 
 ### Fixed

@@ -33,6 +33,8 @@ interface Props {
 
 interface Model3DInfo {
   model_path: string;
+  resolved_path?: string;
+  file_exists?: boolean | null;
   filename: string;
   format: string;
   offset: [number, number, number];
@@ -190,13 +192,20 @@ export default function Model3DPreview(props: Props) {
               />
             </Show>
 
-            {/* Full path */}
+            {/* Full path — resolved (${KSL_ROOT} expanded) so the user
+                sees a real on-disk path. Also flag if the .step file
+                doesn't actually exist where the .kicad_mod points. */}
             <p
               class="text-xs font-mono text-zinc-500 dark:text-zinc-500 truncate"
-              title={model().model_path}
+              title={model().resolved_path || model().model_path}
             >
-              {model().model_path}
+              {model().resolved_path || model().model_path}
             </p>
+            <Show when={model().file_exists === false}>
+              <p class="text-xs text-amber-600 dark:text-amber-400">
+                ⚠ Model file not found at this path
+              </p>
+            </Show>
 
             {/* Actions */}
             <div class="flex items-center gap-2 pt-1">

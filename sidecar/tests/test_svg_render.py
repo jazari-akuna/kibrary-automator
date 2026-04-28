@@ -26,7 +26,7 @@ def test_render_symbol_invokes_kicad_cli_correctly(tmp_path: Path):
     sym.write_text("(kicad_symbol_lib)\n")  # content is irrelevant, kicad-cli is mocked
 
     captured = {}
-    def _spy(cmd, capture_output, text):  # noqa: ARG001
+    def _spy(cmd, capture_output, text, env=None):  # noqa: ARG001
         captured["cmd"] = list(cmd)
         # Simulate kicad-cli writing the SVG.
         out_dir = Path(cmd[cmd.index("--output") + 1])
@@ -49,7 +49,7 @@ def test_render_footprint_invokes_kicad_cli_correctly(tmp_path: Path):
     pretty.mkdir()
 
     captured = {}
-    def _spy(cmd, capture_output, text):  # noqa: ARG001
+    def _spy(cmd, capture_output, text, env=None):  # noqa: ARG001
         captured["cmd"] = list(cmd)
         out_dir = Path(cmd[cmd.index("--output") + 1])
         (out_dir / "C25804.svg").write_text("<svg>FP</svg>", encoding="utf-8")
@@ -69,7 +69,7 @@ def test_render_symbol_raises_when_kicad_cli_fails(tmp_path: Path):
     sym = tmp_path / "Demo.kicad_sym"
     sym.write_text("(kicad_symbol_lib)\n")
 
-    def _fail(cmd, capture_output, text):  # noqa: ARG001
+    def _fail(cmd, capture_output, text, env=None):  # noqa: ARG001
         return subprocess.CompletedProcess(
             cmd, 1, stdout="", stderr="symbol 'C25804' not found in library"
         )
@@ -83,7 +83,7 @@ def test_render_symbol_raises_when_no_svg_produced(tmp_path: Path):
     sym = tmp_path / "Demo.kicad_sym"
     sym.write_text("(kicad_symbol_lib)\n")
 
-    def _no_output(cmd, capture_output, text):  # noqa: ARG001
+    def _no_output(cmd, capture_output, text, env=None):  # noqa: ARG001
         # Don't write anything; simulate kicad-cli silently producing nothing.
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -97,7 +97,7 @@ def test_render_symbol_picks_most_recent_svg_by_mtime(tmp_path: Path):
     sym = tmp_path / "Demo.kicad_sym"
     sym.write_text("(kicad_symbol_lib)\n")
 
-    def _two_svgs(cmd, capture_output, text):  # noqa: ARG001
+    def _two_svgs(cmd, capture_output, text, env=None):  # noqa: ARG001
         import time
         out_dir = Path(cmd[cmd.index("--output") + 1])
         old = out_dir / "stale.svg"

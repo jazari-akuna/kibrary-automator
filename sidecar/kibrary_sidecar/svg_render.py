@@ -4,26 +4,46 @@ Used by SymbolPreview / FootprintPreview in place of the kicanvas web
 component, which depends on WebGL2 in webkit2gtk and renders blank/cyan in
 a meaningful fraction of Linux Tauri environments. kicad-cli produces the
 same vector data the user would see in eeschema/pcbnew, then the UI
-displays it as a plain ``<img>`` — no WebGL, no shaders, no chance of
-host-graphics-stack issues.
+displays it as a plain <img>.
 
-Public API
-----------
-render_symbol_svg(sym_path, component_name) -> str
-    Returns a single-symbol SVG as a string. Raises subprocess errors on
-    failure so the caller can surface them to the UI.
-
-render_footprint_svg(kicad_mod_path) -> str
-    Same, for footprints.
+NB: when running under a PyInstaller-bundled sidecar binary, the runtime
+sets LD_LIBRARY_PATH to the temp _MEIPASS directory containing its own
+libssl/libcrypto. Spawning kicad-cli inherits that env and kicad-cli's
+libcurl ends up loading PyInstaller's bundled libssl — which is older
+than the system's, so symbols like OPENSSL_3.2.0 resolve incorrectly and
+kicad-cli aborts. We restore LD_LIBRARY_PATH_ORIG before exec.
 """
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def _system_env() -> dict[str, str]:
+    """Return an env dict with PyInstaller's library-path overrides undone.
+
+    See module docstring — without this kicad-cli inherits the bundle's
+    ``LD_LIBRARY_PATH`` and aborts when system libcurl mismatches the
+    bundled libssl.
+    """
+    env = os.environ.copy()
+    orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+    if orig is not None:
+        env["LD_LIBRARY_PATH"] = orig
+    else:
+        env.pop("LD_LIBRARY_PATH", None)
+    # PyInstaller also sets DYLD_LIBRARY_PATH on macOS — same treatment.
+    orig_d = env.pop("DYLD_LIBRARY_PATH_ORIG", None)
+    if orig_d is not None:
+        env["DYLD_LIBRARY_PATH"] = orig_d
+    else:
+        env.pop("DYLD_LIBRARY_PATH", None)
+    return env
 
 # Footprints — full layer set so previews show silkscreen, mask, fab, etc.
 # Same as icons.py but expanded with B.Silkscreen and B.Fab so 2-side parts
@@ -68,7 +88,7 @@ def render_symbol_svg(sym_path: Path, component_name: str) -> str:
             str(sym_path),
         ]
         log.debug("Rendering symbol SVG: %s", " ".join(cmd))
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=_system_env())
         if proc.returncode != 0:
             # Surface kicad-cli's own diagnostic (it tells you whether the
             # symbol was missing, the file was unreadable, the format was
@@ -114,7 +134,7 @@ def render_footprint_svg(pretty_dir: Path, footprint_name: str) -> str:
             str(pretty_dir),
         ]
         log.debug("Rendering footprint SVG: %s", " ".join(cmd))
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=_system_env())
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip()
             raise RuntimeError(

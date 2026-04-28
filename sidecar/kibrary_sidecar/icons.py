@@ -63,7 +63,8 @@ def render_footprint_icon(
             str(pretty_dir),
         ]
         log.debug("Rendering icon: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True, capture_output=True)
+        from kibrary_sidecar.svg_render import _system_env
+        subprocess.run(cmd, check=True, capture_output=True, env=_system_env())
 
         # kicad-cli names the output file after the footprint
         expected = Path(tmp_dir) / f"{footprint_name}.svg"

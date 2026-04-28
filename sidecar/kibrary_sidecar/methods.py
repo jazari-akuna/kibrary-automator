@@ -449,9 +449,20 @@ def library_render_footprint_svg(p: dict) -> dict:
     pretty = lib_dir / f"{lib_dir.name}.pretty"
     candidate_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
     if candidate_path is None:
+        # Build a useful diagnostic: what Footprint prop did the symbol declare,
+        # and what files do we actually see in .pretty?
+        fp_name_hint = lib_scanner._footprint_name_from_symbol(  # type: ignore[attr-defined]
+            lib_dir, component_name
+        )
+        existing = sorted(p.name for p in pretty.glob("*.kicad_mod")) if pretty.is_dir() else []
+        existing_summary = (
+            ", ".join(existing[:6]) + (f" (+{len(existing)-6} more)" if len(existing) > 6 else "")
+            if existing else "<no .kicad_mod files>"
+        )
         raise FileNotFoundError(
-            f"No .kicad_mod could be matched for symbol {component_name!r} "
-            f"in {pretty}"
+            f"No .kicad_mod could be matched for symbol {component_name!r}. "
+            f"Footprint property: {fp_name_hint or '<missing/empty>'}. "
+            f"Files in {pretty.name}: {existing_summary}"
         )
     svg = svg_render.render_footprint_svg(pretty, candidate_path.stem)
     return {"svg": svg}
