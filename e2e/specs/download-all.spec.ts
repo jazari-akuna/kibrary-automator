@@ -574,6 +574,10 @@ async function main() {
         },
         2_000, 100, 'search pane re-open after toggle',
       );
+      // Width animates over Tailwind's transition-[width] (200 ms). Wait for
+      // it to settle before driving the input — clearing/typing during the
+      // transition trips WebDriver's "element not interactable" guard.
+      await new Promise((r) => setTimeout(r, 350));
     }
 
     // Type C25804 into the search input and wait for at least one result row.
