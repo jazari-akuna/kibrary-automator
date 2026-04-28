@@ -558,6 +558,24 @@ async function main() {
     );
     log('  ✅ in-memory lcscIndex now contains C25804 → Existing_KSL');
 
+    // Re-open the search pane (the Download all step earlier in this run
+    // auto-collapsed it, hiding the input). Click the toggle ONCE if and
+    // only if the pane is currently collapsed.
+    const toggle = await findElement(sid, '[data-testid="search-pane-toggle"]');
+    if (!toggle) throw new Error('search-pane-toggle not found before pill probe');
+    const expandedNow = await elAttr(sid, toggle, 'aria-expanded');
+    if (expandedNow !== 'true') {
+      log('  search pane was collapsed — clicking toggle to re-open');
+      await elClick(sid, toggle);
+      await waitFor(
+        async () => {
+          const t = await findElement(sid, '[data-testid="search-pane-toggle"]');
+          return t && (await elAttr(sid, t, 'aria-expanded')) === 'true' ? true : null;
+        },
+        2_000, 100, 'search pane re-open after toggle',
+      );
+    }
+
     // Type C25804 into the search input and wait for at least one result row.
     const searchInput = await findElement(sid, '[data-testid="search-input"]');
     if (!searchInput) throw new Error('search input not found (alpha.17 pill probe)');
