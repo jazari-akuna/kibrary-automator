@@ -585,16 +585,15 @@ async function main() {
     if (!searchInput) throw new Error('search input not found (alpha.17 pill probe)');
     await elClear(sid, searchInput);
     await elType(sid, searchInput, 'C25804');
-    // Wait for any result row to appear before asserting the pill — gives
-    // search.raph.io time to respond and Solid time to render the <For>.
+    // Wait specifically for the search-results <ul> to populate — generic
+    // `ul li` would match queue/bulk-assign rows that already exist and
+    // give us a false-positive precondition.
     await waitFor(
       async () => {
-        const rows = await findElements(sid, 'ul li');
-        // The result list is the only ul inside the pane that yields >0 rows
-        // for the C25804 query; counting >0 lis is robust enough.
+        const rows = await findElements(sid, '[data-testid="search-results"] li');
         return rows.length > 0 ? true : null;
       },
-      6_000, 200, 'at least one result row rendered for C25804',
+      12_000, 250, 'search-results <ul> populated for C25804',
     );
     await screenshot(sid, `${OUT}/lcsc-in-library-pill-pre.png`);
     await waitFor(

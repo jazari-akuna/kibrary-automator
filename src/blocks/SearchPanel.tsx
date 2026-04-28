@@ -545,6 +545,7 @@ export default function SearchPanel() {
                 server responses this is a no-op. */}
             <Show when={filteredResultsClientSide().length > 0}>
               <ul
+                data-testid="search-results"
                 class="space-y-1.5 overflow-y-auto"
                 style={{ 'max-height': '480px' }}
               >
