@@ -22,6 +22,7 @@ import { createSignal, createEffect, Index, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { queueItems, setStatus, dequeue } from '~/state/queue';
 import { currentWorkspace } from '~/state/workspace';
+import { refreshLcscIndex } from '~/state/lcscIndex';
 import LibPicker from '~/components/LibPicker';
 
 interface PartMeta {
@@ -200,6 +201,14 @@ export default function ReviewBulkAssign() {
         }
       }),
     );
+
+    // alpha.17: warm the LCSC-in-library index so newly-committed parts
+    // surface the "In library" pill in subsequent searches. We refresh once
+    // per saveAll() (not per-row) — Promise.all has resolved, so this picks
+    // up every successful commit in a single round-trip. Fire-and-forget.
+    if (rows().some((r) => r.saveState === 'ok')) {
+      refreshLcscIndex(ws.root);
+    }
   };
 
   return (

@@ -2,6 +2,14 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.17] — 2026-04-28
+
+### Added
+- **Duplicate / already-existing component indicator.** Search results now carry a muted slate `In library: <name>` pill inline next to their LCSC code when that LCSC is already present in some library of the open workspace. Hovering the pill surfaces the in-library symbol's `component_name` (useful when the part was renamed in LibPicker). The indicator is purely informational — the **+ Add** button still fires, so re-downloading a part remains a single click away. New sidecar RPC `library.lcsc_index(workspace) → { lcsc: { library, component_name } }` walks every `*.kicad_sym` once and claims a symbol via either an `entryName` matching `^C\d+$` (kibrary's default after commit) or a property keyed exactly `LCSC` (handles parts the user renamed but whose JLC2KiCadLib-set property survived). Index is rebuilt on workspace open / program launch and after every successful commit (bulk-assign and sequential), all fire-and-forget so the UI never blocks on it; on RPC failure the previous index is kept silently. New `src/state/lcscIndex.ts` module exposes the signal + `refreshLcscIndex(workspace)` helper, plus `__kibraryTest.lcscIndex()` / `__kibraryTest.refreshLcscIndex(ws)` hooks for the smoke harness.
+
+### Notes
+- 7 new sidecar unit tests cover empty workspace, LCSC-named symbols, renamed symbols with the `LCSC` property, no-match symbols, multi-library collision (alphabetical-first wins), corrupt `.kicad_sym` skipped, and unit sub-symbols not double-counted. Smoke-ui plants a synthetic `Existing_KSL` library on disk mid-run, force-refreshes the in-app index via the test hook, then drives the search input and asserts both the DOM `[data-testid="lcsc-in-library-pill"]` element appears and its text names the seeded library — screenshot `lcsc-in-library-pill.png` is captured for visual review.
+
 ## [26.4.27-alpha.16] — 2026-04-28
 
 ### Fixed

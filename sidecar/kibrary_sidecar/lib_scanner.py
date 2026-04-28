@@ -5,13 +5,20 @@ Public API
 list_libraries(workspace)      → [{name, path, component_count, has_pretty, has_3dshapes}]
 list_components(lib_dir)       → [{name, description, reference, value, footprint}]
 get_component(lib_dir, name)   → {properties, footprint_path, model3d_path}
+lcsc_index(workspace)          → {lcsc: {library, component_name}} for "already in library" UI hint
 """
 
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
 
 from kiutils.symbol import SymbolLib
+
+log = logging.getLogger(__name__)
+
+_LCSC_RE = re.compile(r"^C\d+$")
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +149,64 @@ def get_component(lib_dir: Path, component_name: str) -> dict:
         "footprint_path": footprint_path,
         "model3d_path": model3d_path,
     }
+
+
+def lcsc_index(workspace: Path) -> dict[str, dict]:
+    """Return a flat map ``{lcsc: {library, component_name}}`` for every symbol
+    in the workspace whose LCSC code can be determined.
+
+    A symbol claims an LCSC code if **either**:
+      - its ``entryName`` matches ``^C\\d+$`` (the kibrary-default after commit), OR
+      - it has a property whose key is exactly ``"LCSC"`` and whose value
+        matches ``^C\\d+$`` (covers parts the user renamed in LibPicker but
+        whose JLC2KiCadLib-set ``LCSC`` property survives).
+
+    Libraries are walked in alphabetical order (matching ``list_libraries``).
+    On collision, the alphabetically-first library wins (stable across runs).
+
+    Per-file errors (missing/corrupt ``.kicad_sym``) are logged and skipped;
+    they never propagate up — the index is best-effort.
+    """
+    index: dict[str, dict] = {}
+
+    for lib in list_libraries(workspace):
+        lib_name = lib["name"]
+        sym_file = lib["path"] / f"{lib_name}.kicad_sym"
+        try:
+            sym_lib = SymbolLib.from_file(str(sym_file))
+        except Exception as exc:
+            log.warning("lcsc_index: skipping unreadable %s: %s", sym_file, exc)
+            continue
+
+        for sym in sym_lib.symbols:
+            # Skip unit sub-symbols — they share an entryName with the parent
+            # and would silently dedupe via dict assignment, but being explicit
+            # protects against future first-write-wins changes.
+            if sym.unitId is not None:
+                continue
+
+            entry_name = sym.entryName
+            lcsc: str | None = None
+
+            if entry_name and _LCSC_RE.match(entry_name):
+                lcsc = entry_name
+            else:
+                for prop in sym.properties:
+                    if prop.key == "LCSC" and prop.value and _LCSC_RE.match(prop.value):
+                        lcsc = prop.value
+                        break
+
+            if lcsc is None:
+                continue
+
+            # First-write-wins: alphabetically-first library claims the LCSC.
+            if lcsc not in index:
+                index[lcsc] = {
+                    "library": lib_name,
+                    "component_name": entry_name,
+                }
+
+    return index
 
 
 # ---------------------------------------------------------------------------

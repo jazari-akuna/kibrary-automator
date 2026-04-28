@@ -34,6 +34,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { enqueue } from '~/state/queue';
 import { searchPaneOpen, toggleSearchPane } from '~/state/searchPane';
+import { lcscIndex } from '~/state/lcscIndex';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -476,6 +477,7 @@ export default function SearchPanel() {
               <input
                 ref={inputRef}
                 type="text"
+                data-testid="search-input"
                 class="flex-1 min-w-0 bg-zinc-100 dark:bg-zinc-800 px-3 py-1.5 rounded text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500"
                 placeholder="MPN, description, LCSC…"
                 value={query()}
@@ -562,7 +564,26 @@ export default function SearchPanel() {
                         <p class="text-xs text-zinc-600 dark:text-zinc-400 line-clamp-2" title={result.description}>
                           {result.description || <span class="italic text-zinc-600">No description</span>}
                         </p>
-                        <p class="text-xs text-zinc-500 dark:text-zinc-600 font-mono">{result.lcsc}</p>
+                        <p class="text-xs text-zinc-500 dark:text-zinc-600 font-mono flex items-center gap-1.5 flex-wrap">
+                          <span>{result.lcsc}</span>
+                          {/* alpha.17: duplicate / already-existing component
+                              indicator — muted slate pill that surfaces when
+                              the LCSC is already in some library of the open
+                              workspace. Tooltip shows the in-library name when
+                              it differs from the LCSC code. Purely informational;
+                              the user can still click "+ Add" to re-download. */}
+                          <Show when={lcscIndex()[result.lcsc]}>
+                            {(entry) => (
+                              <span
+                                data-testid="lcsc-in-library-pill"
+                                class="inline-flex items-center rounded-md bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600 normal-case font-sans"
+                                title={`${entry().library} / ${entry().component_name}`}
+                              >
+                                In library: {entry().library}
+                              </span>
+                            )}
+                          </Show>
+                        </p>
                       </div>
 
                       {/* Add button */}

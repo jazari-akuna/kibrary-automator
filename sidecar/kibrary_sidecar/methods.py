@@ -286,6 +286,10 @@ def library_list_components(p: dict) -> dict:
     return {"components": lib_scanner.list_components(Path(p["lib_dir"]))}
 
 
+def library_lcsc_index(p: dict) -> dict:
+    return {"index": lib_scanner.lcsc_index(Path(p["workspace"]))}
+
+
 def library_get_component(p: dict) -> dict:
     return lib_scanner.get_component(Path(p["lib_dir"]), p["component_name"])
 
@@ -492,6 +496,7 @@ REGISTRY = {
     "editor.open": editor_open,
     "library.list": library_list,
     "library.list_components": library_list_components,
+    "library.lcsc_index": library_lcsc_index,
     "library.get_component": library_get_component,
     "library.rename_component": library_rename_component,
     "library.delete_component": library_delete_component,

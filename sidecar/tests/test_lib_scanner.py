@@ -46,7 +46,13 @@ def _make_lib_dir(
 # Import target (will fail until implementation exists)
 # ---------------------------------------------------------------------------
 
-from kibrary_sidecar.lib_scanner import get_component, list_components, list_libraries
+from kibrary_sidecar.lib_scanner import (
+    get_component,
+    lcsc_index,
+    list_components,
+    list_libraries,
+)
+from kiutils.items.common import Effects, Font, Property
 
 
 # ---------------------------------------------------------------------------
@@ -208,3 +214,113 @@ def test_list_libraries_path_field(tmp_path: Path):
     result = list_libraries(tmp_path)
     assert len(result) == 1
     assert result[0]["path"] == lib_dir
+
+
+# ---------------------------------------------------------------------------
+# lcsc_index — duplicate / already-existing component indicator
+# ---------------------------------------------------------------------------
+
+def _add_lcsc_property(lib_dir: Path, lcsc_value: str) -> None:
+    """Append an `LCSC` property to the FIRST symbol in the library at lib_dir.
+
+    Mutates the .kicad_sym file in place so we can simulate JLC2KiCadLib's
+    `(property "LCSC" "C12345" ...)` field on top of fixtures built with
+    Symbol.create_new (which only seeds Reference/Value/Footprint/Datasheet).
+    """
+    sym_path = lib_dir / f"{lib_dir.name}.kicad_sym"
+    lib = SymbolLib.from_file(str(sym_path))
+    sym = lib.symbols[0]
+    next_id = max((p.id for p in sym.properties), default=-1) + 1
+    sym.properties.append(
+        Property(
+            key="LCSC",
+            value=lcsc_value,
+            id=next_id,
+            effects=Effects(font=Font(width=1.27, height=1.27), hide=True),
+        )
+    )
+    lib.to_file(str(sym_path))
+
+
+def test_lcsc_index_empty_workspace(tmp_path: Path):
+    assert lcsc_index(tmp_path) == {}
+
+
+def test_lcsc_index_picks_up_lcsc_named_symbols(tmp_path: Path):
+    _make_lib_dir(
+        tmp_path,
+        "Resistors_KSL",
+        [("C25804", "R", "10k 0402"), ("C12345", "R", "4.7k 0402")],
+    )
+
+    idx = lcsc_index(tmp_path)
+    assert set(idx.keys()) == {"C25804", "C12345"}
+    assert idx["C25804"]["library"] == "Resistors_KSL"
+    assert idx["C25804"]["component_name"] == "C25804"
+    assert idx["C12345"]["library"] == "Resistors_KSL"
+
+
+def test_lcsc_index_uses_lcsc_property_when_renamed(tmp_path: Path):
+    """Symbol renamed in LibPicker (entryName != Cnnnn) but LCSC property survives."""
+    lib_dir = _make_lib_dir(
+        tmp_path,
+        "Resistors_KSL",
+        [("R_10k_0402", "R", "10k 0402")],
+    )
+    _add_lcsc_property(lib_dir, "C25804")
+
+    idx = lcsc_index(tmp_path)
+    assert "C25804" in idx
+    assert idx["C25804"]["library"] == "Resistors_KSL"
+    # component_name surfaces the renamed entryName, not the LCSC code
+    assert idx["C25804"]["component_name"] == "R_10k_0402"
+
+
+def test_lcsc_index_skips_symbols_with_no_match(tmp_path: Path):
+    """Symbol with neither LCSC-shaped name NOR an LCSC property is not indexed."""
+    _make_lib_dir(
+        tmp_path,
+        "Generic_KSL",
+        [("R_Generic", "R", "10k")],
+    )
+    assert lcsc_index(tmp_path) == {}
+
+
+def test_lcsc_index_first_library_wins_on_collision(tmp_path: Path):
+    """Two libraries claim the same LCSC → alphabetical-first wins."""
+    _make_lib_dir(tmp_path, "ZZZ_KSL", [("C25804", "R", "10k")])
+    _make_lib_dir(tmp_path, "AAA_KSL", [("C25804", "R", "10k")])
+
+    idx = lcsc_index(tmp_path)
+    # AAA_KSL comes first alphabetically (matches list_libraries' sorted walk)
+    assert idx["C25804"]["library"] == "AAA_KSL"
+
+
+def test_lcsc_index_skips_corrupt_kicad_sym(tmp_path: Path):
+    """One corrupt library does not poison the index for the other libraries."""
+    _make_lib_dir(tmp_path, "Good_KSL", [("C25804", "R", "10k")])
+    bad_dir = tmp_path / "Bad_KSL"
+    bad_dir.mkdir()
+    (bad_dir / "Bad_KSL.kicad_sym").write_text("this is not s-expr at all")
+
+    idx = lcsc_index(tmp_path)
+    assert "C25804" in idx
+    assert idx["C25804"]["library"] == "Good_KSL"
+
+
+def test_lcsc_index_does_not_double_count_unit_subsymbols(tmp_path: Path):
+    """Unit sub-symbols (sym.unitId is not None) must not be counted."""
+    lib_dir = _make_lib_dir(tmp_path, "MultiUnit_KSL", [("C25804", "R", "10k")])
+    # Manually add a unit sub-symbol whose entryName is also Cnnnn
+    sym_path = lib_dir / "MultiUnit_KSL.kicad_sym"
+    lib = SymbolLib.from_file(str(sym_path))
+    parent = lib.symbols[0]
+    unit = Symbol.create_new(id="C25804_1_1", reference="R", value="unit")
+    unit.unitId = 1
+    parent.units.append(unit)
+    lib.to_file(str(sym_path))
+
+    idx = lcsc_index(tmp_path)
+    assert list(idx.keys()) == ["C25804"]
+    # Only the parent symbol's entryName (top-level) is reported
+    assert idx["C25804"]["component_name"] == "C25804"

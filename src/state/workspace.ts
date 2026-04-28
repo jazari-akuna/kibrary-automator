@@ -1,6 +1,7 @@
 import { createSignal } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { refreshLcscIndex } from './lcscIndex';
 
 export interface Workspace { root: string; settings: any; }
 
@@ -33,6 +34,10 @@ export async function openWorkspace(path: string) {
   invoke('watch_workspace', { workspace: path }).catch((e) =>
     console.warn('[watcher] watch_workspace failed:', e)
   );
+
+  // alpha.17: warm the LCSC-in-library index in the background so the
+  // SearchPanel can flag duplicates as soon as the user starts typing.
+  refreshLcscIndex(path);
 }
 
 // Expose to WebDriver tests so they can drive workspace open without going

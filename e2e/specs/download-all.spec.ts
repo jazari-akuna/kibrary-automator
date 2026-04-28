@@ -516,6 +516,68 @@ async function main() {
       log(`✅ stockFilter=both server-side: ${stockBothResult.count} rows, all in stock at both sources`);
     }
 
+    // 9c-quinquies. alpha.17: duplicate / already-existing component indicator.
+    //   Plant a synthetic library on disk (Existing_KSL containing one symbol
+    //   `C25804`), trigger refreshLcscIndex, search "C25804", and assert the
+    //   muted "In library: Existing_KSL" pill renders inline next to the LCSC
+    //   in the result row.
+    log('alpha.17: duplicate-indicator probe — seeding fake Existing_KSL library');
+    const dupeLibDir = join(WORKSPACE, 'Existing_KSL');
+    mkdirSync(dupeLibDir, { recursive: true });
+    writeFileSync(
+      join(dupeLibDir, 'Existing_KSL.kicad_sym'),
+      '(kicad_symbol_lib (version 20211014) (generator None)\n' +
+        '  (symbol "C25804" (in_bom yes) (on_board yes)\n' +
+        '    (property "Reference" "R" (id 0) (at 0.0 0.0 0))\n' +
+        '    (property "Value" "10k 0402 (e2e seed)" (id 1) (at 0.0 0.0 0))\n' +
+        '    (property "Footprint" "" (id 2) (at 0.0 0.0 0))\n' +
+        '    (property "Datasheet" "" (id 3) (at 0.0 0.0 0))\n' +
+        '  )\n' +
+        ')\n',
+    );
+
+    // Force-refresh the in-app LCSC index via the test hook (workspace was
+    // opened well before the seed file existed, so the auto-refresh on open
+    // returned an empty index).
+    log('  triggering refreshLcscIndex via __kibraryTest hook');
+    await execScript(
+      sid,
+      `window.__kibraryTest.refreshLcscIndex(arguments[0]);`,
+      [WORKSPACE],
+    );
+    // Wait for the index to populate before driving the search.
+    await waitFor(
+      async () => {
+        const v = await execScript(
+          sid,
+          `var i = window.__kibraryTest.lcscIndex(); return i && i.C25804 ? i.C25804.library : null;`,
+        );
+        return v === 'Existing_KSL' ? true : null;
+      },
+      5_000, 200, 'lcscIndex populated with C25804 → Existing_KSL',
+    );
+    log('  ✅ in-memory lcscIndex now contains C25804 → Existing_KSL');
+
+    // Type C25804 into the search input and wait for at least one result row.
+    const searchInput = await findElement(sid, '[data-testid="search-input"]');
+    if (!searchInput) throw new Error('search input not found (alpha.17 pill probe)');
+    await elClear(sid, searchInput);
+    await elType(sid, searchInput, 'C25804');
+    await waitFor(
+      () => findElement(sid, '[data-testid="lcsc-in-library-pill"]'),
+      8_000, 200, 'duplicate-indicator pill rendered for C25804',
+    );
+    const pillEl = await findElement(sid, '[data-testid="lcsc-in-library-pill"]');
+    const pillText = pillEl ? await elText(sid, pillEl) : '';
+    log(`  pill text: "${pillText}"`);
+    if (!pillText.includes('Existing_KSL')) {
+      throw new Error(
+        `expected pill to mention 'Existing_KSL', got: "${pillText}"`,
+      );
+    }
+    log('✅ alpha.17 duplicate-indicator pill renders + names the right library');
+    await screenshot(sid, `${OUT}/lcsc-in-library-pill.png`);
+
     // 9d. Cancel button deletes staged files + drops the queue row.
     log('clicking Bulk-Assign cancel — should rmtree staging dir + dequeue');
     const cancelBtn = await findElement(sid, '[data-testid="bulk-cancel"]');

@@ -17,6 +17,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { queueItems, setStatus } from '~/state/queue';
 import { currentWorkspace } from '~/state/workspace';
 import { pushToast } from '~/state/toasts';
+import { refreshLcscIndex } from '~/state/lcscIndex';
 
 // ---------------------------------------------------------------------------
 // Signals
@@ -103,6 +104,10 @@ export async function commitCurrent(targetLib: string): Promise<void> {
     });
 
     setStatus(lcsc, 'committed');
+
+    // alpha.17: refresh the LCSC-in-library index so the SearchPanel pill
+    // appears for this part on the next search. Fire-and-forget; never await.
+    refreshLcscIndex(ws.root);
 
     pushToast({
       kind: 'success',
