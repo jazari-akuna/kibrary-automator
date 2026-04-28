@@ -153,10 +153,11 @@ def _resolve_kicad_mod(
         return mods[0] if mods else None
 
     if lib_dir is not None and component_name is not None:
-        lib_dir = Path(lib_dir)
-        pretty_dir = lib_dir / f"{lib_dir.name}.pretty"
-        mod_path = pretty_dir / f"{component_name}.kicad_mod"
-        return mod_path if mod_path.is_file() else None
+        # Delegate to the shared resolver so we honour the symbol's Footprint
+        # property — committed footprints are named by package (R0603) not
+        # by MPN (component_name like 0603WAF1002T5E).
+        from kibrary_sidecar import lib_scanner
+        return lib_scanner._find_footprint(Path(lib_dir), component_name)
 
     return None
 

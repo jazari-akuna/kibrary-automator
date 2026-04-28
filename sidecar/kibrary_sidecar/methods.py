@@ -438,43 +438,22 @@ def library_render_symbol_svg(p: dict) -> dict:
 def library_render_footprint_svg(p: dict) -> dict:
     """Render a single footprint from a committed library to SVG via kicad-cli.
 
-    Resolves the footprint name from the symbol's ``Footprint`` property —
-    the symbol entry name is the MPN (e.g. ``0603WAF1002T5E``) but the
-    footprint is named by package (e.g. ``R0603``). The Footprint property
-    bridges them: ``"<library>:<footprint_name>"``.
+    Delegates the symbol → footprint-file resolution to ``lib_scanner._find_footprint``
+    (it honours the symbol's ``Footprint`` property), then passes the file
+    stem to kicad-cli — empirically kicad-cli matches ``--footprint X`` by
+    file basename in the .pretty dir, not by the internal name.
     """
-    from kibrary_sidecar import svg_render
-    from kiutils.symbol import SymbolLib
+    from kibrary_sidecar import svg_render, lib_scanner
     lib_dir = Path(p["lib_dir"])
     component_name = p["component_name"]
     pretty = lib_dir / f"{lib_dir.name}.pretty"
-    sym_file = lib_dir / f"{lib_dir.name}.kicad_sym"
-    sym_lib = SymbolLib.from_file(str(sym_file))
-    fp_prop = None
-    for sym in sym_lib.symbols:
-        if sym.entryName == component_name and sym.unitId is None:
-            for prop in sym.properties:
-                if prop.key == "Footprint":
-                    fp_prop = prop.value
-                    break
-            break
-    if fp_prop:
-        # Footprint property is "<library>:<name>" — strip the prefix.
-        footprint_name = fp_prop.split(":", 1)[-1] if ":" in fp_prop else fp_prop
-    else:
-        # Fallback: kicad-cli matches `--footprint X` against FILE basenames
-        # in the .pretty dir (verified empirically against KiCad 9.0). When
-        # the symbol has no Footprint property, pick a candidate file via
-        # the same name-matching `_find_footprint` does and pass its stem.
-        from kibrary_sidecar import lib_scanner
-        candidate_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
-        if candidate_path is None:
-            raise FileNotFoundError(
-                f"Symbol {component_name!r} has no Footprint property and "
-                f"no .kicad_mod could be matched in {pretty}"
-            )
-        footprint_name = candidate_path.stem
-    svg = svg_render.render_footprint_svg(pretty, footprint_name)
+    candidate_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
+    if candidate_path is None:
+        raise FileNotFoundError(
+            f"No .kicad_mod could be matched for symbol {component_name!r} "
+            f"in {pretty}"
+        )
+    svg = svg_render.render_footprint_svg(pretty, candidate_path.stem)
     return {"svg": svg}
 
 

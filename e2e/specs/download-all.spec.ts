@@ -885,6 +885,83 @@ async function main() {
     }
     log(`✅ alpha.18.1 REAL-WORLD: kicad-cli renders MPN-named symbol "${realComponentName}" without error`);
 
+    // ---- 3D model info probe ---------------------------------------------
+    // Assert library.get_3d_info finds the (model …) block in the committed
+    // .kicad_mod — alpha.19 bug: handler was looking for `<MPN>.kicad_mod`,
+    // but committed footprints are named by package, so it returned null
+    // and the UI showed "No 3D model attached" even when the link existed.
+    log('alpha.19: REAL-WORLD 3D model info probe');
+    const real3dInfo = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      window.__TAURI_INTERNALS__.invoke('sidecar_call', {
+        method: 'library.get_3d_info',
+        params: { lib_dir: ${JSON.stringify(realLibDir)}, component_name: ${JSON.stringify(realComponentName)} },
+      }).then(function(r){done({ok:true, r:r});}).catch(function(e){done({ok:false, e:String(e)});});
+    `);
+    log(`  3D info: ${JSON.stringify(real3dInfo)}`);
+    if (!real3dInfo?.ok || !real3dInfo.r?.info) {
+      throw new Error(
+        `REAL-WORLD 3D info missing — would render "No 3D model attached" in UI. ` +
+        `Got: ${JSON.stringify(real3dInfo)}. ` +
+        `Symptom of the alpha.18 bug: handler looked up <MPN>.kicad_mod, but ` +
+        `committed footprint files are named after the package (e.g. R0603.kicad_mod).`,
+      );
+    }
+    const info = real3dInfo.r.info;
+    log(`  3D filename: ${info.filename}, format: ${info.format}, path: ${info.model_path}`);
+    if (!info.filename || !info.format) {
+      throw new Error(`3D info missing filename/format: ${JSON.stringify(info)}`);
+    }
+    // Wait for the UI to mount the Model3DPreview block (filename should be in DOM).
+    await new Promise((r) => setTimeout(r, 800));
+    const has3DCard = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var bodyText = document.body.innerText || '';
+      done({
+        showsNoModelMsg: bodyText.includes('No 3D model attached'),
+        showsFilename: bodyText.includes(${JSON.stringify(info.filename)}),
+      });
+    `);
+    log(`  3D card UI state: ${JSON.stringify(has3DCard)}`);
+
+    // Scroll the component-detail panel so the 3D card is in view, then screenshot.
+    // The right pane is the deepest scrollable column in ComponentDetail.tsx.
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        var scrollables = document.querySelectorAll('.overflow-y-auto');
+        scrollables.forEach(function(el){ el.scrollTop = el.scrollHeight; });
+        done(true);
+      } catch (e) { done(String(e)); }
+    `);
+    await new Promise((r) => setTimeout(r, 400));
+    await screenshot(sid, `${OUT}/renderers-3d-info.png`);
+
+    // Also capture symbol + footprint at top of pane for the README.
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        var scrollables = document.querySelectorAll('.overflow-y-auto');
+        scrollables.forEach(function(el){ el.scrollTop = 0; });
+        done(true);
+      } catch (e) { done(String(e)); }
+    `);
+    await new Promise((r) => setTimeout(r, 400));
+    await screenshot(sid, `${OUT}/preview-symbol-footprint.png`);
+    if (has3DCard?.showsNoModelMsg) {
+      throw new Error(
+        `REAL-WORLD 3D card shows "No 3D model attached" even though library.get_3d_info ` +
+        `returned valid info — frontend regression in Model3DPreview.tsx`,
+      );
+    }
+    if (!has3DCard?.showsFilename) {
+      throw new Error(
+        `REAL-WORLD 3D card did not display filename ${info.filename} — UI may not be ` +
+        `mounting the Model3DPreview block in Libraries room.`,
+      );
+    }
+    log(`✅ alpha.19 REAL-WORLD: 3D model "${info.filename}" linked + displayed`);
+
     // ---------------------------------------------------------------------
     // 12. alpha.18 fuzzy library_suggest — when an existing lib resembles
     //     the category-derived name, the sidecar promotes it to top.

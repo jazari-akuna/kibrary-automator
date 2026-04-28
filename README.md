@@ -14,6 +14,12 @@ Paste a list of LCSC codes, watch them download in parallel, review/edit each on
 
 ![Libraries room — tree, component list, detail](docs/screenshot-libraries-room.png)
 
+Each component opens with three previews rendered from the committed library files via `kicad-cli` (alpha.18+) — symbol and footprint as inline SVG, 3D model as a positioner card with offset / rotation / scale and a path to the linked `.step` / `.wrl` / `.glb`:
+
+![Symbol + Footprint preview — kicad-cli SVG render](docs/screenshot-preview-symbol-footprint.png)
+
+![3D Model card — STEP filename, offset/rotation/scale, full ${KSL_ROOT} path](docs/screenshot-preview-3d-model.png)
+
 **Settings** — workspace + global preferences (concurrency, search.raph.io API key, KiCad target):
 
 ![Settings room — concurrency + API key](docs/screenshot-settings-room.png)
@@ -26,7 +32,7 @@ Paste a list of LCSC codes, watch them download in parallel, review/edit each on
 |---|---|---|
 | **Import** | Paste LCSC codes — `C1525, 2\nC25804, 5` or `C1525, C25804, C99999` | Parses BOM-vs-list format, dedupes, queues each part |
 | **Download** | Hit "Download all" | Runs `JLC2KiCadLib` in parallel (4 by default), live status badges per part |
-| **Review** | Pick a mode: sequential (one-by-one), pick-from-list, or **bulk-assign** (just confirm target libs, skip review) | Renders read-only previews via `kicanvas`, in-app editor for description/reference/value/datasheet, "Edit in KiCad" button hands off to the real editors with file-watcher refresh |
+| **Review** | Pick a mode: sequential (one-by-one), pick-from-list, or **bulk-assign** (just confirm target libs, skip review) | Renders read-only previews via `kicad-cli` (SVG; alpha.18+), in-app editor for description/reference/value/datasheet, "Edit in KiCad" button hands off to the real editors with file-watcher refresh |
 | **Commit** | Confirm target library | Merges into existing `_KSL` lib or creates a new one, writes `metadata.json`, **auto-commits to git** with a templated message |
 | **Install** | Optional during first-run | Registers each library in KiCad's `sym-lib-table` and `fp-lib-table` (Linux Flatpak/regular, macOS, Windows) |
 

@@ -2,6 +2,17 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.20] — 2026-04-28
+
+### Fixed
+- **3D Model card showed "No 3D model attached" on every committed component** even when JLC2KiCadLib had downloaded the `.step` and `library.commit` had rewritten the `(model …)` path to `${KSL_ROOT}/<lib>/<lib>.3dshapes/<file>`. Same root cause as the alpha.18.1 footprint render bug: `files.get_3d_info` looked for `<MPN>.kicad_mod` (e.g. `0603WAF1002T5E.kicad_mod`) but committed footprints are named after the package (e.g. `R0603.kicad_mod`). Refactored `lib_scanner._find_footprint` to honour the symbol's `Footprint` property — `<library>:<footprint_name>` — and look up `<pretty>/<footprint_name>.kicad_mod` first, then fall back to the literal-name lookup. Both `library_render_footprint_svg` and `_resolve_kicad_mod` now route through this single resolver, so the symbol↔footprint name mismatch is fixed everywhere it appeared.
+- **Smoke spec now asserts the 3D card.** The REAL-WORLD probe (alpha.18.1) was checking only the symbol + footprint `<img>` mounts; it didn't catch that the 3D card was always falling into the empty state. Probe now calls `library.get_3d_info` directly + asserts the DOM doesn't contain the literal "No 3D model attached" string + screenshots `renderers-3d-info.png` after scrolling the card into view.
+
+### Notes
+- README updated with two new screenshots — `docs/screenshot-preview-symbol-footprint.png` (kicad-cli SVG render of the resistor symbol + footprint) and `docs/screenshot-preview-3d-model.png` (3D Model card with STEP filename, offset/rotation/scale, full `${KSL_ROOT}` path) — captured directly from the smoke run on a real `library.commit`-ed component, not synthetic seeds.
+- The sidecar's resolver does NOT touch the staging-mode path (`get_3d_info(staging_dir, lcsc)`) — that one already worked because staged parts have a single `.kicad_mod` and we glob the `.pretty` dir.
+- 3D model is *displayed as info* (filename, format, position, full path) — not 3D-rendered. KiCad's `kicad-cli pcb render` requires a fully-formed `.kicad_pcb` skeleton that's still pending. Click **View 3D in KiCad** in staging mode to open the footprint editor; press Alt+3 there for the actual 3D viewer.
+
 ## [26.4.27-alpha.19] — 2026-04-28
 
 ### Fixed

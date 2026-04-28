@@ -224,17 +224,58 @@ _3D_EXTENSIONS = (".step", ".stp", ".wrl", ".glb")
 
 
 def _find_footprint(lib_dir: Path, component_name: str) -> Path | None:
-    """Return the .kicad_mod file for *component_name* inside the .pretty dir, or None."""
+    """Return the .kicad_mod file backing *component_name*, or None.
+
+    Resolves via the symbol's ``Footprint`` property when present —
+    JLC2KiCadLib names symbols by MPN (e.g. ``0603WAF1002T5E``) but
+    footprint files by package (e.g. ``R0603.kicad_mod``), so a literal
+    ``<component_name>.kicad_mod`` lookup misses them.
+
+    Resolution order:
+
+    1. Symbol's ``Footprint`` property → ``<lib>:<fp_name>`` →
+       ``<pretty>/<fp_name>.kicad_mod``  (correct path post-commit)
+    2. ``<pretty>/<component_name>.kicad_mod``  (synthetic / hand-named)
+    3. Any ``.kicad_mod`` whose stem equals ``component_name``
+    """
     pretty_dir = lib_dir / f"{lib_dir.name}.pretty"
     if not pretty_dir.is_dir():
         return None
+
+    fp_name = _footprint_name_from_symbol(lib_dir, component_name)
+    if fp_name:
+        candidate = pretty_dir / f"{fp_name}.kicad_mod"
+        if candidate.is_file():
+            return candidate
+
     candidate = pretty_dir / f"{component_name}.kicad_mod"
     if candidate.is_file():
         return candidate
-    # Fallback: search all .kicad_mod files in the .pretty dir
+
     for fp in pretty_dir.glob("*.kicad_mod"):
         if fp.stem == component_name:
             return fp
+    return None
+
+
+def _footprint_name_from_symbol(lib_dir: Path, component_name: str) -> str | None:
+    """Return the footprint name from the symbol's ``Footprint`` property
+    (stripped of the ``<library>:`` prefix), or None if absent / unreadable.
+    """
+    sym_file = lib_dir / f"{lib_dir.name}.kicad_sym"
+    if not sym_file.is_file():
+        return None
+    try:
+        sym_lib = SymbolLib.from_file(str(sym_file))
+    except Exception:
+        return None
+    for sym in sym_lib.symbols:
+        if sym.entryName == component_name and sym.unitId is None:
+            for prop in sym.properties:
+                if prop.key == "Footprint" and prop.value:
+                    val = prop.value
+                    return val.split(":", 1)[-1] if ":" in val else val
+            return None
     return None
 
 
