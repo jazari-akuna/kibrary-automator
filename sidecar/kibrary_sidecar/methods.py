@@ -602,6 +602,48 @@ def library_render_3d_png(p: dict) -> dict:
     return {"png_data_url": f"data:image/png;base64,{b64}"}
 
 
+def library_render_3d_png_angled(p: dict) -> dict:
+    """Live-preview variant of ``library.render_3d_png``.
+
+    Accepts orbit angles (azimuth/elevation) and an optional in-memory
+    transform override (offset/rotation/scale). The override is applied
+    to the spliced board before kicad-cli sees it, so the user can drag
+    positioner values around without disk writes between every tick.
+    """
+    from kibrary_sidecar import lib_scanner, render_3d
+    import base64
+    import tempfile
+    lib_dir = Path(p["lib_dir"])
+    component_name = p["component_name"]
+    fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
+    if fp_path is None:
+        raise FileNotFoundError(
+            f"No .kicad_mod for symbol {component_name!r} in {lib_dir}"
+        )
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        render_3d.render_footprint_3d_png_angled(
+            lib_dir=lib_dir,
+            footprint_file=fp_path,
+            output_png=tmp_path,
+            azimuth=float(p.get("azimuth", -25.0)),
+            elevation=float(p.get("elevation", -25.0)),
+            offset=tuple(p["offset"]) if "offset" in p else None,
+            rotation=tuple(p["rotation"]) if "rotation" in p else None,
+            scale=tuple(p["scale"]) if "scale" in p else None,
+            width=int(p.get("width", 600)),
+            height=int(p.get("height", 400)),
+        )
+        b64 = base64.b64encode(tmp_path.read_bytes()).decode("ascii")
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+    return {"png_data_url": f"data:image/png;base64,{b64}"}
+
+
 def library_set_3d_offset(p: dict) -> dict:
     """Update the offset / rotation / scale of the first 3D model block in
     a committed component's ``.kicad_mod``."""
@@ -735,6 +777,7 @@ REGISTRY = {
     "library.read_props": library_read_props,
     "library.write_props": library_write_props,
     "library.render_3d_png": library_render_3d_png,
+    "library.render_3d_png_angled": library_render_3d_png_angled,
     "parts.delete_staged": parts_delete_staged,
     "parts.read_props": parts_read_props,
     "parts.write_props": parts_write_props,

@@ -1086,7 +1086,7 @@ async function main() {
     const scrollResult = await execAsync(sid, `
       var done = arguments[arguments.length - 1];
       try {
-        var img = document.querySelector('[data-testid="3d-render-png"]');
+        var img = document.querySelector('[data-testid="3d-viewer-img"]');
         if (!img) { done({ok:false, reason:'img not found'}); return; }
         img.scrollIntoView({block: 'center', inline: 'center'});
         done({ok:true, complete: img.complete, naturalWidth: img.naturalWidth});
@@ -1130,7 +1130,10 @@ async function main() {
           var bodyText = (document.body.innerText || '');
           done({
             ok: true,
-            toastedSuccess: /Opened symbol in KiCad/.test(bodyText),
+            // alpha.26: KiCad 9 has no CLI flag for the Symbol Editor,
+            // so success now means "KiCad opened" with manual-navigation
+            // instructions — match the user-facing hint instead.
+            toastedSuccess: /Symbol Editor/.test(bodyText),
             toastedError: /Open symbol failed/.test(bodyText),
             bodyTail: bodyText.slice(-300),
           });
@@ -1194,6 +1197,171 @@ async function main() {
     log('✅ alpha.24 Open-datasheet enables on https URL + reflects URL in title');
 
     // ---------------------------------------------------------------------
+    // 11d-bis. alpha.25: interactive 3D viewer + jog dial probes.
+    //   1) viewer-mounts          — canvas + img mounted, src is a PNG data URL
+    //   2) jog-x-plus             — clicking the +X outer wedge bumps offset.x
+    //                               by 1.0mm in the positioner input
+    //   3) jog-x-rerender         — clicking +Y inner wedge changes the img.src
+    //   4) drag-orbit-rerender    — synthetic mousedown/move/up on the canvas
+    //                               reorbits and re-renders
+    //   5) jog-z-plus             — +Z 0.1mm button bumps offset.z by 0.1
+    // ---------------------------------------------------------------------
+    log('alpha.25: interactive 3D viewer + jog dial probes');
+
+    // (1) Viewer mounts.
+    const viewerMount = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var canvas = document.querySelector('[data-testid="3d-viewer-canvas"]');
+      var img = document.querySelector('[data-testid="3d-viewer-img"]');
+      // Allow up to 10s for the initial render to land
+      var deadline = Date.now() + 10000;
+      (async function poll() {
+        while (Date.now() < deadline) {
+          var src = img ? img.src : '';
+          if (canvas && img && src && src.indexOf('data:image/png') === 0) {
+            done({ok:true, srcLen: src.length});
+            return;
+          }
+          await new Promise(function(r){ setTimeout(r, 250); });
+          canvas = document.querySelector('[data-testid="3d-viewer-canvas"]');
+          img = document.querySelector('[data-testid="3d-viewer-img"]');
+        }
+        done({ok:false, reason:'viewer canvas/img not found or never rendered',
+               canvas: !!canvas, img: !!img,
+               srcPrefix: img ? String(img.src).slice(0, 32) : null});
+      })();
+    `);
+    log(`  viewer-mounts: ${JSON.stringify(viewerMount)}`);
+    if (!viewerMount?.ok) throw new Error(`alpha.25 viewer-mounts failed: ${viewerMount?.reason}`);
+
+    // (2) Jog X+ outer wedge → positioner-offset-x increases by 1.0.
+    const jogXResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var ox = document.querySelector('[data-testid="positioner-offset-x"]');
+      if (!ox) { done({ok:false, reason:'positioner-offset-x not found'}); return; }
+      var initial = parseFloat(ox.value || '0');
+      var wedge = document.querySelector('[data-testid="jog-outer-+x"]');
+      if (!wedge) { done({ok:false, reason:'jog-outer-+x wedge not found'}); return; }
+      wedge.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true}));
+      var deadline = Date.now() + 5000;
+      (async function poll(){
+        while (Date.now() < deadline) {
+          await new Promise(function(r){ setTimeout(r, 100); });
+          var now = parseFloat(
+            (document.querySelector('[data-testid="positioner-offset-x"]') || {}).value || '0'
+          );
+          if (Math.abs(now - (initial + 1.0)) < 0.001) {
+            done({ok:true, initial: initial, after: now});
+            return;
+          }
+        }
+        var fin = parseFloat(
+          (document.querySelector('[data-testid="positioner-offset-x"]') || {}).value || 'NaN'
+        );
+        done({ok:false, reason:'offset.x never reached initial+1.0',
+               initial: initial, last: fin});
+      })();
+    `);
+    log(`  jog-x-plus: ${JSON.stringify(jogXResult)}`);
+    if (!jogXResult?.ok) throw new Error(`alpha.25 jog-x-plus failed: ${jogXResult?.reason}`);
+
+    // (3) After a jog, the img.src must change (sidecar re-renders with the new transform).
+    const jogXRerender = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var img = document.querySelector('[data-testid="3d-viewer-img"]');
+      if (!img) { done({ok:false, reason:'no viewer img'}); return; }
+      var beforeSrc = img.src;
+      var wedge = document.querySelector('[data-testid="jog-inner-+y"]');
+      if (!wedge) { done({ok:false, reason:'jog-inner-+y wedge not found'}); return; }
+      wedge.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true}));
+      var deadline = Date.now() + 8000;
+      (async function poll(){
+        while (Date.now() < deadline) {
+          await new Promise(function(r){ setTimeout(r, 250); });
+          var now = (document.querySelector('[data-testid="3d-viewer-img"]') || {}).src || '';
+          if (now && now !== beforeSrc && now.indexOf('data:image/png') === 0) {
+            done({ok:true, beforeLen: beforeSrc.length, afterLen: now.length});
+            return;
+          }
+        }
+        done({ok:false, reason:'img.src did not change after jog click',
+               beforeLen: beforeSrc.length});
+      })();
+    `);
+    log(`  jog-x-rerender: ${JSON.stringify(jogXRerender)}`);
+    if (!jogXRerender?.ok) throw new Error(`alpha.25 jog-x-rerender failed: ${jogXRerender?.reason}`);
+
+    // (4) Drag-to-orbit fires a re-render. WebDriver's pointer dispatch is
+    //     unreliable in the headless container, so we use synthetic
+    //     MouseEvents at window-level (the viewer binds via SolidJS's
+    //     onMouseMove/onMouseUp on the canvas, but those bubble — so dispatching
+    //     on the canvas itself is enough).
+    const dragRerender = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var canvas = document.querySelector('[data-testid="3d-viewer-canvas"]');
+      var img = document.querySelector('[data-testid="3d-viewer-img"]');
+      if (!canvas || !img) { done({ok:false, reason:'canvas/img missing'}); return; }
+      var beforeSrc = img.src;
+      var rect = canvas.getBoundingClientRect();
+      function evt(type, dx, dy) {
+        return new MouseEvent(type, {
+          bubbles: true, cancelable: true, button: 0,
+          clientX: rect.left + dx, clientY: rect.top + dy,
+        });
+      }
+      canvas.dispatchEvent(evt('mousedown', 50, 50));
+      canvas.dispatchEvent(evt('mousemove', 110, 50));
+      canvas.dispatchEvent(evt('mouseup', 110, 50));
+      var deadline = Date.now() + 8000;
+      (async function poll(){
+        while (Date.now() < deadline) {
+          await new Promise(function(r){ setTimeout(r, 250); });
+          var now = (document.querySelector('[data-testid="3d-viewer-img"]') || {}).src || '';
+          if (now && now !== beforeSrc && now.indexOf('data:image/png') === 0) {
+            done({ok:true, beforeLen: beforeSrc.length, afterLen: now.length});
+            return;
+          }
+        }
+        done({ok:false, reason:'img.src did not change after drag'});
+      })();
+    `);
+    log(`  drag-orbit-rerender: ${JSON.stringify(dragRerender)}`);
+    if (!dragRerender?.ok) throw new Error(`alpha.25 drag-orbit-rerender failed: ${dragRerender?.reason}`);
+
+    // (5) +Z 0.1mm button bumps offset.z by 0.1.
+    const jogZResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var oz = document.querySelector('[data-testid="positioner-offset-z"]');
+      if (!oz) { done({ok:false, reason:'positioner-offset-z not found'}); return; }
+      var initial = parseFloat(oz.value || '0');
+      var btn = document.querySelector('[data-testid="jog-z-plus01"]');
+      if (!btn) { done({ok:false, reason:'jog-z-plus01 button not found'}); return; }
+      btn.click();
+      var deadline = Date.now() + 3000;
+      (async function poll(){
+        while (Date.now() < deadline) {
+          await new Promise(function(r){ setTimeout(r, 100); });
+          var now = parseFloat(
+            (document.querySelector('[data-testid="positioner-offset-z"]') || {}).value || '0'
+          );
+          if (Math.abs(now - (initial + 0.1)) < 0.001) {
+            done({ok:true, initial: initial, after: now});
+            return;
+          }
+        }
+        var fin = parseFloat(
+          (document.querySelector('[data-testid="positioner-offset-z"]') || {}).value || 'NaN'
+        );
+        done({ok:false, reason:'offset.z never reached initial+0.1',
+               initial: initial, last: fin});
+      })();
+    `);
+    log(`  jog-z-plus: ${JSON.stringify(jogZResult)}`);
+    if (!jogZResult?.ok) throw new Error(`alpha.25 jog-z-plus failed: ${jogZResult?.reason}`);
+
+    log('✅ alpha.25 viewer + jog dial fully wired (mount, jog X+, jog re-render, drag re-render, jog Z+)');
+
+    // ---------------------------------------------------------------------
     // 11e. alpha.23: 3D render PNG re-renders when offset/rotation/scale
     //      change. Snapshot the current PNG src, save the positioner with
     //      a different rotation, wait, then assert the src bytes changed.
@@ -1202,7 +1370,7 @@ async function main() {
     const rerenderResult = await execAsync(sid, `
       var done = arguments[arguments.length - 1];
       (async function(){
-        var img = document.querySelector('[data-testid="3d-render-png"]');
+        var img = document.querySelector('[data-testid="3d-viewer-img"]');
         if (!img) { done({ok:false, reason:'no rendered img'}); return; }
         var beforeSrc = img.src;
         var beforeLen = beforeSrc.length;
@@ -1222,7 +1390,7 @@ async function main() {
         var deadline = Date.now() + 10000;
         while (Date.now() < deadline) {
           await new Promise(r => setTimeout(r, 250));
-          var nowSrc = (document.querySelector('[data-testid="3d-render-png"]') || {}).src || '';
+          var nowSrc = (document.querySelector('[data-testid="3d-viewer-img"]') || {}).src || '';
           if (nowSrc && nowSrc !== beforeSrc) {
             done({ok:true, beforeLen: beforeLen, afterLen: nowSrc.length, changed: true, newRot: newVal});
             return;

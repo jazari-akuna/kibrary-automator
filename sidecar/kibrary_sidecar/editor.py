@@ -22,17 +22,29 @@ from kibrary_sidecar.svg_render import _system_env
 
 
 def open_editor(install: dict, kind: str, file_path: Path) -> dict:
-    """Spawn the KiCad editor binary appropriate for *kind*.
+    """Spawn KiCad to view/edit *file_path*.
+
+    KiCad 9.0 binary semantics:
+
+    - **Footprint editor**: launched via the ``kicad`` project manager
+      with ``--frame=fpedit <file>``. The standalone ``pcbnew`` binary's
+      ``--footprint-editor`` flag is silently consumed by
+      ``wxCmdLineParser`` and pcbnew opens as the PCB editor instead —
+      it then fails to load the ``.kicad_mod`` (extension mismatch).
+    - **Symbol editor**: KiCad 9 has NO command-line option to load a
+      ``.kicad_sym`` into the Symbol Editor. Best we can do is open the
+      ``kicad`` project manager; the caller is expected to surface a
+      hint toast naming the file path so the user can navigate to it
+      via Symbol Editor → File → Open Library.
 
     Parameters
     ----------
     install:
         An install dict as returned by ``kicad_install.detect_installs()``
-        / ``cached_installs()``.  Must contain ``eeschema_bin`` (for
-        ``'symbol'``) or ``pcbnew_bin`` (for ``'footprint'``).  The bin
-        value may be either a plain ``str`` or a ``list[str]`` (Flatpak
-        case, e.g. ``['flatpak', 'run', '--command=eeschema',
-        'org.kicad.KiCad']``).
+        / ``cached_installs()``. Must contain ``kicad_bin`` (the launcher
+        binary). The bin value may be either a plain ``str`` or a
+        ``list[str]`` (Flatpak case, e.g. ``['flatpak', 'run',
+        '--command=kicad', 'org.kicad.KiCad']``).
     kind:
         One of ``'symbol'`` or ``'footprint'``.
     file_path:
@@ -41,32 +53,53 @@ def open_editor(install: dict, kind: str, file_path: Path) -> dict:
     Returns
     -------
     dict
-        ``{'pid': int}`` — the PID of the spawned process.
+        ``{'pid': int, 'needs_manual_navigation': bool, 'file_hint': str}``.
+        ``needs_manual_navigation`` is True for the symbol case (no CLI
+        path loads a .kicad_sym, user has to navigate manually). The
+        ``file_hint`` is always the absolute file path so the frontend
+        can build a useful toast.
 
     Raises
     ------
     ValueError
         If *kind* is not ``'symbol'`` or ``'footprint'``.
+    RuntimeError
+        If the install does not have a ``kicad_bin`` (the launcher
+        binary). We never silently fall back to the broken
+        ``eeschema --symbol-editor`` / ``pcbnew --footprint-editor``
+        forms — those don't work in KiCad 9.
     """
-    if kind == "symbol":
-        raw_bin = install["eeschema_bin"]
-        flag = "--symbol-editor"
-    elif kind == "footprint":
-        raw_bin = install["pcbnew_bin"]
-        flag = "--footprint-editor"
+    kicad_bin = install.get("kicad_bin")
+    if kind == "footprint":
+        if kicad_bin is None:
+            raise RuntimeError(
+                "open_editor: KiCad 'kicad' launcher binary not found in this install — "
+                "footprint editor cannot be opened from kibrary."
+            )
+        if isinstance(kicad_bin, list):
+            argv = kicad_bin + ["--frame=fpedit", str(file_path)]
+        else:
+            argv = [kicad_bin, "--frame=fpedit", str(file_path)]
+    elif kind == "symbol":
+        if kicad_bin is None:
+            raise RuntimeError(
+                "open_editor: KiCad 'kicad' launcher binary not found in this install — "
+                "cannot open symbol editor."
+            )
+        # KiCad 9 has no CLI flag to load a .kicad_sym into the symbol
+        # editor. Open the project manager and let the caller toast the
+        # file path so the user can navigate Symbol Editor → File → Open.
+        if isinstance(kicad_bin, list):
+            argv = list(kicad_bin)
+        else:
+            argv = [kicad_bin]
     else:
-        raise ValueError(f"Unknown editor kind {kind!r}. Expected 'symbol' or 'footprint'.")
-
-    # Build the argv list.  The bin may be a string (native) or a list
-    # (Flatpak, where it encodes e.g. ['flatpak', 'run', '--command=eeschema',
-    # 'org.kicad.KiCad']).
-    if isinstance(raw_bin, list):
-        argv = raw_bin + [flag, str(file_path)]
-    else:
-        argv = [raw_bin, flag, str(file_path)]
+        raise ValueError(
+            f"Unknown editor kind {kind!r}. Expected 'symbol' or 'footprint'."
+        )
 
     # Spawn detached so we return immediately without waiting for the editor
-    # to close.  DETACHED_PROCESS (0x00000008) is Windows-only; use the raw
+    # to close. DETACHED_PROCESS (0x00000008) is Windows-only; use the raw
     # integer so the constant can be referenced safely on POSIX too.
     _DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
 
@@ -84,4 +117,9 @@ def open_editor(install: dict, kind: str, file_path: Path) -> dict:
             env=env,
         )
 
-    return {"pid": proc.pid}
+    # Tell the frontend what we did so it can build a useful toast.
+    return {
+        "pid": proc.pid,
+        "needs_manual_navigation": kind == "symbol",
+        "file_hint": str(file_path),
+    }

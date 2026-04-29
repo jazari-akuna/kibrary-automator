@@ -20,6 +20,12 @@ interface SvgResult {
   svg: string;
 }
 
+interface EditorOpenResult {
+  pid: number;
+  needs_manual_navigation?: boolean;
+  file_hint?: string;
+}
+
 export default function FootprintPreview(props: Props) {
   const isLibraryMode = () => Boolean(props.libDir && props.componentName);
 
@@ -80,13 +86,18 @@ export default function FootprintPreview(props: Props) {
                   lcsc: props.lcsc,
                   kind: 'footprint',
                 };
-            invoke<{ pid: number }>('sidecar_call', { method: 'editor.open', params })
-              .then((r) =>
+            invoke<EditorOpenResult>('sidecar_call', { method: 'editor.open', params })
+              .then((r) => {
+                const filename = r.file_hint
+                  ? r.file_hint.split('/').pop() ?? r.file_hint
+                  : '';
                 pushToast({
                   kind: 'success',
-                  message: `Opened footprint in KiCad (pid ${r.pid})`,
-                }),
-              )
+                  message: filename
+                    ? `Opened footprint editor in KiCad — ${filename} loaded`
+                    : `Opened footprint editor in KiCad (pid ${r.pid})`,
+                });
+              })
               .catch((e: unknown) => {
                 const reason = e instanceof Error ? e.message : String(e);
                 console.error('[editor] open footprint failed:', e);

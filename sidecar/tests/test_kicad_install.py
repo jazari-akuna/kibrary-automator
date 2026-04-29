@@ -61,10 +61,16 @@ def test_detect_linux_flatpak_install(tmp_path: Path, monkeypatch):
     assert inst["config_dir"] == str(flatpak_base / "9.0")
     assert inst["sym_table"] == str(flatpak_base / "9.0" / "sym-lib-table")
     assert inst["fp_table"] == str(flatpak_base / "9.0" / "fp-lib-table")
-    assert "eeschema" in inst["eeschema_bin"]
-    assert "org.kicad.KiCad" in inst["eeschema_bin"]
-    assert "pcbnew" in inst["pcbnew_bin"]
-    assert "org.kicad.KiCad" in inst["pcbnew_bin"]
+    # Flatpak bins are argv-style lists so callers can spawn them directly.
+    assert inst["kicad_bin"] == [
+        "flatpak", "run", "--command=kicad", "org.kicad.KiCad"
+    ]
+    assert inst["eeschema_bin"] == [
+        "flatpak", "run", "--command=eeschema", "org.kicad.KiCad"
+    ]
+    assert inst["pcbnew_bin"] == [
+        "flatpak", "run", "--command=pcbnew", "org.kicad.KiCad"
+    ]
 
 
 # ---------------------------------------------------------------------------

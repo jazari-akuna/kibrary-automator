@@ -115,15 +115,19 @@ def _detect_linux_flatpak() -> list[dict]:
                 install_type="flatpak",
                 version=version,
                 config_dir=config_dir,
-                kicad_bin=(
-                    "flatpak run --command=kicad org.kicad.KiCad"
-                ),
-                eeschema_bin=(
-                    "flatpak run --command=eeschema org.kicad.KiCad"
-                ),
-                pcbnew_bin=(
-                    "flatpak run --command=pcbnew org.kicad.KiCad"
-                ),
+                # Emit each bin as a *list* (argv-style) so callers can
+                # spawn them directly via subprocess.Popen without having
+                # to shell-split a string. Matches the contract in
+                # ``editor.open_editor`` which checks ``isinstance(bin, list)``.
+                kicad_bin=[
+                    "flatpak", "run", "--command=kicad", "org.kicad.KiCad"
+                ],
+                eeschema_bin=[
+                    "flatpak", "run", "--command=eeschema", "org.kicad.KiCad"
+                ],
+                pcbnew_bin=[
+                    "flatpak", "run", "--command=pcbnew", "org.kicad.KiCad"
+                ],
             )
         )
     return results

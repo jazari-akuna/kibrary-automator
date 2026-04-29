@@ -162,12 +162,23 @@ _LAYER_ALIASES = {
 }
 
 
-def _sanitise_footprint(footprint_file: Path, lib_dir: Path) -> str:
+def _sanitise_footprint(
+    footprint_file: Path,
+    lib_dir: Path,
+    *,
+    override_offset: tuple[float, float, float] | None = None,
+    override_rotation: tuple[float, float, float] | None = None,
+    override_scale: tuple[float, float, float] | None = None,
+) -> str:
     """Read the .kicad_mod and return a string ready to splice into a board.
 
     * Legacy layer aliases (bare and quoted) → canonical name.
     * ``(model …)`` paths → absolute filesystem paths (``${KSL_ROOT}``
       expanded, ``./foo.step`` resolved against ``lib_dir/*.3dshapes``).
+    * Optional offset/rotation/scale overrides — when ALL three are
+      provided, the first ``(model …)`` block's transform sub-S-exprs are
+      rewritten in-memory. Used by the live-preview renderer so the user
+      can drag values around without writing to disk on every tick.
     """
     text = footprint_file.read_text(encoding="utf-8")
     for alias, canonical in _LAYER_ALIASES.items():
@@ -185,7 +196,133 @@ def _sanitise_footprint(footprint_file: Path, lib_dir: Path) -> str:
         lambda m: m.group(1) + '"' + _resolve_model_path(m.group(2), lib_dir) + '"',
         text,
     )
+    if (
+        override_offset is not None
+        and override_rotation is not None
+        and override_scale is not None
+    ):
+        text = _patch_model_transform(
+            text, override_offset, override_rotation, override_scale
+        )
     return text
+
+
+def _patch_model_transform(
+    text: str,
+    offset: tuple[float, float, float],
+    rotation: tuple[float, float, float],
+    scale: tuple[float, float, float],
+) -> str:
+    """Rewrite the first ``(model …)`` block's offset/rotate/scale.
+
+    Uses a paren-depth scanner to bound the model block (regex can't
+    reliably balance nested S-exprs), then sub-S-expr regex inside that
+    slice. No-op when the footprint has no model block.
+    """
+    idx = text.find("(model")
+    if idx == -1:
+        return text
+    depth = 0
+    end = idx
+    for i in range(idx, len(text)):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    block = text[idx:end]
+    block = re.sub(
+        r"\(offset\s+\(xyz[^)]*\)\s*\)",
+        f"(offset (xyz {offset[0]} {offset[1]} {offset[2]}))",
+        block,
+    )
+    block = re.sub(
+        r"\(rotate\s+\(xyz[^)]*\)\s*\)",
+        f"(rotate (xyz {rotation[0]} {rotation[1]} {rotation[2]}))",
+        block,
+    )
+    block = re.sub(
+        r"\(scale\s+\(xyz[^)]*\)\s*\)",
+        f"(scale (xyz {scale[0]} {scale[1]} {scale[2]}))",
+        block,
+    )
+    return text[:idx] + block + text[end:]
+
+
+def render_footprint_3d_png_angled(
+    lib_dir: Path,
+    footprint_file: Path,
+    output_png: Path,
+    *,
+    azimuth: float = -25.0,
+    elevation: float = -25.0,
+    offset: tuple[float, float, float] | None = None,
+    rotation: tuple[float, float, float] | None = None,
+    scale: tuple[float, float, float] | None = None,
+    width: int = 600,
+    height: int = 400,
+) -> None:
+    """Variant of :func:`render_footprint_3d_png` for the interactive viewer.
+
+    Differs from the static renderer in two ways:
+    1. The orbit is ``--rotate {elevation},0,{azimuth}`` instead of the
+       hardcoded ``-25,0,-25``, so drag-to-orbit works without disk writes.
+    2. When all three of offset/rotation/scale are passed, the spliced
+       board is mutated in memory before kicad-cli sees it — the user's
+       unsaved positioner values render live without touching the file.
+    """
+    if not footprint_file.is_file():
+        raise FileNotFoundError(
+            f"render_footprint_3d_png_angled: footprint file not found: {footprint_file}"
+        )
+
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
+        sanitised = _sanitise_footprint(
+            footprint_file,
+            lib_dir,
+            override_offset=offset,
+            override_rotation=rotation,
+            override_scale=scale,
+        )
+        board_path = tmp_dir / "preview.kicad_pcb"
+        board_path.write_text(_splice_into_template(sanitised), encoding="utf-8")
+
+        fp_name = footprint_file.stem
+
+        cmd = [
+            "kicad-cli",
+            "pcb",
+            "render",
+            "--output", str(output_png),
+            "--width", str(width),
+            "--height", str(height),
+            "--quality", "basic",
+            "--side", "top",
+            "--rotate", f"{elevation},0,{azimuth}",
+            "--perspective",
+            str(board_path),
+        ]
+
+        log.debug("Rendering 3D PNG (angled): %s", " ".join(cmd))
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=_system_env())
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(
+                f"kicad-cli pcb render failed (exit {proc.returncode}) "
+                f"for footprint {fp_name!r}: {err}"
+            )
+
+        if not output_png.is_file():
+            raise FileNotFoundError(
+                f"kicad-cli produced no PNG at {output_png} "
+                f"for footprint {fp_name!r}"
+            )
 
 
 def _resolve_model_path(raw: str, lib_dir: Path) -> str:

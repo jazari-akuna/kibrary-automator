@@ -2,6 +2,20 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.25] — 2026-04-29
+
+### Added
+- **Interactive 3D viewer with mouse-drag orbit + live re-render on positioner change.** The Library room's 3D card now mounts a draggable `<Model3DViewer>` (azimuth/elevation tracked locally, debounced 100ms re-render through a new `library.render_3d_png_angled` RPC) instead of the static `pcb render` PNG. As you tweak Offset/Rotation/Scale in the positioner, the viewer streams the live values into kicad-cli (sidecar patches the `(model …)` block in-memory before render — original `.kicad_mod` is untouched) so you see the new pose without committing. Save still writes through `model3d_ops.set_3d_offset` as before.
+- **CNC-style concentric jog dial for X/Y offset + Z column.** A pure-SVG `<Model3DJogDial>` (4 outer wedges = ±1 mm, 4 inner wedges = ±0.1 mm, cardinal axes only) and `<Model3DJogZ>` (±1 / ±0.1 column) sit next to the viewer. Click a wedge → the positioner advances by that delta and broadcasts the new value to the viewer, which re-renders within the 100 ms debounce. Arrow keys jog by 0.1 mm; Shift+Arrow by 1 mm.
+
+### Fixed
+- **Edit-in-KiCad opened the wrong KiCad apps.** `eeschema --symbol-editor` and `pcbnew --footprint-editor` are *fake* CLI flags in KiCad 9 — `wxCmdLineParser` silently consumes them, so eeschema opens as the schematic editor and pcbnew opens as the PCB editor (which then refuses to load a `.kicad_mod` because of the extension mismatch). `editor.open` now uses `kicad --frame=fpedit <file>` for footprints (the real, undocumented invocation) and `kicad` (no flag) for symbols — KiCad 9 has no CLI form that loads a `.kicad_sym` straight into the Symbol Editor, so the sidecar surfaces `needs_manual_navigation=true` and the frontend toasts "click Symbol Editor → File → Open Library → `<file>`" so the user knows what to do. `kicad_install.py` now publishes the `kicad` launcher binary (Flatpak: `flatpak run --command=kicad org.kicad.KiCad`); `editor.py` *refuses* to fall back to the broken eeschema/pcbnew flags if the launcher is missing.
+
+### Notes
+- New sidecar test file `test_render_3d_angled.py` (6 cases) covers `--rotate elevation,0,azimuth` arg shape, in-memory `(model …)` patching for partial / full / no overrides, kicad-cli failure surfacing, and the no-`(model)`-block no-op case.
+- `test_editor.py` rewritten: native + Flatpak install fixtures gain `kicad_bin`; tests assert the exact argv (`[kicad_bin, "--frame=fpedit", file]` for footprint, `[kicad_bin]` for symbol) and that `RuntimeError` fires when `kicad_bin` is `None`.
+- Smoke harness adds `alpha.25 viewer + jog dial` probe: asserts the viewer `<img>` mounts, jog X+ click changes the positioner X value AND triggers a viewer re-render (img bytes change), drag-orbit on the canvas re-renders, and jog Z+ updates Z. The earlier alpha.23 "3D PNG re-renders on positioner save" probe was retargeted from `[data-testid="3d-render-png"]` to `[data-testid="3d-viewer-img"]` since the static PNG element is gone.
+
 ## [26.4.27-alpha.24] — 2026-04-29
 
 ### Fixed

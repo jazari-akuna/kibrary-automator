@@ -33,6 +33,12 @@ interface SvgResult {
   svg: string;
 }
 
+interface EditorOpenResult {
+  pid: number;
+  needs_manual_navigation?: boolean;
+  file_hint?: string;
+}
+
 export default function SymbolPreview(props: Props) {
   const isLibraryMode = () => Boolean(props.libDir && props.componentName);
 
@@ -100,13 +106,29 @@ export default function SymbolPreview(props: Props) {
                   lcsc: props.lcsc,
                   kind: 'symbol',
                 };
-            invoke<{ pid: number }>('sidecar_call', { method: 'editor.open', params })
-              .then((r) =>
-                pushToast({
-                  kind: 'success',
-                  message: `Opened symbol in KiCad (pid ${r.pid})`,
-                }),
-              )
+            invoke<EditorOpenResult>('sidecar_call', { method: 'editor.open', params })
+              .then((r) => {
+                // KiCad 9 has no CLI flag to load a .kicad_sym into the
+                // Symbol Editor — the sidecar opens the project manager
+                // and returns needs_manual_navigation=true so we can
+                // tell the user how to navigate to the file.
+                if (r.needs_manual_navigation) {
+                  pushToast(
+                    {
+                      kind: 'info',
+                      message:
+                        `KiCad opened. To edit this symbol: click Symbol Editor → ` +
+                        `File → Open Library → ${r.file_hint ?? ''}`,
+                    },
+                    8000,
+                  );
+                } else {
+                  pushToast({
+                    kind: 'success',
+                    message: `Opened symbol in KiCad (pid ${r.pid})`,
+                  });
+                }
+              })
               .catch((e: unknown) => {
                 const reason = e instanceof Error ? e.message : String(e);
                 console.error('[editor] open symbol failed:', e);

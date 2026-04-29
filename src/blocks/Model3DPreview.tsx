@@ -17,18 +17,29 @@
  * with an editable Model3DPositioner block.
  */
 
-import { createMemo, createResource, createSignal, Show } from 'solid-js';
+import { createEffect, createMemo, createResource, createSignal, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { currentWorkspace } from '~/state/workspace';
 import { pushToast } from '~/state/toasts';
 import Model3DPositioner from '~/blocks/Model3DPositioner';
+import Model3DViewer from '~/blocks/Model3DViewer';
+import Model3DJogDial from '~/blocks/Model3DJogDial';
+import Model3DJogZ from '~/blocks/Model3DJogZ';
+
+type Triple = [number, number, number];
 
 interface Props {
   stagingDir?: string;
   lcsc?: string;
   libDir?: string;
   componentName?: string;
+}
+
+interface EditorOpenResult {
+  pid: number;
+  needs_manual_navigation?: boolean;
+  file_hint?: string;
 }
 
 interface Model3DInfo {
@@ -69,28 +80,33 @@ export default function Model3DPreview(props: Props) {
         .catch(() => null),
   );
 
-  // alpha.22: in library mode, also render the actual 3D PNG via kicad-cli
-  // pcb render. This is more expensive than reading the (model …) info, so
-  // gate it on library mode + a present model. The render reflects the
-  // (model …) (offset|rotate|scale) values currently on disk, so re-fetch
-  // when the positioner saves new values (renderRev bumps each save).
-  const [renderRev, setRenderRev] = createSignal(0);
-  const [renderedPng] = createResource(
-    () => (isLibraryMode() && info() ? `${key()}#${renderRev()}` : null),
-    async (k: string | null) => {
-      if (!k) return null;
-      try {
-        const r = await invoke<{ png_data_url: string }>('sidecar_call', {
-          method: 'library.render_3d_png',
-          params: { lib_dir: props.libDir, component_name: props.componentName },
-        });
-        return r.png_data_url;
-      } catch (e) {
-        console.warn('[3D render] failed:', e);
-        return null;
-      }
-    },
-  );
+  // alpha.25: live-preview state for the interactive viewer. The user's
+  // unsaved positioner values flow through these signals into the viewer
+  // (and hence into the sidecar's render call as transform overrides),
+  // so dragging a value updates the picture without ever touching disk.
+  const [liveOffset, setLiveOffset] = createSignal<Triple>([0, 0, 0]);
+  const [liveRotation, setLiveRotation] = createSignal<Triple>([0, 0, 0]);
+  const [liveScale, setLiveScale] = createSignal<Triple>([1, 1, 1]);
+  // Bumped on positioner Save — forces the viewer to re-render even when
+  // the live values are byref-identical to the (just-refetched) saved ones.
+  const [savedRev, setSavedRev] = createSignal(0);
+  // Pulse-shaped jog from the jog-dial / Z column. Cleared by the
+  // positioner's onJogConsumed once it's applied the delta.
+  const [jogDelta, setJogDelta] = createSignal<
+    { axis: 'x' | 'y' | 'z'; amount: number } | null
+  >(null);
+
+  // Seed the live signals once the model info loads (and any time the
+  // selected component changes — keeps live state in sync with the new
+  // baseline rather than carrying the previous component's edits over).
+  createEffect(() => {
+    const m = info();
+    if (m) {
+      setLiveOffset(m.offset);
+      setLiveRotation(m.rotation);
+      setLiveScale(m.scale);
+    }
+  });
 
   // --------------------------------------------------------------------------
   // Handlers
@@ -112,13 +128,18 @@ export default function Model3DPreview(props: Props) {
           // The 3D viewer is accessed inside the footprint editor via Alt+3
           kind: 'footprint',
         };
-    invoke<{ pid: number }>('sidecar_call', { method: 'editor.open', params })
-      .then((r) =>
+    invoke<EditorOpenResult>('sidecar_call', { method: 'editor.open', params })
+      .then((r) => {
+        const filename = r.file_hint
+          ? r.file_hint.split('/').pop() ?? r.file_hint
+          : '';
         pushToast({
           kind: 'success',
-          message: `Opened footprint editor (pid ${r.pid}) — press Alt+3 for 3D viewer`,
-        }),
-      )
+          message: filename
+            ? `Opened footprint editor — ${filename} loaded. Press Alt+3 for the 3D viewer.`
+            : `Opened footprint editor (pid ${r.pid}) — press Alt+3 for 3D viewer`,
+        });
+      })
       .catch((e: unknown) => {
         const reason = e instanceof Error ? e.message : String(e);
         console.error('[editor] open footprint (for 3D view) failed:', e);
@@ -182,30 +203,40 @@ export default function Model3DPreview(props: Props) {
       <Show when={!info.loading && info()}>
         {(model) => (
           <div class="space-y-2">
-            {/* alpha.22: render actual 3D PNG (library mode only — staging
-                doesn't yet have a registered KSL_ROOT, so the .step's
-                (model) path won't resolve at render time). */}
-            <Show when={isLibraryMode()}>
-              <Show
-                when={!renderedPng.loading && renderedPng()}
-                fallback={
+            {/* alpha.25: interactive 3D viewer + jog dial (library mode only
+                — staging doesn't yet have a registered KSL_ROOT, so the
+                .step's (model) path won't resolve at render time). The
+                viewer takes the LIVE positioner values so unsaved edits
+                show up in the preview without a disk write. */}
+            <Show
+              when={isLibraryMode() && model().file_exists !== false}
+              fallback={
+                <Show when={isLibraryMode()}>
                   <div
                     data-testid="3d-render-fallback"
                     class="flex items-center justify-center h-40 rounded bg-zinc-200 dark:bg-zinc-800 text-xs text-zinc-500 dark:text-zinc-400"
                   >
-                    {renderedPng.loading ? 'Rendering 3D…' : '3D render unavailable'}
+                    3D render unavailable
                   </div>
-                }
-              >
-                <div class="rounded overflow-hidden bg-white dark:bg-zinc-950">
-                  <img
-                    data-testid="3d-render-png"
-                    src={renderedPng() ?? ''}
-                    alt={`3D render of ${model().filename}`}
-                    style={{ width: '100%', height: '240px', 'object-fit': 'contain' }}
-                  />
-                </div>
-              </Show>
+                </Show>
+              }
+            >
+              <Model3DViewer
+                libDir={props.libDir!}
+                componentName={props.componentName!}
+                offset={liveOffset()}
+                rotation={liveRotation()}
+                scale={liveScale()}
+                savedRev={savedRev()}
+              />
+              <div class="flex items-start justify-center gap-3 pt-2">
+                <Model3DJogDial
+                  onJog={(axis, amount) => setJogDelta({ axis, amount })}
+                />
+                <Model3DJogZ
+                  onJog={(amount) => setJogDelta({ axis: 'z', amount })}
+                />
+              </div>
             </Show>
 
             {/* Filename */}
@@ -241,9 +272,16 @@ export default function Model3DPreview(props: Props) {
                 offset={model().offset}
                 rotation={model().rotation}
                 scale={model().scale}
+                onLiveChange={(o, r, s) => {
+                  setLiveOffset(o);
+                  setLiveRotation(r);
+                  setLiveScale(s);
+                }}
+                jogDelta={jogDelta()}
+                onJogConsumed={() => setJogDelta(null)}
                 onSaved={() => {
                   refetch();
-                  setRenderRev((n) => n + 1);
+                  setSavedRev((n) => n + 1);
                 }}
               />
             </Show>

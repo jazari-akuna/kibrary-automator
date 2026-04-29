@@ -24,6 +24,16 @@ interface Props {
   scale: Triple;
   /** Called after a successful save so the parent can refetch the model info. */
   onSaved?: () => void;
+  /** Called whenever the user mutates a buffer (typing, jog click, etc.) so the
+   *  parent can feed the unsaved values into the live 3D preview without a
+   *  disk write. */
+  onLiveChange?: (offset: Triple, rotation: Triple, scale: Triple) => void;
+  /** Pulse-shaped: when the parent jog dial fires, set this; the positioner
+   *  applies it to the appropriate axis then calls onJogConsumed so the
+   *  parent can clear it (preventing the same jog from re-applying on every
+   *  parent re-render). */
+  jogDelta?: { axis: 'x' | 'y' | 'z'; amount: number } | null;
+  onJogConsumed?: () => void;
 }
 
 const ZERO: Triple = [0, 0, 0];
@@ -48,6 +58,29 @@ export default function Model3DPositioner(props: Props) {
     setOffset(props.offset);
     setRotation(props.rotation);
     setScale(props.scale);
+  });
+
+  // Live preview: any local buffer change pings the parent so the 3D
+  // viewer can re-render with the unsaved values. Tracked deps are the
+  // signals themselves (not the props) — running on the initial pass is
+  // fine, the viewer's debounce smooths out the redundant tick.
+  createEffect(() => {
+    props.onLiveChange?.(offset(), rotation(), scale());
+  });
+
+  // Apply jog pulses from the parent (dial / Z column). We mutate the
+  // axis in place and then ack via onJogConsumed so a stale jogDelta
+  // can't re-apply on the next parent render.
+  createEffect(() => {
+    const j = props.jogDelta;
+    if (!j) return;
+    if (j.axis === 'x' || j.axis === 'y' || j.axis === 'z') {
+      const idx = { x: 0, y: 1, z: 2 }[j.axis];
+      const next = [...offset()] as Triple;
+      next[idx] = +(next[idx] + j.amount).toFixed(3);
+      setOffset(next);
+    }
+    props.onJogConsumed?.();
   });
 
   const handleReset = () => {
@@ -90,6 +123,7 @@ export default function Model3DPositioner(props: Props) {
     step: string,
     val: () => Triple,
     setVal: (v: Triple) => void,
+    prefix: 'offset' | 'rotation' | 'scale',
   ) => (
     <div class="flex items-center gap-2">
       <span class="text-xs text-zinc-500 dark:text-zinc-400 w-20">{label}</span>
@@ -102,6 +136,7 @@ export default function Model3DPositioner(props: Props) {
             step={step}
             class={inputCls}
             value={val()[i]}
+            data-testid={`positioner-${prefix}-${axis.toLowerCase()}`}
             onInput={(e) => {
               const next = [...val()] as Triple;
               next[i] = num(e.currentTarget.value);
@@ -116,9 +151,9 @@ export default function Model3DPositioner(props: Props) {
   return (
     <div class="space-y-1.5">
       <span class="text-xs font-medium text-zinc-600 dark:text-zinc-400">3D Position</span>
-      {renderRow('Offset', 'mm', '0.01', offset, (v) => setOffset(v))}
-      {renderRow('Rotation', '°', '0.1', rotation, (v) => setRotation(v))}
-      {renderRow('Scale', '', '0.01', scale, (v) => setScale(v))}
+      {renderRow('Offset', 'mm', '0.01', offset, (v) => setOffset(v), 'offset')}
+      {renderRow('Rotation', '°', '0.1', rotation, (v) => setRotation(v), 'rotation')}
+      {renderRow('Scale', '', '0.01', scale, (v) => setScale(v), 'scale')}
       <div class="flex items-center gap-2 pt-1">
         <button
           onClick={handleReset}
