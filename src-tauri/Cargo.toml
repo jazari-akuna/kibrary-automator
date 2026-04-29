@@ -1,6 +1,6 @@
 [package]
 name = "kibrary"
-version = "26.4.27-alpha.26"
+version = "26.4.27-alpha.27"
 description = "Kibrary KiCad library automator"
 edition = "2021"
 rust-version = "1.85"

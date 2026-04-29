@@ -252,6 +252,9 @@ def _patch_model_transform(
     return text[:idx] + block + text[end:]
 
 
+_VALID_QUALITIES = {"basic", "high", "user", "job_settings"}
+
+
 def render_footprint_3d_png_angled(
     lib_dir: Path,
     footprint_file: Path,
@@ -264,6 +267,8 @@ def render_footprint_3d_png_angled(
     scale: tuple[float, float, float] | None = None,
     width: int = 600,
     height: int = 400,
+    zoom: float = 1.0,
+    quality: str = "basic",
 ) -> None:
     """Variant of :func:`render_footprint_3d_png` for the interactive viewer.
 
@@ -273,7 +278,23 @@ def render_footprint_3d_png_angled(
     2. When all three of offset/rotation/scale are passed, the spliced
        board is mutated in memory before kicad-cli sees it — the user's
        unsaved positioner values render live without touching the file.
+
+    The ``zoom`` (camera ``--zoom`` factor, kicad-cli default 1.0) and
+    ``quality`` (``--quality basic|high|user|job_settings``) knobs let the
+    interactive viewer drop to a faster/lower-fidelity render during drag
+    and ramp back up on release. Both are always passed to kicad-cli (even
+    at their defaults) so the invocation is deterministic.
     """
+    if zoom <= 0:
+        raise ValueError(
+            f"render_footprint_3d_png_angled: zoom must be positive, got {zoom!r}"
+        )
+    if quality not in _VALID_QUALITIES:
+        raise ValueError(
+            f"render_footprint_3d_png_angled: quality must be one of "
+            f"{sorted(_VALID_QUALITIES)!r}, got {quality!r}"
+        )
+
     if not footprint_file.is_file():
         raise FileNotFoundError(
             f"render_footprint_3d_png_angled: footprint file not found: {footprint_file}"
@@ -302,7 +323,8 @@ def render_footprint_3d_png_angled(
             "--output", str(output_png),
             "--width", str(width),
             "--height", str(height),
-            "--quality", "basic",
+            "--quality", quality,
+            "--zoom", str(zoom),
             "--side", "top",
             "--rotate", f"{elevation},0,{azimuth}",
             "--perspective",

@@ -145,3 +145,127 @@ def test_patch_model_transform_no_model_block():
     text = '(footprint "Foo" (layer "F.Cu") (fp_circle (center 0 0) (end 1 0)))'
     out = render_3d._patch_model_transform(text, (1, 2, 3), (10, 20, 30), (1.5, 1.5, 1.5))
     assert out == text
+
+
+# ---------------------------------------------------------------------------
+# Test 7: zoom kwarg flows through to kicad-cli's --zoom <factor>.
+# The 3D viewer uses this to actually move the camera (not just CSS-scale
+# the PNG), so the assertion is strict on a non-default value.
+# ---------------------------------------------------------------------------
+
+def test_render_passes_zoom_arg(tmp_path: Path):
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path)
+    out_png = tmp_path / "out.png"
+
+    captured: dict = {}
+    with patch(
+        "kibrary_sidecar.render_3d.subprocess.run",
+        side_effect=_kicad_cli_mock(captured),
+    ):
+        render_3d.render_footprint_3d_png_angled(
+            lib_dir, mod, out_png, zoom=2.5,
+        )
+
+    cmd = captured["cmd"]
+    assert "--zoom" in cmd
+    assert cmd[cmd.index("--zoom") + 1] == "2.5"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: quality kwarg flows through to kicad-cli's --quality.
+# The interactive renderer drops to ``basic`` during drag and ramps back up
+# on release, so we need to confirm a non-default value is forwarded verbatim.
+# ---------------------------------------------------------------------------
+
+def test_render_passes_quality_arg(tmp_path: Path):
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path)
+    out_png = tmp_path / "out.png"
+
+    captured: dict = {}
+    with patch(
+        "kibrary_sidecar.render_3d.subprocess.run",
+        side_effect=_kicad_cli_mock(captured),
+    ):
+        render_3d.render_footprint_3d_png_angled(
+            lib_dir, mod, out_png, quality="high",
+        )
+
+    cmd = captured["cmd"]
+    assert "--quality" in cmd
+    assert cmd[cmd.index("--quality") + 1] == "high"
+
+
+# ---------------------------------------------------------------------------
+# Test 9: default zoom is always passed explicitly (--zoom 1) so kicad-cli's
+# behaviour is deterministic and never relies on its own internal default.
+# ---------------------------------------------------------------------------
+
+def test_render_default_zoom_is_1(tmp_path: Path):
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path)
+    out_png = tmp_path / "out.png"
+
+    captured: dict = {}
+    with patch(
+        "kibrary_sidecar.render_3d.subprocess.run",
+        side_effect=_kicad_cli_mock(captured),
+    ):
+        render_3d.render_footprint_3d_png_angled(lib_dir, mod, out_png)
+
+    cmd = captured["cmd"]
+    assert "--zoom" in cmd
+    assert cmd[cmd.index("--zoom") + 1] == "1.0"
+
+
+# ---------------------------------------------------------------------------
+# Test 10: default quality is always passed explicitly (--quality basic).
+# ---------------------------------------------------------------------------
+
+def test_render_default_quality_is_basic(tmp_path: Path):
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path)
+    out_png = tmp_path / "out.png"
+
+    captured: dict = {}
+    with patch(
+        "kibrary_sidecar.render_3d.subprocess.run",
+        side_effect=_kicad_cli_mock(captured),
+    ):
+        render_3d.render_footprint_3d_png_angled(lib_dir, mod, out_png)
+
+    cmd = captured["cmd"]
+    assert "--quality" in cmd
+    assert cmd[cmd.index("--quality") + 1] == "basic"
+
+
+# ---------------------------------------------------------------------------
+# Test 11: zero or negative zoom is rejected up-front with ValueError —
+# kicad-cli accepts these silently and produces a black/garbage render,
+# so we filter at the sidecar boundary.
+# ---------------------------------------------------------------------------
+
+def test_render_rejects_zero_or_negative_zoom(tmp_path: Path):
+    import pytest
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path)
+    out_png = tmp_path / "out.png"
+
+    with pytest.raises(ValueError, match="zoom"):
+        render_3d.render_footprint_3d_png_angled(lib_dir, mod, out_png, zoom=0)
+
+    with pytest.raises(ValueError, match="zoom"):
+        render_3d.render_footprint_3d_png_angled(lib_dir, mod, out_png, zoom=-1)
+
+
+# ---------------------------------------------------------------------------
+# Test 12: unknown quality value is rejected with ValueError before any
+# subprocess is spawned. kicad-cli's accepted set is fixed
+# {basic, high, user, job_settings}.
+# ---------------------------------------------------------------------------
+
+def test_render_rejects_unknown_quality(tmp_path: Path):
+    import pytest
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path)
+    out_png = tmp_path / "out.png"
+
+    with pytest.raises(ValueError, match="quality"):
+        render_3d.render_footprint_3d_png_angled(
+            lib_dir, mod, out_png, quality="ultra",
+        )

@@ -6,10 +6,24 @@
  * WebGL2; the alpha.18 SymbolPreview migration was driven by exactly this).
  *
  * Drag-to-orbit: the user drags the canvas to update internal azimuth /
- * elevation signals, which retrigger a debounced sidecar RPC that re-renders
- * the PNG with the new orbit. Live-preview transform values (offset,
- * rotation, scale) are passed through on every render so the user sees
- * unsaved positioner edits without disk writes.
+ * elevation signals. Wheel zoom maps to a `zoom` sidecar param so the PNG
+ * is re-rendered at a different camera distance (real zoom, not CSS
+ * stretch — quality is preserved at any zoom level).
+ *
+ * Render loop: a "chain-when-idle" scheduler keeps at most one kicad-cli
+ * render in flight at a time and immediately re-fires once it lands if the
+ * user state has moved. This avoids the previous debounce, which only
+ * fired after motion stopped (the "2fps while moving" complaint). Stale
+ * results are discarded by request id so a fast orbit never flickers an
+ * old frame on top of a newer one.
+ *
+ * Resolution tiers: low-res while dragging, high-res otherwise. Drag-end
+ * automatically retriggers a high-res render via the createEffect tracking
+ * the `dragging()` signal — that's the "final render" with no extra code.
+ *
+ * Live-preview transform values (offset, rotation, scale) are passed
+ * through on every render so the user sees unsaved positioner edits
+ * without disk writes.
  */
 
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js';
@@ -31,16 +45,33 @@ interface Props {
   savedRev: number;
 }
 
+// Resolution tiers. low-res tier is used while the user is mid-drag; the
+// post-drag render upgrades to the high-res tier automatically because the
+// createEffect tracks `dragging()`.
+//
+// Both tiers stay at quality:'basic' for now — the user complained about
+// perf, so we don't pay for HQ shading on every frame. TODO: a future
+// "Final render" button could opt into quality:'high' explicitly.
+const lowResTier = { width: 300, height: 200, quality: 'basic' as const };
+const highResTier = { width: 600, height: 400, quality: 'basic' as const };
+
+// Zoom clamp: wide enough to dezoom past the default view (the user
+// explicitly asked for this) and zoom in 5×.
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 5.0;
+
 export default function Model3DViewer(props: Props) {
   const [azimuth, setAzimuth] = createSignal(-25);
   const [elevation, setElevation] = createSignal(-25);
   const [dragStart, setDragStart] = createSignal<
     { x: number; y: number; az: number; el: number } | null
   >(null);
+  // Readability alias: dragging() is true between mousedown and mouseup.
+  const dragging = () => dragStart() !== null;
   const [imgSrc, setImgSrc] = createSignal('');
   const [rendering, setRendering] = createSignal(false);
-  // Wheel zoom — pure CSS transform on the <img>, no sidecar round-trip.
-  // Clamped to [0.4, 4.0] for sane bounds.
+  // Real zoom — sent to the sidecar as the kicad-cli --zoom param so the
+  // PNG is re-rendered at a different camera distance. NOT a CSS scale.
   const [zoom, setZoom] = createSignal(1.0);
 
   const clamp = (v: number, lo: number, hi: number) =>
@@ -78,54 +109,95 @@ export default function Model3DViewer(props: Props) {
   };
 
   const handleWheel = (e: WheelEvent) => {
+    // preventDefault keeps the page from scrolling while the user zooms
+    // the 3D viewer. Multiplicative wheel feel: ~15% per notch.
     e.preventDefault();
-    setZoom((z) => clamp(z * (e.deltaY < 0 ? 1.1 : 0.9), 0.4, 4));
+    setZoom((z) =>
+      clamp(z * (e.deltaY < 0 ? 1.15 : 1 / 1.15), ZOOM_MIN, ZOOM_MAX),
+    );
   };
 
-  // Debounced re-render: any change to orbit, transform, or savedRev
-  // re-fires the sidecar RPC after a 100 ms quiet period. Keeps the wire
-  // calm during drag without making the preview feel laggy.
-  let pending: number | undefined;
+  // Chain-when-idle render scheduler. Replaces the alpha.26 100ms debounce
+  // (which only fired after motion stopped, hence "2fps while moving").
+  //
+  // Invariants:
+  //   - At most one sidecar render in flight at any time (`inFlight`).
+  //   - `dirty` flags that user state has moved and the current frame is
+  //     stale; cleared just before we kick a render off.
+  //   - `reqId` increments on every dispatch; results from older ids are
+  //     discarded (`myId === reqId` check) so a fast orbit never paints
+  //     an old frame on top of a newer one.
+  //   - On finally, if `dirty` was set during the in-flight render, we
+  //     immediately chain to the next one — the loop runs as fast as
+  //     kicad-cli will go, with no fixed cadence.
+  let inFlight = false;
+  let dirty = false;
+  let reqId = 0;
+
+  function maybeRender() {
+    if (inFlight || !dirty) return;
+    dirty = false;
+    inFlight = true;
+    setRendering(true);
+    const myId = ++reqId;
+    const tier = dragging() ? lowResTier : highResTier;
+    invoke<{ png_data_url: string }>('sidecar_call', {
+      method: 'library.render_3d_png_angled',
+      params: {
+        lib_dir: props.libDir,
+        component_name: props.componentName,
+        azimuth: azimuth(),
+        elevation: elevation(),
+        zoom: zoom(),
+        offset: props.offset,
+        rotation: props.rotation,
+        scale: props.scale,
+        width: tier.width,
+        height: tier.height,
+        quality: tier.quality,
+      },
+    })
+      .then((r) => {
+        // Discard results from in-flight renders the user has already
+        // moved past — without this, a fast orbit can flicker as old
+        // frames land after newer ones.
+        if (myId === reqId) {
+          setImgSrc(r.png_data_url);
+        }
+      })
+      .catch((e) => console.warn('[3D viewer] render failed:', e))
+      .finally(() => {
+        inFlight = false;
+        setRendering(false);
+        // Chain: if state moved while we were in flight, immediately
+        // kick off the next render.
+        if (dirty) maybeRender();
+      });
+  }
+
   createEffect(() => {
-    // Tracked deps:
+    // Tracked deps — any of these flipping marks the frame stale.
     azimuth();
     elevation();
+    zoom();
     props.offset;
     props.rotation;
     props.scale;
     props.savedRev;
     props.libDir;
     props.componentName;
+    // Tracking dragging() means drag-end re-fires the effect, which
+    // then issues a render at the high-res tier — that's the
+    // automatic "final render" after a drag.
+    dragging();
 
-    if (pending !== undefined) clearTimeout(pending);
-    pending = window.setTimeout(async () => {
-      setRendering(true);
-      try {
-        const r = await invoke<{ png_data_url: string }>('sidecar_call', {
-          method: 'library.render_3d_png_angled',
-          params: {
-            lib_dir: props.libDir,
-            component_name: props.componentName,
-            azimuth: azimuth(),
-            elevation: elevation(),
-            offset: props.offset,
-            rotation: props.rotation,
-            scale: props.scale,
-            width: 600,
-            height: 400,
-          },
-        });
-        setImgSrc(r.png_data_url);
-      } catch (e) {
-        console.warn('[3D viewer] render failed:', e);
-      } finally {
-        setRendering(false);
-      }
-    }, 100);
+    dirty = true;
+    maybeRender();
   });
 
   onCleanup(() => {
-    if (pending !== undefined) clearTimeout(pending);
+    // Bump reqId so any in-flight result is discarded post-unmount.
+    reqId++;
     // Remove any window listeners still attached if the component unmounts
     // mid-drag — otherwise we'd leak handlers that reference stale signals.
     window.removeEventListener('mousemove', handleWindowMouseMove);
@@ -151,6 +223,7 @@ export default function Model3DViewer(props: Props) {
       <img
         data-testid="3d-viewer-img"
         attr:data-zoom={String(zoom())}
+        attr:data-tier={dragging() ? 'low' : 'high'}
         src={imgSrc()}
         alt=""
         draggable={false}
@@ -159,8 +232,6 @@ export default function Model3DViewer(props: Props) {
           width: '100%',
           height: '100%',
           'pointer-events': 'none',
-          transform: `scale(${zoom()})`,
-          'transform-origin': 'center center',
         }}
       />
       <Show when={rendering() && !imgSrc()}>

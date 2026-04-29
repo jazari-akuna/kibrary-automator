@@ -2,6 +2,21 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.27] — 2026-04-29
+
+### Fixed
+- **3D viewer zoom now re-renders the scene from a closer/farther camera.** Replaced the alpha.26 CSS `transform: scale(…)` (which just stretched the same PNG, so the image got blurrier the more you zoomed in and you couldn't usefully dezoom past 1.0) with a real sidecar zoom: the `library.render_3d_png_angled` RPC now passes `--zoom <factor>` to `kicad-cli pcb render`. The clamp range is `[0.25, 5.0]` — well past the default view in both directions — and quality is preserved at every step because each frame is a fresh ray-traced render, not a stretched bitmap.
+- **3D viewer drag now renders continuously instead of "render once after motion stops".** The alpha.25/26 implementation used a 100 ms debounce: every mousemove reset the timer, so if the user kept moving for more than 100 ms (i.e. always), the timer never fired and you only ever saw a render after you let go — which felt like 0–2 fps. Replaced with a chain-when-idle scheduler: at most one render is in flight at a time, and the moment a render returns we immediately fire the next one if any tracked signal moved during the round-trip. Stale results from in-flight requests the user has already moved past are discarded by request-id. Effective frame rate is now bounded only by kicad-cli itself.
+- **Drag uses a low-resolution tier (300×200, basic quality) and snaps back to high-res (600×400) on release.** `--quality basic` is already the default kicad-cli setting; the cost was almost entirely pixels. 4× fewer pixels during interactive orbit gives a 2-3× per-frame speedup, and the high-res render fires automatically when `dragStart` clears (the createEffect tracks the dragging signal, so the tier switch is just one more dependency).
+
+### Added
+- Sidecar `render_footprint_3d_png_angled` accepts `zoom: float = 1.0` and `quality: "basic"|"high"|"user"|"job_settings" = "basic"`, validated up front (`zoom <= 0` and unknown quality strings both raise `ValueError`). 6 new tests in `test_render_3d_angled.py` lock in the argv shape (`--zoom 1.0`, `--quality basic`) and the validation paths.
+- Frontend `<img data-tier="low|high">` attribute exposes the active resolution tier so the smoke harness can prove the drag-tier switch fires.
+
+### Notes
+- The 100 ms debounce, the `transform: scale(...)` CSS hack, and the wrapper-attached mousemove listeners are all gone — replaced by `inFlight`/`dirty`/`reqId` state and window-attached drag listeners.
+- Smoke probes updated: alpha.26 `wheel-zoom` was amended for the new contract — asserts `data-zoom` moves up on zoom-in, drops below 1.0 on dezoom-out, that the `<img>`'s `src` *changes* between the two extremes (proving sidecar re-rendered), and that no `transform: scale(...)` remains on the element. New `tier-flip` probe asserts `data-tier` is `'high'` at idle, flips to `'low'` on synthetic mousedown, and returns to `'high'` after mouseup.
+
 ## [26.4.27-alpha.26] — 2026-04-29
 
 ### Fixed

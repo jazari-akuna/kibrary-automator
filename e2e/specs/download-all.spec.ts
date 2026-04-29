@@ -1370,30 +1370,80 @@ async function main() {
     // ---------------------------------------------------------------------
     log('alpha.26: wheel-zoom + no-text-select + reset probes');
 
-    // (A) Wheel zoom — dispatch wheel events on the canvas; assert data-zoom changes.
+    // (A) Wheel zoom — alpha.27: zoom is now a sidecar param (kicad-cli --zoom),
+    //     not a CSS transform. Assert data-zoom moves up on zoom-in and down on
+    //     zoom-out, AND that the img.src changes (proving sidecar re-rendered
+    //     the scene from a different camera distance).
     const wheelZoomResult = await execAsync(sid, `
       var done = arguments[arguments.length - 1];
-      var canvas = document.querySelector('[data-testid="3d-viewer-canvas"]');
-      var img = document.querySelector('[data-testid="3d-viewer-img"]');
-      if (!canvas || !img) { done({ok:false, reason:'viewer canvas or img missing'}); return; }
-      var z0 = img.getAttribute('data-zoom') || '1';
-      // Zoom in: deltaY < 0
-      for (var i = 0; i < 3; i++) {
-        canvas.dispatchEvent(new WheelEvent('wheel', {deltaY:-100, bubbles:true, cancelable:true}));
-      }
-      var z1 = img.getAttribute('data-zoom') || '1';
-      // Zoom out: deltaY > 0
-      for (var j = 0; j < 5; j++) {
-        canvas.dispatchEvent(new WheelEvent('wheel', {deltaY:100, bubbles:true, cancelable:true}));
-      }
-      var z2 = img.getAttribute('data-zoom') || '1';
-      // Confirm transform: scale(...) is applied
-      var hasScale = (img.style.transform || '').indexOf('scale(') !== -1;
-      done({ok: parseFloat(z1) > parseFloat(z0) && parseFloat(z2) < parseFloat(z1) && hasScale,
-            z0: z0, z1: z1, z2: z2, hasScale: hasScale});
+      (async function(){
+        var canvas = document.querySelector('[data-testid="3d-viewer-canvas"]');
+        var img = document.querySelector('[data-testid="3d-viewer-img"]');
+        if (!canvas || !img) { done({ok:false, reason:'viewer canvas or img missing'}); return; }
+        var z0 = img.getAttribute('data-zoom') || '1';
+        var src0 = img.src;
+        // Zoom in: deltaY < 0
+        for (var i = 0; i < 3; i++) {
+          canvas.dispatchEvent(new WheelEvent('wheel', {deltaY:-100, bubbles:true, cancelable:true}));
+        }
+        var z1 = img.getAttribute('data-zoom') || '1';
+        // Wait up to 8s for img.src to change (sidecar re-renders from new camera distance)
+        var deadline = Date.now() + 8000;
+        var src1 = src0;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 200));
+          var now = (document.querySelector('[data-testid="3d-viewer-img"]') || {}).src || '';
+          if (now && now !== src0) { src1 = now; break; }
+        }
+        // Zoom out: deltaY > 0 (more out-ticks than in-ticks so we end below 1.0)
+        for (var j = 0; j < 5; j++) {
+          canvas.dispatchEvent(new WheelEvent('wheel', {deltaY:100, bubbles:true, cancelable:true}));
+        }
+        var z2 = img.getAttribute('data-zoom') || '1';
+        // Confirm CSS transform is GONE (this was the alpha.26 bug fixed in alpha.27)
+        var hasScale = (img.style.transform || '').indexOf('scale(') !== -1;
+        done({
+          ok: parseFloat(z1) > parseFloat(z0)
+              && parseFloat(z2) < parseFloat(z1)
+              && parseFloat(z2) < 1.0          // dezoomed past default view
+              && src1 !== src0                  // sidecar re-rendered
+              && !hasScale,                     // no CSS scale fallback
+          z0: z0, z1: z1, z2: z2,
+          srcChanged: src1 !== src0,
+          hasScale: hasScale,
+        });
+      })();
     `);
     log(`  wheel-zoom: ${JSON.stringify(wheelZoomResult)}`);
-    if (!wheelZoomResult?.ok) throw new Error(`alpha.26 wheel-zoom failed: ${JSON.stringify(wheelZoomResult)}`);
+    if (!wheelZoomResult?.ok) throw new Error(`alpha.27 wheel-zoom failed: ${JSON.stringify(wheelZoomResult)}`);
+
+    // (A.bis) Tier flip — synthetic drag flips data-tier from 'high' to 'low'
+    //         (low-res while dragging, high-res after release).
+    const tierResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      (async function(){
+        var canvas = document.querySelector('[data-testid="3d-viewer-canvas"]');
+        var img = document.querySelector('[data-testid="3d-viewer-img"]');
+        if (!canvas || !img) { done({ok:false, reason:'viewer canvas or img missing'}); return; }
+        var idleTier = img.getAttribute('data-tier') || '';
+        var r = canvas.getBoundingClientRect();
+        var cx = r.left + r.width/2, cy = r.top + r.height/2;
+        canvas.dispatchEvent(new MouseEvent('mousedown', {clientX:cx, clientY:cy, button:0, bubbles:true, cancelable:true}));
+        // Tier should flip to 'low' synchronously after mousedown.
+        var dragTier = (document.querySelector('[data-testid="3d-viewer-img"]') || {}).getAttribute && document.querySelector('[data-testid="3d-viewer-img"]').getAttribute('data-tier');
+        window.dispatchEvent(new MouseEvent('mousemove', {clientX:cx+50, clientY:cy+30, bubbles:true}));
+        window.dispatchEvent(new MouseEvent('mouseup',   {clientX:cx+50, clientY:cy+30, bubbles:true}));
+        // Wait briefly for SolidJS effect to flip back.
+        await new Promise(r => setTimeout(r, 200));
+        var afterTier = (document.querySelector('[data-testid="3d-viewer-img"]') || {}).getAttribute && document.querySelector('[data-testid="3d-viewer-img"]').getAttribute('data-tier');
+        done({
+          ok: idleTier === 'high' && dragTier === 'low' && afterTier === 'high',
+          idleTier: idleTier, dragTier: dragTier, afterTier: afterTier,
+        });
+      })();
+    `);
+    log(`  tier-flip: ${JSON.stringify(tierResult)}`);
+    if (!tierResult?.ok) throw new Error(`alpha.27 tier-flip failed: ${JSON.stringify(tierResult)}`);
 
     // (B) Drag must NOT create a text selection. Simulate mousedown + move +
     //     mouseup over the canvas, then read window.getSelection().toString().
@@ -1462,7 +1512,7 @@ async function main() {
     log(`  reset: ${JSON.stringify(resetResult)}`);
     if (!resetResult?.ok) throw new Error(`alpha.26 reset failed: ${JSON.stringify(resetResult)}`);
 
-    log('✅ alpha.26 wheel-zoom + drag-no-select + center-reset all wired');
+    log('✅ alpha.26+27 wheel-zoom (sidecar-real) + tier-flip + drag-no-select + center-reset all wired');
 
     // ---------------------------------------------------------------------
     // 11e. alpha.23: 3D render PNG re-renders when offset/rotation/scale

@@ -634,6 +634,8 @@ def library_render_3d_png_angled(p: dict) -> dict:
             scale=tuple(p["scale"]) if "scale" in p else None,
             width=int(p.get("width", 600)),
             height=int(p.get("height", 400)),
+            zoom=float(p.get("zoom", 1.0)),
+            quality=str(p.get("quality", "basic")),
         )
         b64 = base64.b64encode(tmp_path.read_bytes()).decode("ascii")
     finally:
