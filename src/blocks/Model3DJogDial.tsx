@@ -14,6 +14,8 @@ import { For } from 'solid-js';
 
 interface Props {
   onJog: (axis: 'x' | 'y', amount: number) => void;
+  /** Click the centre disk to zero X and Y offset. */
+  onReset: () => void;
 }
 
 const CX = 90;
@@ -53,10 +55,14 @@ const INNER_WEDGES: Wedge[] = [
   { a1: 225, a2: 315, axis: 'x', sign: '-', ring: 'inner', label: '←' },
 ];
 
+// alpha.17: shrunk centre disk to make room for wider rings; the gained
+// space went into the ring widths so wedges read more easily on small
+// screens. Keep ≈4 px gap between rings so the boundary stays visible.
 const OUTER_R = 84;
-const OUTER_R_INNER = 68;
-const INNER_R = 63;
-const INNER_R_INNER = 48;
+const OUTER_R_INNER = 58;
+const INNER_R = 54;
+const INNER_R_INNER = 26;
+const RESET_R = 22;
 
 function wedgePath(a1: number, a2: number, rOuter: number, rInner: number): string {
   // Each cardinal wedge spans 90°; passing through a1=315, a2=45 wraps the
@@ -106,10 +112,11 @@ export default function Model3DJogDial(props: Props) {
       isOuter ? OUTER_R : INNER_R,
       isOuter ? OUTER_R_INNER : INNER_R_INNER,
     );
-    const labelR = isOuter ? 76 : 55;
+    // Land each label near its ring's mid-radius (outer ≈ 71, inner ≈ 40).
+    const labelR = isOuter ? 71 : 40;
     const [lx, ly] = polar(midAngle(w.a1, w.a2), labelR);
     const fill = isOuter ? '#3b82f6' : '#64748b';
-    const fontSize = isOuter ? 11 : 9;
+    const fontSize = isOuter ? 13 : 11;
     const delta = (isOuter ? 1.0 : 0.1) * (w.sign === '+' ? 1 : -1);
     return (
       <>
@@ -138,12 +145,22 @@ export default function Model3DJogDial(props: Props) {
     );
   };
 
+  // The reset button is its own focusable target so keyboard users can
+  // tab to it and Space/Enter to zero X+Y. The dial-level Arrow handler
+  // still owns the wedges.
+  const handleResetKey = (e: KeyboardEvent) => {
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      props.onReset();
+    }
+  };
+
   return (
     <svg
       data-testid="jog-dial"
       tabIndex={0}
       role="group"
-      aria-label="XY offset jog dial. Click outer wedges for ±1mm steps, inner wedges for ±0.1mm. Arrow keys for inner steps, Shift+Arrow for outer."
+      aria-label="XY offset jog dial. Click outer wedges for ±1mm steps, inner wedges for ±0.1mm. Arrow keys for inner steps, Shift+Arrow for outer. Click centre to reset."
       onKeyDown={handleKey}
       viewBox="0 0 180 180"
       width="160"
@@ -152,19 +169,39 @@ export default function Model3DJogDial(props: Props) {
     >
       <For each={OUTER_WEDGES}>{wedgeOf}</For>
       <For each={INNER_WEDGES}>{wedgeOf}</For>
-      {/* Centre disk — purely decorative, no interaction. */}
-      <circle cx={CX} cy={CY} r={44} fill="#1e293b" stroke="white" stroke-opacity="0.2" stroke-width="1" />
-      <text
-        x={CX}
-        y={CY}
-        fill="white"
-        font-size="14"
-        text-anchor="middle"
-        dominant-baseline="middle"
-        style={{ 'pointer-events': 'none', 'user-select': 'none', opacity: 0.7 }}
+      {/* Centre disk — clickable Reset that zeroes X+Y offset. */}
+      <g
+        tabIndex={0}
+        role="button"
+        aria-label="Reset X and Y offset to zero"
+        onClick={() => props.onReset()}
+        onKeyDown={handleResetKey}
+        class="opacity-80 hover:opacity-100 transition-opacity focus:outline-none"
+        style={{ cursor: 'pointer' }}
       >
-        +
-      </text>
+        <circle
+          data-testid="jog-reset"
+          cx={CX}
+          cy={CY}
+          r={RESET_R}
+          fill="#1e293b"
+          stroke="white"
+          stroke-opacity="0.2"
+          stroke-width="1"
+        />
+        <text
+          x={CX}
+          y={CY}
+          fill="white"
+          font-size="9"
+          font-weight="600"
+          text-anchor="middle"
+          dominant-baseline="middle"
+          style={{ 'pointer-events': 'none', 'user-select': 'none', 'letter-spacing': '0.05em' }}
+        >
+          RESET
+        </text>
+      </g>
     </svg>
   );
 }

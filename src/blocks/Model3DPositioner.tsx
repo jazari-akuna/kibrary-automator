@@ -34,6 +34,11 @@ interface Props {
    *  parent re-render). */
   jogDelta?: { axis: 'x' | 'y' | 'z'; amount: number } | null;
   onJogConsumed?: () => void;
+  /** Pulse-shaped: when set, replaces the offset buffer wholesale (used by
+   *  the jog dial's centre Reset button). The parent acks via
+   *  onForceOffsetConsumed so the same value can't re-apply on re-render. */
+  forceOffset?: Triple | null;
+  onForceOffsetConsumed?: () => void;
 }
 
 const ZERO: Triple = [0, 0, 0];
@@ -81,6 +86,16 @@ export default function Model3DPositioner(props: Props) {
       setOffset(next);
     }
     props.onJogConsumed?.();
+  });
+
+  // Apply absolute-offset pulses (from the jog dial's Reset). Same
+  // pulse pattern as jogDelta — consume it after applying so the parent
+  // can clear without re-firing.
+  createEffect(() => {
+    const f = props.forceOffset;
+    if (!f) return;
+    setOffset([f[0], f[1], f[2]]);
+    props.onForceOffsetConsumed?.();
   });
 
   const handleReset = () => {

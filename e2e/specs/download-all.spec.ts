@@ -1362,6 +1362,109 @@ async function main() {
     log('✅ alpha.25 viewer + jog dial fully wired (mount, jog X+, jog re-render, drag re-render, jog Z+)');
 
     // ---------------------------------------------------------------------
+    // 11d-ter. alpha.26 probes:
+    //   (A) Wheel-zoom over the viewer changes data-zoom on the img.
+    //   (B) Drag-orbit does NOT text-select the surrounding page.
+    //   (C) Centre Reset zeroes positioner X+Y.
+    // The dropdown-theme fix is covered by the screenshot at the end.
+    // ---------------------------------------------------------------------
+    log('alpha.26: wheel-zoom + no-text-select + reset probes');
+
+    // (A) Wheel zoom — dispatch wheel events on the canvas; assert data-zoom changes.
+    const wheelZoomResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var canvas = document.querySelector('[data-testid="3d-viewer-canvas"]');
+      var img = document.querySelector('[data-testid="3d-viewer-img"]');
+      if (!canvas || !img) { done({ok:false, reason:'viewer canvas or img missing'}); return; }
+      var z0 = img.getAttribute('data-zoom') || '1';
+      // Zoom in: deltaY < 0
+      for (var i = 0; i < 3; i++) {
+        canvas.dispatchEvent(new WheelEvent('wheel', {deltaY:-100, bubbles:true, cancelable:true}));
+      }
+      var z1 = img.getAttribute('data-zoom') || '1';
+      // Zoom out: deltaY > 0
+      for (var j = 0; j < 5; j++) {
+        canvas.dispatchEvent(new WheelEvent('wheel', {deltaY:100, bubbles:true, cancelable:true}));
+      }
+      var z2 = img.getAttribute('data-zoom') || '1';
+      // Confirm transform: scale(...) is applied
+      var hasScale = (img.style.transform || '').indexOf('scale(') !== -1;
+      done({ok: parseFloat(z1) > parseFloat(z0) && parseFloat(z2) < parseFloat(z1) && hasScale,
+            z0: z0, z1: z1, z2: z2, hasScale: hasScale});
+    `);
+    log(`  wheel-zoom: ${JSON.stringify(wheelZoomResult)}`);
+    if (!wheelZoomResult?.ok) throw new Error(`alpha.26 wheel-zoom failed: ${JSON.stringify(wheelZoomResult)}`);
+
+    // (B) Drag must NOT create a text selection. Simulate mousedown + move +
+    //     mouseup over the canvas, then read window.getSelection().toString().
+    const noSelectResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var canvas = document.querySelector('[data-testid="3d-viewer-canvas"]');
+      if (!canvas) { done({ok:false, reason:'viewer canvas missing'}); return; }
+      // Clear any prior selection.
+      try { window.getSelection().removeAllRanges(); } catch (e) {}
+      var r = canvas.getBoundingClientRect();
+      var cx = r.left + r.width/2, cy = r.top + r.height/2;
+      canvas.dispatchEvent(new MouseEvent('mousedown', {clientX:cx, clientY:cy, button:0, bubbles:true, cancelable:true}));
+      // Move on window (because the agent moved listeners to window-level).
+      window.dispatchEvent(new MouseEvent('mousemove', {clientX:cx+200, clientY:cy+50, bubbles:true}));
+      window.dispatchEvent(new MouseEvent('mousemove', {clientX:cx+400, clientY:cy+150, bubbles:true}));
+      window.dispatchEvent(new MouseEvent('mouseup',   {clientX:cx+400, clientY:cy+150, bubbles:true}));
+      var sel = '';
+      try { sel = window.getSelection().toString(); } catch (e) {}
+      done({ok: sel === '', selectionLen: sel.length, sample: sel.slice(0, 60)});
+    `);
+    log(`  no-text-select: ${JSON.stringify(noSelectResult)}`);
+    if (!noSelectResult?.ok) throw new Error(`alpha.26 drag created a text selection: ${JSON.stringify(noSelectResult)}`);
+
+    // (C) Reset centre — first jog X to a non-zero value, then click reset, assert X (and Y) → 0.
+    const resetResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      (async function(){
+        var ox = document.querySelector('[data-testid="positioner-offset-x"]');
+        var oy = document.querySelector('[data-testid="positioner-offset-y"]');
+        if (!ox || !oy) { done({ok:false, reason:'positioner-offset-x/y missing'}); return; }
+        // Bump X by clicking the +X outer wedge twice (so X becomes >= 2.0)
+        var wx = document.querySelector('[data-testid="jog-outer-+x"]');
+        if (!wx) { done({ok:false, reason:'jog-outer-+x missing'}); return; }
+        wx.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true}));
+        wx.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true}));
+        // Wait for X to reflect the bump.
+        var deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 80));
+          var v = parseFloat(document.querySelector('[data-testid="positioner-offset-x"]').value || '0');
+          if (v >= 1.5) break;
+        }
+        var beforeX = parseFloat(document.querySelector('[data-testid="positioner-offset-x"]').value || '0');
+        var beforeY = parseFloat(document.querySelector('[data-testid="positioner-offset-y"]').value || '0');
+        // Click reset.
+        var reset = document.querySelector('[data-testid="jog-reset"]');
+        if (!reset) { done({ok:false, reason:'jog-reset missing'}); return; }
+        reset.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true}));
+        // Wait for X+Y → 0.
+        deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 80));
+          var nx = parseFloat(document.querySelector('[data-testid="positioner-offset-x"]').value || 'NaN');
+          var ny = parseFloat(document.querySelector('[data-testid="positioner-offset-y"]').value || 'NaN');
+          if (Math.abs(nx) < 0.001 && Math.abs(ny) < 0.001) {
+            done({ok:true, beforeX: beforeX, beforeY: beforeY, afterX: nx, afterY: ny});
+            return;
+          }
+        }
+        done({ok:false, reason:'reset did not zero X+Y',
+              beforeX: beforeX, beforeY: beforeY,
+              afterX: parseFloat(document.querySelector('[data-testid="positioner-offset-x"]').value || 'NaN'),
+              afterY: parseFloat(document.querySelector('[data-testid="positioner-offset-y"]').value || 'NaN')});
+      })();
+    `);
+    log(`  reset: ${JSON.stringify(resetResult)}`);
+    if (!resetResult?.ok) throw new Error(`alpha.26 reset failed: ${JSON.stringify(resetResult)}`);
+
+    log('✅ alpha.26 wheel-zoom + drag-no-select + center-reset all wired');
+
+    // ---------------------------------------------------------------------
     // 11e. alpha.23: 3D render PNG re-renders when offset/rotation/scale
     //      change. Snapshot the current PNG src, save the positioner with
     //      a different rotation, wait, then assert the src bytes changed.

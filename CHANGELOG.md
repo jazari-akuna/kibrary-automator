@@ -2,6 +2,20 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.26] — 2026-04-29
+
+### Fixed
+- **3D viewer drag selected page text and felt jagged.** Mousedown over the viewer didn't `preventDefault`, so the browser started a text selection anchored at the press point and extended it as the cursor moved — every selection-extend triggered layout/paint and the orbit felt laggy. Mousemove was also bound on the wrapper, so a fast drag whose cursor left the canvas desynced. Now `mousedown` calls `preventDefault()` and the move/up listeners are attached at the **window** level for the duration of the drag — orbit stays smooth even when the cursor wanders far from the viewer, and no text selection is ever started.
+- **Native `<select>` dropdowns were unreadable in dark mode.** Existing selects had `dark:bg-zinc-800` but no text colour set; native `<option>` elements had no styling at all. WebKitGTK doesn't cascade body's `text-zinc-100` into native form children, so the popup options inherited the OS default colour and rendered white-on-dark or dark-on-dark depending on the system theme. Added global `@layer base` rules in `styles.css` for `select` + `option` (light + `html.dark` variants) so every dropdown — theme picker, KiCad install picker, ComponentMoveModal — themes correctly without any per-call-site changes.
+
+### Added
+- **Mouse-wheel zoom in the 3D viewer.** Scrolling over the viewer now zooms the displayed PNG (CSS `transform: scale(…)` on the `<img>`, clamped to `[0.4, 4.0]`, multiplicative 1.1× / 0.9× per tick). It's a pure-CSS effect — no kicad-cli round-trip per scroll tick — so zoom is instant. `e.preventDefault()` blocks the underlying page from scrolling.
+- **Centre Reset on the jog dial.** The inert `+` glyph at the jog-dial centre is now a smaller (`r=22`) interactive Reset button (`data-testid="jog-reset"`, role="button", Space/Enter keyboard activation) that zeroes the live X+Y offset on click — Z is preserved. The recovered space lets the two concentric rings grow significantly: outer ±1mm wedges went from 16 px wide to 26 px; inner ±0.1mm wedges went from 15 px wide to 28 px. Wedge labels and font sizes were rebalanced to fit the wider rings.
+
+### Notes
+- Reset wiring uses a new `forceOffset` pulse-shaped prop on `Model3DPositioner` (mirrors the existing `jogDelta` consume pattern) so the positioner inputs snap to the new value, the live signal updates the viewer immediately, and the next Save persists it through `model3d_ops.set_3d_offset`.
+- New smoke probes in alpha.26: `wheel-zoom` (3 zoom-in + 5 zoom-out wheel events, asserts `data-zoom` attr crosses up then down and `transform: scale(...)` is applied to the img), `no-text-select` (synthetic mousedown/move/up over the canvas, asserts `window.getSelection().toString() === ''` afterwards), `center-reset` (jog +X twice, click `jog-reset`, assert positioner X and Y both go to 0).
+
 ## [26.4.27-alpha.25] — 2026-04-29
 
 ### Added

@@ -39,12 +39,17 @@ export default function Model3DViewer(props: Props) {
   >(null);
   const [imgSrc, setImgSrc] = createSignal('');
   const [rendering, setRendering] = createSignal(false);
+  // Wheel zoom — pure CSS transform on the <img>, no sidecar round-trip.
+  // Clamped to [0.4, 4.0] for sane bounds.
+  const [zoom, setZoom] = createSignal(1.0);
 
-  const handleMouseDown = (e: MouseEvent) => {
-    setDragStart({ x: e.clientX, y: e.clientY, az: azimuth(), el: elevation() });
-  };
+  const clamp = (v: number, lo: number, hi: number) =>
+    Math.max(lo, Math.min(hi, v));
 
-  const handleMouseMove = (e: MouseEvent) => {
+  // Window-level move/up listeners are attached only while dragging so a
+  // fast orbit whose cursor leaves the canvas still tracks smoothly, and
+  // the user can release anywhere to end the drag.
+  const handleWindowMouseMove = (e: MouseEvent) => {
     const start = dragStart();
     if (!start) return;
     const dx = e.clientX - start.x;
@@ -55,7 +60,27 @@ export default function Model3DViewer(props: Props) {
     setElevation(Math.max(-85, Math.min(85, newEl)));
   };
 
-  const handleMouseUp = () => setDragStart(null);
+  const handleWindowMouseUp = () => {
+    setDragStart(null);
+    window.removeEventListener('mousemove', handleWindowMouseMove);
+    window.removeEventListener('mouseup', handleWindowMouseUp);
+  };
+
+  const handleMouseDown = (e: MouseEvent) => {
+    // preventDefault is the load-bearing line: without it, the browser
+    // initiates a text selection from the mousedown point, which causes
+    // jagged paint while orbiting.
+    e.preventDefault();
+    e.stopPropagation();
+    setDragStart({ x: e.clientX, y: e.clientY, az: azimuth(), el: elevation() });
+    window.addEventListener('mousemove', handleWindowMouseMove);
+    window.addEventListener('mouseup', handleWindowMouseUp);
+  };
+
+  const handleWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    setZoom((z) => clamp(z * (e.deltaY < 0 ? 1.1 : 0.9), 0.4, 4));
+  };
 
   // Debounced re-render: any change to orbit, transform, or savedRev
   // re-fires the sidecar RPC after a 100 ms quiet period. Keeps the wire
@@ -101,27 +126,31 @@ export default function Model3DViewer(props: Props) {
 
   onCleanup(() => {
     if (pending !== undefined) clearTimeout(pending);
+    // Remove any window listeners still attached if the component unmounts
+    // mid-drag — otherwise we'd leak handlers that reference stale signals.
+    window.removeEventListener('mousemove', handleWindowMouseMove);
+    window.removeEventListener('mouseup', handleWindowMouseUp);
   });
 
   return (
     <div
       data-testid="3d-viewer-canvas"
       onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
+      onWheel={handleWheel}
       style={{
         width: '100%',
         height: '240px',
         'max-width': 'none',
         cursor: dragStart() ? 'grabbing' : 'grab',
         'user-select': 'none',
+        '-webkit-user-select': 'none',
         position: 'relative',
       }}
       class="rounded overflow-hidden bg-white dark:bg-zinc-950"
     >
       <img
         data-testid="3d-viewer-img"
+        attr:data-zoom={String(zoom())}
         src={imgSrc()}
         alt=""
         draggable={false}
@@ -130,6 +159,8 @@ export default function Model3DViewer(props: Props) {
           width: '100%',
           height: '100%',
           'pointer-events': 'none',
+          transform: `scale(${zoom()})`,
+          'transform-origin': 'center center',
         }}
       />
       <Show when={rendering() && !imgSrc()}>

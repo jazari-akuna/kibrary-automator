@@ -9,4 +9,19 @@
   html.dark body {
     @apply bg-zinc-950 text-zinc-100;
   }
+
+  select {
+    @apply bg-white text-zinc-900 border-zinc-300;
+  }
+  html.dark select {
+    @apply bg-zinc-800 text-zinc-100 border-zinc-700;
+  }
+  /* WebKitGTK / Webkit needs <option> styled explicitly — body color
+     does not cascade into native form popups. */
+  option {
+    @apply bg-white text-zinc-900;
+  }
+  html.dark option {
+    @apply bg-zinc-800 text-zinc-100;
+  }
 }

@@ -95,6 +95,9 @@ export default function Model3DPreview(props: Props) {
   const [jogDelta, setJogDelta] = createSignal<
     { axis: 'x' | 'y' | 'z'; amount: number } | null
   >(null);
+  // Pulse-shaped absolute-offset reset (jog dial centre button). Carries
+  // the new offset triple; cleared by the positioner once it applies it.
+  const [forceOffset, setForceOffset] = createSignal<Triple | null>(null);
 
   // Seed the live signals once the model info loads (and any time the
   // selected component changes — keeps live state in sync with the new
@@ -232,6 +235,16 @@ export default function Model3DPreview(props: Props) {
               <div class="flex items-start justify-center gap-3 pt-2">
                 <Model3DJogDial
                   onJog={(axis, amount) => setJogDelta({ axis, amount })}
+                  onReset={() => {
+                    // Zero X+Y but preserve Z. Push through both the live
+                    // signal (so the viewer snaps immediately) and the
+                    // positioner's forceOffset prop (so the form fields
+                    // also display 0 and the next Save persists it).
+                    const z = liveOffset()[2];
+                    const next: Triple = [0, 0, z];
+                    setLiveOffset(next);
+                    setForceOffset(next);
+                  }}
                 />
                 <Model3DJogZ
                   onJog={(amount) => setJogDelta({ axis: 'z', amount })}
@@ -279,6 +292,8 @@ export default function Model3DPreview(props: Props) {
                 }}
                 jogDelta={jogDelta()}
                 onJogConsumed={() => setJogDelta(null)}
+                forceOffset={forceOffset()}
+                onForceOffsetConsumed={() => setForceOffset(null)}
                 onSaved={() => {
                   refetch();
                   setSavedRev((n) => n + 1);
