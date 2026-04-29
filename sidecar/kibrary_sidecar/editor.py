@@ -2,6 +2,14 @@
 
 Spawns the appropriate KiCad editor binary for a given file kind,
 returning immediately with the child PID.
+
+NB: when running under a PyInstaller-bundled sidecar binary, the runtime
+sets ``LD_LIBRARY_PATH`` to its temp ``_MEIPASS`` directory (which
+contains its own libssl/libcrypto). If we spawn KiCad GUI editors with
+that env inherited, eeschema/pcbnew's libcurl loads PyInstaller's older
+libssl and aborts with ``OPENSSL_3.2.0 not found``. Same fix as
+:mod:`svg_render` and :mod:`render_3d` — restore the unmodified env via
+``_system_env()`` before exec.
 """
 
 from __future__ import annotations
@@ -9,6 +17,8 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+
+from kibrary_sidecar.svg_render import _system_env
 
 
 def open_editor(install: dict, kind: str, file_path: Path) -> dict:
@@ -60,15 +70,18 @@ def open_editor(install: dict, kind: str, file_path: Path) -> dict:
     # integer so the constant can be referenced safely on POSIX too.
     _DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
 
+    env = _system_env()
     if sys.platform == "win32":
         proc = subprocess.Popen(
             argv,
             creationflags=_DETACHED_PROCESS,
+            env=env,
         )
     else:
         proc = subprocess.Popen(
             argv,
             start_new_session=True,
+            env=env,
         )
 
     return {"pid": proc.pid}

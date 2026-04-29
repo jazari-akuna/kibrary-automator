@@ -1,5 +1,7 @@
 import { createResource, createSignal, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
+import { open as openUrl } from '@tauri-apps/plugin-shell';
+import { pushToast } from '~/state/toasts';
 
 interface Props {
   // Staging mode (Add room) — both required
@@ -133,12 +135,53 @@ export default function PropertyEditor(props: Props) {
         {EDITABLE_FIELDS.map(({ key, label }) => (
           <label class="block">
             <span class="text-sm text-zinc-600 dark:text-zinc-400">{label}</span>
-            <input
-              type="text"
-              value={currentValue(key)}
-              onInput={(e) => handleInput(key, e.currentTarget.value)}
-              class="block w-full bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded mt-1 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500"
-            />
+            <Show
+              when={key === 'Datasheet'}
+              fallback={
+                <input
+                  type="text"
+                  value={currentValue(key)}
+                  onInput={(e) => handleInput(key, e.currentTarget.value)}
+                  class="block w-full bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded mt-1 text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500"
+                />
+              }
+            >
+              {/* Datasheet field: input + Open-in-browser button (only
+                  enabled for http(s):// URLs to avoid opening file://
+                  paths or arbitrary scheme handlers). */}
+              <div class="flex items-center gap-2 mt-1">
+                <input
+                  type="url"
+                  value={currentValue(key)}
+                  onInput={(e) => handleInput(key, e.currentTarget.value)}
+                  class="block w-full bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500"
+                />
+                <button
+                  type="button"
+                  data-testid="open-datasheet"
+                  disabled={!/^https?:\/\//i.test(currentValue('Datasheet').trim())}
+                  title={
+                    /^https?:\/\//i.test(currentValue('Datasheet').trim())
+                      ? `Open ${currentValue('Datasheet').trim()} in your default browser`
+                      : 'Set a https://… URL to enable'
+                  }
+                  onClick={() => {
+                    const url = currentValue('Datasheet').trim();
+                    if (!/^https?:\/\//i.test(url)) return;
+                    openUrl(url).catch((e: unknown) => {
+                      const reason = e instanceof Error ? e.message : String(e);
+                      pushToast({
+                        kind: 'error',
+                        message: `Open datasheet failed: ${reason}`,
+                      });
+                    });
+                  }}
+                  class="shrink-0 text-xs px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Open ↗
+                </button>
+              </div>
+            </Show>
           </label>
         ))}
       </div>

@@ -156,3 +156,28 @@ def test_open_editor_detach_flag_on_windows(monkeypatch):
     # DETACHED_PROCESS = 0x00000008; use raw value so this test works on POSIX too.
     assert kwargs.get("creationflags") == 0x00000008
     assert "start_new_session" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# alpha.24 regression: PyInstaller LD_LIBRARY_PATH leak into spawned KiCad
+# ---------------------------------------------------------------------------
+
+def test_open_editor_strips_pyinstaller_ld_library_path(monkeypatch):
+    """When the bundled sidecar (PyInstaller) sets LD_LIBRARY_PATH to its
+    _MEIPASS dir, spawned eeschema/pcbnew must NOT inherit it — their
+    libcurl would otherwise load PyInstaller's older libssl and abort
+    with 'OPENSSL_3.2.0 not found'. PyInstaller exposes the unmodified
+    value as LD_LIBRARY_PATH_ORIG; _system_env() restores it.
+    """
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEIxxxx")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", "/usr/lib/x86_64-linux-gnu")
+
+    mock_proc = _mock_popen(777)
+    with patch("kibrary_sidecar.editor.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        open_editor(NATIVE_INSTALL, "symbol", FAKE_SYM_FILE)
+
+    kwargs = mock_popen.call_args[1]
+    env = kwargs.get("env")
+    assert env is not None, "open_editor must pass env= to Popen, not inherit"
+    assert env.get("LD_LIBRARY_PATH") == "/usr/lib/x86_64-linux-gnu"
+    assert "LD_LIBRARY_PATH_ORIG" not in env

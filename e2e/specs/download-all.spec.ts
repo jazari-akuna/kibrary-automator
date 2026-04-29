@@ -1146,6 +1146,53 @@ async function main() {
     // Reap any spawned eeschema so it doesn't linger in container.
     try { execSync('pkill -f eeschema || true; pkill -f pcbnew || true', { stdio: 'pipe' }); } catch {}
 
+    // -------------------------------------------------------------------
+    // alpha.24: Open-Datasheet button — set a https:// URL into the
+    // Datasheet input, assert the button enables, click and assert that
+    // either an error toast appears (no browser in headless container is
+    // OK) or the toast was suppressed because openUrl resolved.
+    // -------------------------------------------------------------------
+    log('alpha.24: Open Datasheet button probe');
+    const dsResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      (async function(){
+        // Find the Datasheet input by walking from its label
+        var dsLabel = Array.from(document.querySelectorAll('label'))
+          .find(function(l){ return /^Datasheet$/.test((l.querySelector('span') || {}).textContent || ''); });
+        if (!dsLabel) { done({ok:false, reason:'Datasheet label not found'}); return; }
+        var input = dsLabel.querySelector('input');
+        var btn = document.querySelector('[data-testid="open-datasheet"]');
+        if (!input) { done({ok:false, reason:'datasheet input not found'}); return; }
+        if (!btn) { done({ok:false, reason:'open-datasheet button not found'}); return; }
+        var disabledEmpty = btn.disabled;
+        // Inject https URL via the React-style setter so SolidJS reactive sees the change
+        var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(input, 'https://example.com/datasheet.pdf');
+        input.dispatchEvent(new Event('input', {bubbles:true}));
+        await new Promise(r => setTimeout(r, 150));
+        var enabledAfter = !btn.disabled;
+        // Click the button — in headless container default xdg-open will
+        // fail (no browser); we just assert the click doesn't crash and
+        // the URL we set is what the button title reflects.
+        btn.click();
+        await new Promise(r => setTimeout(r, 600));
+        done({
+          ok:true,
+          disabledWhenEmpty: disabledEmpty,
+          enabledAfterUrl: enabledAfter,
+          buttonTitle: btn.getAttribute('title') || '',
+        });
+      })();
+    `);
+    log(`  open-datasheet probe: ${JSON.stringify(dsResult)}`);
+    if (!dsResult?.ok) throw new Error(`alpha.24 open-datasheet probe failed: ${dsResult?.reason}`);
+    if (!dsResult.disabledWhenEmpty) throw new Error('alpha.24 Open-datasheet should be DISABLED when Datasheet field is empty');
+    if (!dsResult.enabledAfterUrl) throw new Error('alpha.24 Open-datasheet should ENABLE once https:// URL is typed');
+    if (!String(dsResult.buttonTitle).includes('https://example.com')) {
+      throw new Error(`alpha.24 Open-datasheet title should reflect the URL, got: ${dsResult.buttonTitle}`);
+    }
+    log('✅ alpha.24 Open-datasheet enables on https URL + reflects URL in title');
+
     // ---------------------------------------------------------------------
     // 11e. alpha.23: 3D render PNG re-renders when offset/rotation/scale
     //      change. Snapshot the current PNG src, save the positioner with

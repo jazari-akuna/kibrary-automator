@@ -2,6 +2,17 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.24] — 2026-04-29
+
+### Fixed
+- **Edit-in-KiCad spawned eeschema/pcbnew but they immediately died with `OPENSSL_3.2.0 not found`.** Same alpha.21-class PyInstaller `LD_LIBRARY_PATH` leak we patched for kicad-cli — but `editor.py`'s `subprocess.Popen` had no `env=` argument, so the spawned KiCad GUI inherited the bundled `_MEIPASS` dir, libcurl loaded PyInstaller's older libssl, and KiCad aborted before drawing a window. The frontend cheerfully showed "Opened symbol in KiCad (pid …)" while KiCad was already dead. Now passes `env=_system_env()` (same scrub as svg_render / render_3d), with a unit test that locks the regression in.
+
+### Added
+- **Open-Datasheet button next to the Datasheet property field.** When the Datasheet value is a `https://…` (or `http://`) URL, an "Open ↗" button to the right of the input launches it in the OS default browser via Tauri's `plugin-shell` `open()`. Disabled (with a hint tooltip) when the field is empty or doesn't look like a web URL — guards against `file://`, custom-scheme handlers, or arbitrary executable paths the user might paste.
+
+### Notes
+- Smoke harness adds `alpha.24 Open Datasheet button probe` that types a URL into the Datasheet input via the React-style value setter (so SolidJS reactive sees it), asserts the button transitions disabled→enabled, and confirms the button's `title` attribute reflects the URL — this catches both the disabled-state regression and the URL-binding regression.
+
 ## [26.4.27-alpha.23] — 2026-04-29
 
 ### Fixed
