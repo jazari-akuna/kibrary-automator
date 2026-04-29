@@ -95,12 +95,19 @@ export default function ReviewBulkAssign() {
   const [loading, setLoading] = createSignal(false);
   const [loadErr, setLoadErr] = createSignal<string | null>(null);
 
-  // alpha.22: keep COMMITTED rows visible alongside ready ones so the user
-  // can see what was just saved and click "Open in library" to navigate to
-  // the new entry. Previously only ready items showed → committed rows
-  // silently disappeared and the user lost the ability to fix offsets.
+  // alpha.22+: keep COMMITTING + COMMITTED rows visible alongside ready ones
+  // so (a) the user sees the saving spinner mid-flight and (b) the row stays
+  // visible after save with a "saved" pill + Open-in-library button.
+  //
+  // alpha.23 critical fix: 'committing' MUST be in this filter or the row
+  // briefly disappears mid-save → createEffect rebuilds with no prev row to
+  // preserve from → when the row reappears as 'committed' it has saveState
+  // 'idle' (no pill, no button). User reported this as "no Open-in-library
+  // link" because the saved-pill never rendered.
   const visibleItems = () =>
-    queueItems().filter((q) => q.status === 'ready' || q.status === 'committed');
+    queueItems().filter(
+      (q) => q.status === 'ready' || q.status === 'committing' || q.status === 'committed',
+    );
 
   createEffect(() => {
     const ws = workspace();
@@ -125,7 +132,11 @@ export default function ReviewBulkAssign() {
     Promise.all(
       items.map(async ({ lcsc }) => {
         const prev = prevByLcsc[lcsc];
-        if (prev?.saveState === 'ok') return prev;  // freeze saved rows
+        // Preserve any row whose user-driven save lifecycle is in flight or
+        // complete. Re-running fetchMeta / fetchSuggest mid-save discards
+        // the saving spinner (alpha.23 bug); after save it discards the
+        // saved pill + committedLib/Component → no Open-in-library button.
+        if (prev && prev.saveState !== 'idle') return prev;
 
         let meta: PartMeta;
         try {

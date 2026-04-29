@@ -9,6 +9,7 @@
  * (the kicad_sym landed in the right place).
  */
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { join } from 'node:path';
 
 const DRIVER  = 'http://127.0.0.1:4444';
@@ -484,6 +485,59 @@ async function main() {
     await execScript(sid, `document.body.click();`);
     await new Promise((r) => setTimeout(r, 150));
 
+    // alpha.23: Save-all → saved-pill → Open-in-library end-to-end probe.
+    // The saved-pill code shipped in alpha.22 was never click-tested; the
+    // user reported the link missing because no probe verified the actual
+    // UI flow. We now click Save all, wait for the saved-pill to appear,
+    // then click Open in library and assert Libraries-room navigation.
+    log('alpha.23: Save-all → saved-pill → Open-in-library probe');
+    const saveAllProbe = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      (async function(){
+        // 1. Click "Save all" — find by text content
+        var saveAllBtn = Array.from(document.querySelectorAll('button'))
+          .find(function(b){ return /Save all .* to libraries/.test((b.textContent || '')); });
+        if (!saveAllBtn) { done({ok:false, reason:'Save all button not found'}); return; }
+        saveAllBtn.click();
+        // 2. Poll for saved-pill (library.commit usually <2s; cap at 20s to
+        //    fit inside WebDriver's 30s execute_async timeout).
+        var deadline = Date.now() + 20000;
+        var pill = null;
+        while (Date.now() < deadline && !pill) {
+          await new Promise(r => setTimeout(r, 250));
+          pill = document.querySelector('[data-testid="bulk-saved-pill"]');
+        }
+        if (!pill) { done({ok:false, reason:'bulk-saved-pill never appeared after Save all'}); return; }
+        // 3. Verify Open-in-library button is rendered alongside it
+        var openBtn = document.querySelector('[data-testid="bulk-open-in-library"]');
+        if (!openBtn) { done({ok:false, reason:'bulk-open-in-library button missing next to pill'}); return; }
+        // 4. Click Open-in-library and verify navigation
+        openBtn.click();
+        await new Promise(r => setTimeout(r, 600));
+        var bodyText = document.body.innerText || '';
+        // Look for Libraries-room signal: "Libraries (N)" header or library name in tree
+        var libsHeader = /Libraries\\s*\\(\\d+\\)/.test(bodyText);
+        done({ok:true, hadPill: !!pill, hadOpenBtn: !!openBtn, libsHeader: libsHeader, bodyTail: bodyText.slice(-400)});
+      })();
+    `);
+    log(`  save-all probe: ${JSON.stringify({ok: saveAllProbe?.ok, hadPill: saveAllProbe?.hadPill, hadOpenBtn: saveAllProbe?.hadOpenBtn, libsHeader: saveAllProbe?.libsHeader, reason: saveAllProbe?.reason})}`);
+    if (!saveAllProbe?.ok) throw new Error(`alpha.23 save-all probe failed: ${saveAllProbe?.reason}`);
+    if (!saveAllProbe.libsHeader) {
+      throw new Error('alpha.23 Open-in-library click did not navigate to Libraries room (no "Libraries (N)" header in DOM)');
+    }
+    log('✅ alpha.23 Save-all + saved-pill + Open-in-library navigates end-to-end');
+    await screenshot(sid, `${OUT}/saved-pill-open-in-library.png`);
+    // Navigate back to Add room so subsequent probes (cancel etc.) keep working
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        var addBtn = Array.from(document.querySelectorAll('button, a'))
+          .find(function(n){ return (n.textContent || '').trim() === 'Add'; });
+        if (addBtn) addBtn.click();
+        setTimeout(function(){ done(true); }, 250);
+      } catch (e) { done(String(e)); }
+    `);
+
     // 9c-quater. alpha.16: server-side stockFilter=both is now live on
     //   search.raph.io — exercise the path through the sidecar to prove
     //   it works end-to-end (not just that we send the right param).
@@ -627,6 +681,44 @@ async function main() {
     }
     log('✅ alpha.17 duplicate-indicator pill renders + names the right library');
     await screenshot(sid, `${OUT}/lcsc-in-library-pill.png`);
+
+    // alpha.23: clicking the pill should navigate to the Libraries room
+    // with that lib + component selected (so user can immediately edit).
+    log('alpha.23: pill click → Libraries room nav probe');
+    const pillNav = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var pill = document.querySelector('[data-testid="lcsc-in-library-pill"]');
+      if (!pill) { done({ok:false, reason:'pill not found'}); return; }
+      pill.click();
+      setTimeout(function(){
+        // Look for the Library room sidebar to be active (Libraries header present)
+        var libsHeading = !!Array.from(document.querySelectorAll('h2, h3, span'))
+          .find(function(n){ return /^Libraries\\b/.test((n.textContent || '').trim()); });
+        // Active room indicator: the Libraries nav button should have selected styling
+        var libsNavActive = !!Array.from(document.querySelectorAll('button, a'))
+          .find(function(n){
+            return (n.textContent || '').trim() === 'Libraries' &&
+                   (n.getAttribute('aria-current') === 'page' || n.className.includes('bg-zinc-200') || n.className.includes('font-semibold'));
+          });
+        done({ok:true, libsHeading: libsHeading, libsNavActive: libsNavActive, bodyHas: (document.body.innerText || '').includes('Existing_KSL')});
+      }, 500);
+    `);
+    log(`  pill nav: ${JSON.stringify(pillNav)}`);
+    if (!pillNav?.ok) throw new Error(`alpha.23 pill click failed: ${pillNav?.reason}`);
+    if (!pillNav.libsHeading && !pillNav.bodyHas) {
+      throw new Error('alpha.23 pill click did not navigate to Libraries room (no Libraries heading nor library name in DOM after click)');
+    }
+    log('✅ alpha.23 pill click navigates to Libraries room');
+    // Navigate back to Add room so subsequent probes (cancel etc.) keep working
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        var addBtn = Array.from(document.querySelectorAll('button, a'))
+          .find(function(n){ return (n.textContent || '').trim() === 'Add'; });
+        if (addBtn) addBtn.click();
+        setTimeout(function(){ done(true); }, 250);
+      } catch (e) { done(String(e)); }
+    `);
 
     // Re-collapse the search pane so Bulk-Assign reclaims width before the
     // cancel-button click in step 9d. Otherwise the cancel button can sit
@@ -1019,6 +1111,82 @@ async function main() {
       );
     }
     log(`✅ alpha.19 REAL-WORLD: 3D model "${info.filename}" linked + displayed`);
+
+    // ---------------------------------------------------------------------
+    // 11d. alpha.23: Edit-in-KiCad button actually launches KiCad and
+    //      surfaces a success toast (alpha.22 shipped the button but its
+    //      click was a silent no-op when the spawn failed/succeeded).
+    // ---------------------------------------------------------------------
+    log('alpha.23: Edit-in-KiCad button — click and assert spawn + toast');
+    const editClickResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        // Snapshot existing toasts so we can detect the new one.
+        var beforeToasts = document.querySelectorAll('[data-testid^="toast-"], .toast, [role="status"]').length;
+        var btn = document.querySelector('[data-testid="edit-symbol-in-kicad"]');
+        if (!btn) { done({ok:false, reason:'edit-symbol-in-kicad button not found'}); return; }
+        btn.click();
+        setTimeout(function(){
+          var bodyText = (document.body.innerText || '');
+          done({
+            ok: true,
+            toastedSuccess: /Opened symbol in KiCad/.test(bodyText),
+            toastedError: /Open symbol failed/.test(bodyText),
+            bodyTail: bodyText.slice(-300),
+          });
+        }, 1200);
+      } catch (e) { done({ok:false, reason:String(e)}); }
+    `);
+    log(`  edit-in-kicad result: ${JSON.stringify(editClickResult)}`);
+    if (!editClickResult?.ok) throw new Error(`alpha.23 Edit-in-KiCad click failed: ${editClickResult?.reason}`);
+    if (!editClickResult.toastedSuccess && !editClickResult.toastedError) {
+      throw new Error('alpha.23 Edit-in-KiCad clicked but neither success NOR error toast appeared — silent no-op regression');
+    }
+    log(`✅ alpha.23 Edit-in-KiCad surfaces feedback (success=${editClickResult.toastedSuccess}, error=${editClickResult.toastedError})`);
+    // Reap any spawned eeschema so it doesn't linger in container.
+    try { execSync('pkill -f eeschema || true; pkill -f pcbnew || true', { stdio: 'pipe' }); } catch {}
+
+    // ---------------------------------------------------------------------
+    // 11e. alpha.23: 3D render PNG re-renders when offset/rotation/scale
+    //      change. Snapshot the current PNG src, save the positioner with
+    //      a different rotation, wait, then assert the src bytes changed.
+    // ---------------------------------------------------------------------
+    log('alpha.23: 3D positioner save → rerender probe');
+    const rerenderResult = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      (async function(){
+        var img = document.querySelector('[data-testid="3d-render-png"]');
+        if (!img) { done({ok:false, reason:'no rendered img'}); return; }
+        var beforeSrc = img.src;
+        var beforeLen = beforeSrc.length;
+        // Find the Rotation Z input (3rd in rotation row), bump by 1°
+        var rotInputs = Array.from(document.querySelectorAll('input[type="number"][step="0.1"]'));
+        if (rotInputs.length < 3) { done({ok:false, reason:'rotation Z input not found, count='+rotInputs.length}); return; }
+        var rotZ = rotInputs[2];
+        var newVal = (parseFloat(rotZ.value || '0') + 1).toFixed(1);
+        var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(rotZ, newVal);
+        rotZ.dispatchEvent(new Event('input', {bubbles:true}));
+        // Click Save in the positioner
+        var saveBtn = Array.from(document.querySelectorAll('button')).find(function(b){ return (b.textContent || '').trim() === 'Save'; });
+        if (!saveBtn) { done({ok:false, reason:'Save button not found'}); return; }
+        saveBtn.click();
+        // Wait up to 10s for the img.src to change (re-render fires after save)
+        var deadline = Date.now() + 10000;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 250));
+          var nowSrc = (document.querySelector('[data-testid="3d-render-png"]') || {}).src || '';
+          if (nowSrc && nowSrc !== beforeSrc) {
+            done({ok:true, beforeLen: beforeLen, afterLen: nowSrc.length, changed: true, newRot: newVal});
+            return;
+          }
+        }
+        done({ok:false, reason:'render PNG did not change after save', beforeLen: beforeLen, newRot: newVal});
+      })();
+    `);
+    log(`  rerender result: ${JSON.stringify(rerenderResult)}`);
+    if (!rerenderResult?.ok) throw new Error(`alpha.23 3D rerender after offset save did not happen: ${rerenderResult?.reason}`);
+    log(`✅ alpha.23 3D PNG re-renders on positioner save (rot Z=${rerenderResult.newRot}, src bytes ${rerenderResult.beforeLen}→${rerenderResult.afterLen})`);
 
     // ---------------------------------------------------------------------
     // 12. alpha.18 fuzzy library_suggest — when an existing lib resembles

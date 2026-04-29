@@ -89,10 +89,23 @@ def set_3d_offset(
     ValueError
         If the footprint has no ``(model ...)`` block to update.
     """
-    pretty = lib_dir / f"{lib_dir.name}.pretty"
-    mod_path = pretty / f"{component_name}.kicad_mod"
-    if not mod_path.exists():
-        raise FileNotFoundError(str(mod_path))
+    # Resolve the footprint via _find_footprint, which honours the symbol's
+    # Footprint property (`<lib>:<fp_name>`) — JLC2KiCadLib names the symbol
+    # by MPN but the .kicad_mod by package, so a literal `<symbol>.kicad_mod`
+    # lookup misses (the user-reported alpha.23 3D rerender regression).
+    from kibrary_sidecar import lib_scanner
+    mod_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
+    if mod_path is None:
+        # Fall back to the literal name, then surface an informative error.
+        pretty = lib_dir / f"{lib_dir.name}.pretty"
+        candidate = pretty / f"{component_name}.kicad_mod"
+        if not candidate.exists():
+            raise FileNotFoundError(
+                f"set_3d_offset: no .kicad_mod for symbol {component_name!r} "
+                f"in {lib_dir} (looked for both Footprint-property match "
+                f"and {candidate.name})"
+            )
+        mod_path = candidate
 
     fp = Footprint().from_file(str(mod_path))
     if not fp.models:
@@ -151,12 +164,17 @@ def _update_kicad_mod(
     """Update (or add) the ``(model ...)`` entry in the component's
     ``.kicad_mod`` file to use the ``${KSL_ROOT}`` convention.
     """
-    pretty_dir = lib_dir / f"{lib_name}.pretty"
-    mod_path = pretty_dir / f"{component_name}.kicad_mod"
-
-    if not mod_path.exists():
-        # Nothing to update — silently skip.
-        return
+    # Honour Footprint-property ↔ file-stem mismatch (JLC2KiCadLib MPN
+    # symbol vs package-named .kicad_mod) — same fallback as set_3d_offset.
+    from kibrary_sidecar import lib_scanner
+    mod_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
+    if mod_path is None:
+        pretty_dir = lib_dir / f"{lib_name}.pretty"
+        candidate = pretty_dir / f"{component_name}.kicad_mod"
+        if not candidate.exists():
+            # Nothing to update — silently skip.
+            return
+        mod_path = candidate
 
     new_model_path = (
         f"{_KSL_ROOT}/{lib_name}/{lib_name}.3dshapes/{component_name}{ext}"

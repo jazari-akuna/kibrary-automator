@@ -35,6 +35,8 @@ import { open as openUrl } from '@tauri-apps/plugin-shell';
 import { enqueue } from '~/state/queue';
 import { searchPaneOpen, toggleSearchPane } from '~/state/searchPane';
 import { lcscIndex } from '~/state/lcscIndex';
+import { setRoom } from '~/state/room';
+import { setSelectedLib, setSelectedComponent } from '~/state/librariesRoom';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -574,13 +576,22 @@ export default function SearchPanel() {
                               it differs from the LCSC code. Purely informational;
                               the user can still click "+ Add" to re-download. */}
                           <Show when={lcscIndex()[result.lcsc]}>
-                            <span
+                            <button
+                              type="button"
                               data-testid="lcsc-in-library-pill"
-                              class="inline-flex items-center rounded-md bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600 normal-case font-sans"
-                              title={`${lcscIndex()[result.lcsc]?.library} / ${lcscIndex()[result.lcsc]?.component_name}`}
+                              class="inline-flex items-center rounded-md bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600 normal-case font-sans cursor-pointer transition-colors"
+                              title={`Open ${lcscIndex()[result.lcsc]?.library} / ${lcscIndex()[result.lcsc]?.component_name} in Libraries`}
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                const entry = lcscIndex()[result.lcsc];
+                                if (!entry) return;
+                                setSelectedLib(entry.library);
+                                setSelectedComponent(entry.component_name);
+                                setRoom('libraries');
+                              }}
                             >
                               In library: {lcscIndex()[result.lcsc]?.library}
-                            </span>
+                            </button>
                           </Show>
                         </p>
                       </div>

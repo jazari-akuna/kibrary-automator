@@ -2,6 +2,7 @@ import { createMemo, createResource, onCleanup, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { currentWorkspace } from '~/state/workspace';
+import { pushToast } from '~/state/toasts';
 
 /**
  * SymbolPreview — alpha.18: renders the symbol as an SVG returned by the
@@ -82,6 +83,7 @@ export default function SymbolPreview(props: Props) {
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-zinc-300">Symbol Preview</span>
         <button
+          data-testid="edit-symbol-in-kicad"
           class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
           onClick={() => {
             const ws = currentWorkspace();
@@ -98,8 +100,18 @@ export default function SymbolPreview(props: Props) {
                   lcsc: props.lcsc,
                   kind: 'symbol',
                 };
-            invoke('sidecar_call', { method: 'editor.open', params })
-              .catch((e) => console.error('[editor] open symbol failed:', e));
+            invoke<{ pid: number }>('sidecar_call', { method: 'editor.open', params })
+              .then((r) =>
+                pushToast({
+                  kind: 'success',
+                  message: `Opened symbol in KiCad (pid ${r.pid})`,
+                }),
+              )
+              .catch((e: unknown) => {
+                const reason = e instanceof Error ? e.message : String(e);
+                console.error('[editor] open symbol failed:', e);
+                pushToast({ kind: 'error', message: `Open symbol failed: ${reason}` });
+              });
           }}
         >
           ✎ Edit in KiCad

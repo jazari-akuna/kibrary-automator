@@ -2,6 +2,22 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.23] — 2026-04-29
+
+### Fixed
+- **Edit-in-KiCad buttons did nothing on click (silent no-op).** SymbolPreview / FootprintPreview / Model3DPreview's editor buttons routed through `editor.open` but only logged failures to the console — the user never saw anything happen. They now `pushToast` a success ("Opened symbol in KiCad (pid …)") on spawn and an error toast on failure (the most common failure being "No KiCad install detected — install KiCad first" if the user hasn't picked one in Settings).
+- **3D PNG didn't refresh after offset / rotation / scale was saved.** The renderedPng resource was keyed only on `lib_dir + component_name`, so saving new positioner values left the on-screen PNG stale. Added a `renderRev` signal that bumps in the positioner's `onSaved` callback and is part of the resource key, so the resource invalidates and re-renders against the freshly-written `.kicad_mod`.
+- **Saved-pill + Open-in-library button never appeared after clicking Save all.** The Bulk-Assign `visibleItems` filter included `'ready'` and `'committed'` but NOT the transient `'committing'` state — the row vanished mid-save, the createEffect rebuild had no prev row to preserve, and when the row reappeared as `'committed'` it had `saveState='idle'` (no pill, no button). Filter now includes `'committing'`, AND the createEffect preserves any prev row with non-`'idle'` saveState (covers `'saving'`, `'ok'`, `'error'`).
+- **`set_3d_offset` failed with FileNotFoundError on JLC2KiCadLib parts.** Same alpha.20-class bug: looked for `<symbol_name>.kicad_mod` (e.g. `0603WAF1002T5E.kicad_mod`) instead of the actual file `R0603.kicad_mod`. `model3d_ops.set_3d_offset` and `_update_kicad_mod` now route through `lib_scanner._find_footprint`, which honours the symbol's `Footprint` property.
+
+### Added
+- **"In library: Foo_KSL" pill in search results is now clickable.** Clicking jumps to Libraries → Foo_KSL → that component, so the user can immediately edit a part they've already added — matching the long-standing "Open in library" behaviour from the saved-pill in Bulk-Assign.
+- **View-3D-in-KiCad button is now available in library mode** (was hidden behind `<Show when={!isLibraryMode()}>`). It opens pcbnew's footprint editor on the committed `.kicad_mod`; press Alt+3 inside for KiCad's interactive 3D viewer.
+
+### Notes
+- Smoke harness now exercises ALL of these via real click flows (not just DOM presence): Save-all → poll for `bulk-saved-pill` → click `bulk-open-in-library` → assert "Libraries (N)" header; click `lcsc-in-library-pill` → assert nav; click `edit-symbol-in-kicad` → assert toast (success OR error — both are user feedback); click positioner Save with bumped Z rotation → assert `<img data-testid="3d-render-png">`'s `src` bytes change.
+- The user-reported regression ("no Open-in-library link") was reproduced inside the headless smoke before the fix landed and is locked in by the new `bulk-saved-pill` + `bulk-open-in-library` probe.
+
 ## [26.4.27-alpha.22] — 2026-04-28
 
 ### Added
