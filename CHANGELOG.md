@@ -2,6 +2,19 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.30] — 2026-04-29
+
+### Fixed
+- **3D viewer textures looked dark and materials looked wrong.** The alpha.29 three.js setup was *minimum-viable* lighting — one ambient + one directional. glTF materials exported by `kicad-cli pcb export glb` are physically-based (metallic-roughness) and *expect* image-based lighting (IBL) to look natural; without an environment map, metals render black and dielectrics (the green soldermask, the plastic component bodies) come out flat and muddy. Fix: synthesise a neutral studio HDRI via three.js's bundled `RoomEnvironment`, prefilter it through `PMREMGenerator`, and feed the result to `scene.environment`. Pair that with the proper output pipeline (`outputColorSpace = SRGBColorSpace`, `toneMapping = ACESFilmicToneMapping`, `toneMappingExposure = 1.0`) so glTF's linear-space textures aren't double-gamma-corrected. The single ambient + directional is replaced with a key/fill directional pair (5,8,5 at 1.5 + -5,8,-5 at 0.8) so the shadow side reads as "lit by sky" instead of pitch-black.
+- **PCB substrate plane was too small.** The empty-board template had no `Edge.Cuts` outline, so kicad-cli auto-derived a board size from the bounding box of the spliced footprint plus minimal margin — the part appeared to BE the board instead of sitting ON it. Added a 40 mm × 40 mm centred `(gr_rect (start -20 -20) (end 20 20) … (layer "Edge.Cuts"))` to `_EMPTY_BOARD_TEMPLATE` so any 0402 / 0805 / SOIC part visibly sits on a generous green plane. Same template is shared between the PNG and GLB paths via `_splice_into_template` import, so the fix lands once.
+
+### Notes
+- 4 new sidecar tests in `test_render_3d.py` + `test_render_3d_glb.py` lock in the outline (`(layer "Edge.Cuts")` marker, gr_rect coords, symmetry about origin, presence in the spliced board for both PNG and GLB pipelines). Total sidecar tests: **248 passed**.
+- Bundle delta from the lighting fix: `Model3DPreview` chunk grew **+1.07 kB gzipped** (RoomEnvironment + PMREMGenerator are part of three.js / examples — no new npm dep).
+- `scene.environment` is disposed on viewer unmount alongside the PMREM-generated cubemap so the IBL texture doesn't leak GPU memory across remounts.
+- `toneMappingExposure = 1.0` is a starting value. If subsequent feedback says "still dark" or "too hot", the one-line lever is to bump or lower this constant — IBL tuning is qualitative.
+- No new smoke probe — IBL effects are visual-quality, not behavioural; existing `glb-loaded` + `orbit-no-sidecar-call` probes still validate the load and interaction paths. A human eyeball check is the actual confirmation; if a regression is found, screenshot diff against the alpha.30 baseline can lock in the lighting in the future.
+
 ## [26.4.27-alpha.29] — 2026-04-29
 
 ### Fixed

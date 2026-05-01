@@ -478,5 +478,6 @@ _EMPTY_BOARD_TEMPLATE = """\
 \t)
 \t(net 0 "")
 \t(embedded_fonts no)
+\t(gr_rect (start -20 -20) (end 20 20) (stroke (width 0.1) (type solid)) (fill no) (layer "Edge.Cuts"))
 )
 """

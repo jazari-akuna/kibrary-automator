@@ -213,3 +213,28 @@ def test_glb_strips_pyinstaller_ld_library_path(tmp_path: Path, monkeypatch):
     env = captured["env"]
     assert env.get("LD_LIBRARY_PATH") == "/usr/lib/x86_64-linux-gnu"
     assert "LD_LIBRARY_PATH_ORIG" not in env
+
+
+# ---------------------------------------------------------------------------
+# Test 8: the GLB pipeline reuses render_3d's _splice_into_template, so the
+# spliced board it sends to kicad-cli must carry the static Edge.Cuts
+# outline. Without it, ``kicad-cli pcb export glb`` derives the substrate
+# from the footprint bounding box and the resulting GLB has a tiny PCB
+# plane — the exact bug this guards against.
+# ---------------------------------------------------------------------------
+
+def test_glb_spliced_board_has_edge_cuts_outline(tmp_path: Path):
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path, name="OutlineProbe")
+
+    captured: dict = {}
+    with patch(
+        "kibrary_sidecar.render_3d_glb.subprocess.run",
+        side_effect=_kicad_cli_glb_mock(captured),
+    ):
+        render_3d_glb.render_footprint_3d_glb(lib_dir, mod)
+
+    board = captured.get("board", "")
+    assert '(layer "Edge.Cuts")' in board
+    assert "gr_rect" in board
+    assert "(start -20 -20)" in board
+    assert "(end 20 20)" in board

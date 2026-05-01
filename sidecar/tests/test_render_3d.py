@@ -246,3 +246,81 @@ def test_render_raises_when_footprint_file_missing(tmp_path: Path):
 
     with pytest.raises(FileNotFoundError):
         render_3d.render_footprint_3d_png(lib_dir, bogus, out_png)
+
+
+# ---------------------------------------------------------------------------
+# Test 9: empty-board template carries an Edge.Cuts outline so kicad-cli
+# does NOT auto-derive the substrate from the footprint bounding box (which
+# yields a near-zero margin around the part). A static centered rectangle
+# guarantees a generous visual margin in both PNG and GLB renders.
+# ---------------------------------------------------------------------------
+
+def test_template_has_edge_cuts_outline():
+    board = render_3d._splice_into_template('(footprint "Probe" (layer "F.Cu"))')
+    # The static outline must be present on the Edge.Cuts layer.
+    assert '(layer "Edge.Cuts")' in board
+    assert "gr_rect" in board
+    # 40 mm × 40 mm centered at origin → corners at ±20.
+    assert "(start -20 -20)" in board
+    assert "(end 20 20)" in board
+
+
+# ---------------------------------------------------------------------------
+# Test 10: the static outline must be centered at (0,0) so that any
+# spliced footprint (also placed at the origin) sits in the middle of the
+# substrate. This catches accidental drift if someone re-tunes the size.
+# ---------------------------------------------------------------------------
+
+def test_template_outline_is_centered_at_origin():
+    board = render_3d._splice_into_template('(footprint "Probe" (layer "F.Cu"))')
+    match = re.search(
+        r'\(gr_rect\s+\(start\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\)\s+'
+        r'\(end\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\)',
+        board,
+    )
+    assert match is not None, f"gr_rect not found in board:\n{board}"
+    sx, sy, ex, ey = (float(g) for g in match.groups())
+    # Symmetric about the origin on both axes.
+    assert abs(sx) == abs(ex), f"x not symmetric: start={sx} end={ex}"
+    assert abs(sy) == abs(ey), f"y not symmetric: start={sy} end={ey}"
+    assert sx < 0 < ex, f"x range does not span origin: start={sx} end={ex}"
+    assert sy < 0 < ey, f"y range does not span origin: start={sy} end={ey}"
+    # And big enough to give a visibly larger PCB than the part: at least
+    # 30 mm side, so even a SOIC-16 (~10 mm) has clear margin around it.
+    assert (ex - sx) >= 30, f"outline width too small: {ex - sx}"
+    assert (ey - sy) >= 30, f"outline height too small: {ey - sy}"
+
+
+# ---------------------------------------------------------------------------
+# Test 11: the Edge.Cuts outline survives the splice — i.e. it must be
+# present in the final board text alongside the spliced footprint, and
+# top-level paren depth must still balance to zero.
+# ---------------------------------------------------------------------------
+
+def test_spliced_board_keeps_edge_cuts_outline(tmp_path: Path):
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path, name="OutlineProbe")
+    out_png = tmp_path / "out.png"
+
+    captured: dict = {}
+    with patch("kibrary_sidecar.render_3d.subprocess.run",
+               side_effect=_kicad_cli_mock(captured)):
+        render_3d.render_footprint_3d_png(lib_dir, mod, out_png)
+
+    board = captured["board"]
+    assert '(layer "Edge.Cuts")' in board
+    assert "gr_rect" in board
+    assert '(footprint "OutlineProbe"' in board
+
+    # Paren balance still holds after the addition.
+    depth = 0
+    in_str = False
+    for ch in board:
+        if ch == '"':
+            in_str = not in_str
+        elif not in_str:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                assert depth >= 0
+    assert depth == 0

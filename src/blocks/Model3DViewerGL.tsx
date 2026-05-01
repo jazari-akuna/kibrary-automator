@@ -24,6 +24,7 @@ import { invoke } from '@tauri-apps/api/core';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 type Triple = [number, number, number];
 
@@ -114,6 +115,12 @@ export default function Model3DViewerGL(props: Props) {
         alpha: true,
       });
       renderer.setPixelRatio(window.devicePixelRatio);
+      // glTF PBR pipeline expects linear-space input → sRGB output, with
+      // a filmic tone map. Without these two lines metals look black and
+      // dielectrics look washed-out / muddy.
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.0;
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       setWebglError(reason);
@@ -124,6 +131,19 @@ export default function Model3DViewerGL(props: Props) {
     scene = new THREE.Scene();
     scene.background = null; // transparent → CSS background of wrapper shows through
     window.__model3dGLScene = scene;
+
+    // Image-based lighting (IBL) — synthesise a neutral studio HDRI from
+    // three's bundled RoomEnvironment, prefilter it via PMREMGenerator,
+    // and feed it to scene.environment so every PBR material gets proper
+    // ambient reflections. This is what makes glTF look like glTF; without
+    // it metals appear black and dielectrics look flat. Background stays
+    // null so the zinc-tinted CSS wrapper shows through unchanged.
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    pmremGenerator.compileEquirectangularShader();
+    const roomEnv = new RoomEnvironment();
+    scene.environment = pmremGenerator.fromScene(roomEnv, 0.04).texture;
+    roomEnv.dispose();
+    pmremGenerator.dispose();
 
     const rect = containerEl.getBoundingClientRect();
     const aspect = rect.width > 0 && rect.height > 0 ? rect.width / rect.height : 1.5;
@@ -138,12 +158,20 @@ export default function Model3DViewerGL(props: Props) {
     // Speed defaults are tuned for the typical kicad-cli output (mm units,
     // boards within a few-cm bounding box).
 
-    // Lighting — soft ambient + a top-iso directional gives the same
-    // "PCB sitting on a desk" feel the kicad-cli render produced.
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
-    sun.position.set(50, 80, 50);
-    scene.add(sun);
+    // Lighting — IBL provides the diffuse ambient now, so we drop the
+    // AmbientLight to a low fill and lean on a key/fill directional pair
+    // for shape definition. Key from top-front-right, fill from
+    // top-back-left at ~half strength so the shadow side reads as
+    // "lit by sky" instead of pitch-black.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.5);
+    keyLight.position.set(5, 8, 5);
+    keyLight.castShadow = false;
+    scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    fillLight.position.set(-5, 8, -5);
+    fillLight.castShadow = false;
+    scene.add(fillLight);
 
     // Resize-aware: when the wrapper changes size (responsive grid in
     // ComponentDetail.tsx), keep the camera aspect + renderer in sync.
@@ -363,6 +391,12 @@ export default function Model3DViewerGL(props: Props) {
       scene?.remove(loadedRoot);
       disposeObject(loadedRoot);
       loadedRoot = null;
+    }
+    // Free the prefiltered IBL cubemap so we don't leak a GPU texture
+    // across viewer remounts (parent toggles us in/out of the DOM).
+    if (scene?.environment) {
+      scene.environment.dispose();
+      scene.environment = null;
     }
     renderer?.dispose();
     if (window.__model3dGLScene === scene) {
