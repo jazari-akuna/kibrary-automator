@@ -1614,6 +1614,126 @@ async function main() {
     }
     log('✅ alpha.18 Settings shows KiCad install card');
 
+    // ---------------------------------------------------------------------
+    // 14. alpha.28: Settings dropdown contrast + browse-kicad probe.
+    //
+    // Two regressions fixed in alpha.28:
+    //   (a) The native <select>/<option> for theme + KiCad install rendered
+    //       white-on-white in dark mode on WebKitGTK. The `option` element's
+    //       color/background CSS is ignored by GTK's combo widget, so the
+    //       fix replaces the native select with a custom Solid dropdown
+    //       built from <div>s — guaranteed-readable in either theme.
+    //   (b) The KiCad install picker now exposes a "Browse for your own…"
+    //       trigger that opens a Tauri file dialog and registers a custom
+    //       install via `kicad.register_custom_install`.
+    // ---------------------------------------------------------------------
+    log('alpha.28: Settings dropdown contrast + browse-kicad probe');
+
+    // Force dark theme so the white-on-white regression would actually show.
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        // setTheme is wired as a global via theme.ts createEffect; the
+        // canonical handle is via the Settings room's exposed Dropdown,
+        // but for the smoke harness we just toggle the <html> class +
+        // localStorage, mirroring what theme.ts does.
+        document.documentElement.classList.add('dark');
+        localStorage.setItem('theme', 'dark');
+        done(true);
+      } catch (e) { done(String(e)); }
+    `);
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Click the theme-select trigger to open its panel, then read the
+    // computed colour of the FIRST option <div>. With the custom dropdown
+    // those options are now real DOM nodes that respect Tailwind's
+    // dark-mode classes (text-zinc-100 on bg-zinc-800).
+    const themeContrast = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        var trig = document.querySelector('[data-testid="theme-select"]');
+        if (!trig) { done({ ok: false, reason: 'theme-select trigger missing' }); return; }
+        trig.click();
+        // Custom dropdown renders into a Portal; give Solid a tick.
+        setTimeout(function () {
+          var opt = document.querySelector('[data-testid="theme-select-option-0"]');
+          if (!opt) { done({ ok: false, reason: 'theme-select option missing after open' }); return; }
+          var s = getComputedStyle(opt);
+          var panel = document.querySelector('[data-testid="theme-select-panel"]');
+          var ps = panel ? getComputedStyle(panel) : null;
+          done({
+            ok: true,
+            color: s.color,
+            backgroundColor: s.backgroundColor,
+            panelColor: ps ? ps.color : null,
+            panelBg: ps ? ps.backgroundColor : null,
+          });
+        }, 50);
+      } catch (e) { done({ ok: false, reason: String(e) }); }
+    `);
+    log(`  theme dropdown computed: ${JSON.stringify(themeContrast)}`);
+    if (!themeContrast?.ok) {
+      throw new Error(`alpha.28 theme dropdown probe failed: ${themeContrast?.reason}`);
+    }
+    // Sanity-check: in dark mode, text colour and background must NOT be
+    // identical (the white-on-white regression). We don't assert exact
+    // values because Tailwind's zinc-100/zinc-800 may render via
+    // rgb()/rgba() depending on Webkit version — checking inequality
+    // catches the actual user-visible bug.
+    if (themeContrast.color === themeContrast.backgroundColor) {
+      throw new Error(
+        `alpha.28 theme dropdown is white-on-white (color === bg === ${themeContrast.color})`,
+      );
+    }
+    // Background must be dark-ish (zinc-800 ≈ rgb(39, 39, 42)). Reject
+    // anything matching white-or-near-white. Webkit normalises to rgb().
+    if (/^rgb\(2[45][0-9],\s*2[45][0-9],\s*2[45][0-9]\)/.test(themeContrast.backgroundColor)) {
+      throw new Error(
+        `alpha.28 theme dropdown panel is white in dark mode (bg=${themeContrast.backgroundColor})`,
+      );
+    }
+    log(`✅ alpha.28 theme dropdown readable in dark mode (color=${themeContrast.color} bg=${themeContrast.backgroundColor})`);
+
+    // Close the panel before the next probe.
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try { document.body.click(); done(true); } catch (e) { done(String(e)); }
+    `);
+    await new Promise((r) => setTimeout(r, 100));
+
+    // (b) Browse trigger present. Whether the KiCad install card rendered
+    // the dropdown (with extraItem) or the no-install fallback (with a
+    // standalone Browse button), the kicad-browse testid must resolve.
+    const browseProbe = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        // The Browse entry may be a row inside the dropdown panel — open
+        // the picker first if the closed-state trigger is what's mounted.
+        var trig = document.querySelector('[data-testid="kicad-install-select"]');
+        if (trig) trig.click();
+        setTimeout(function () {
+          var browse = document.querySelector('[data-testid="kicad-browse"]');
+          done({ ok: !!browse, foundIn: browse ? (browse.tagName + (browse.getAttribute('role') || '')) : null });
+        }, 50);
+      } catch (e) { done({ ok: false, reason: String(e) }); }
+    `);
+    log(`  browse trigger: ${JSON.stringify(browseProbe)}`);
+    if (!browseProbe?.ok) {
+      throw new Error('alpha.28 kicad-browse trigger missing from Settings room');
+    }
+    log('✅ alpha.28 kicad-browse trigger rendered');
+
+    // Restore light theme so the final screenshot is consistent across runs.
+    await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        document.documentElement.classList.remove('dark');
+        localStorage.setItem('theme', 'light');
+        document.body.click();
+        done(true);
+      } catch (e) { done(String(e)); }
+    `);
+
     await screenshot(sid, `${OUT}/download-all.png`);
     log('ALL UI SMOKE TESTS PASSED');
   } catch (e) {

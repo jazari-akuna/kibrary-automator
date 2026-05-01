@@ -295,3 +295,250 @@ def test_detect_linux_both_flatpak_and_regular(tmp_path: Path, monkeypatch):
     assert "flatpak-9.0" in ids
     assert "linux-8.0" in ids
     assert len(installs) == 2
+
+
+# ---------------------------------------------------------------------------
+# register_custom_install
+# ---------------------------------------------------------------------------
+
+def _fake_kicad_cli(tmp_path: Path, name: str = "kicad-cli") -> Path:
+    """Drop a fake executable file at tmp_path/<name> with mode 755."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    p = tmp_path / name
+    p.write_text("#!/bin/sh\necho fake\n")
+    p.chmod(0o755)
+    return p
+
+
+def _isolate_custom_dirs(tmp_path: Path, monkeypatch):
+    """Redirect both the cache and custom-install JSON files into tmp_path."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+
+def _mock_subprocess_kicad_version(monkeypatch, output: str = "KiCad version 9.0.5"):
+    """Make subprocess.run return a fake kicad-cli --version success."""
+    class _Proc:
+        def __init__(self, stdout: str):
+            self.stdout = stdout
+            self.stderr = ""
+            self.returncode = 0
+
+    def _fake_run(cmd, **kwargs):
+        return _Proc(output)
+
+    monkeypatch.setattr("kibrary_sidecar.kicad_install.subprocess.run", _fake_run)
+
+
+def test_register_custom_install_success(tmp_path: Path, monkeypatch):
+    """Happy path: pick a kicad-cli binary, get a custom install dict back."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    fake_cli = _fake_kicad_cli(tmp_path, "kicad-cli")
+    _mock_subprocess_kicad_version(monkeypatch, "KiCad version 9.0.5")
+
+    result = ki.register_custom_install(fake_cli)
+
+    install = result["install"]
+    assert install["type"] == "custom"
+    assert install["version"] == "9.0"
+    assert install["kicad_cli_bin"] == str(fake_cli)
+    # Companion `kicad` doesn't exist in tmp_path, so kicad_bin is None.
+    assert install["kicad_bin"] is None
+    assert install["id"].startswith("custom-")
+
+    # `all_installs` is the merged list — must contain our new custom entry.
+    ids = {i["id"] for i in result["all_installs"]}
+    assert install["id"] in ids
+
+
+def test_register_custom_install_finds_companion_kicad(tmp_path: Path, monkeypatch):
+    """If `kicad` is next to `kicad-cli`, the install dict picks it up."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    fake_cli = _fake_kicad_cli(tmp_path, "kicad-cli")
+    fake_kicad = _fake_kicad_cli(tmp_path, "kicad")
+    _mock_subprocess_kicad_version(monkeypatch, "KiCad version 9.0.5")
+
+    result = ki.register_custom_install(fake_cli)
+
+    assert result["install"]["kicad_bin"] == str(fake_kicad)
+    assert result["install"]["kicad_cli_bin"] == str(fake_cli)
+
+
+def test_register_custom_install_rejects_non_kicad_binary(tmp_path: Path, monkeypatch):
+    """A binary whose --version doesn't mention KiCad gets rejected with the
+    bogus output included in the error message."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+
+    fake_cli = _fake_kicad_cli(tmp_path, "python3")
+    _mock_subprocess_kicad_version(monkeypatch, "Python 3.12.0")
+
+    with pytest.raises(ValueError) as exc_info:
+        ki.register_custom_install(fake_cli)
+    assert "Python 3.12.0" in str(exc_info.value)
+
+
+def test_register_custom_install_rejects_missing_file(tmp_path: Path, monkeypatch):
+    """A path that doesn't exist on disk raises FileNotFoundError."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+    bogus = tmp_path / "nonexistent" / "kicad-cli"
+    with pytest.raises(FileNotFoundError):
+        ki.register_custom_install(bogus)
+
+
+def test_register_custom_install_rejects_non_executable(tmp_path: Path, monkeypatch):
+    """A file that exists but isn't executable raises PermissionError."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+
+    p = tmp_path / "kicad-cli"
+    p.write_text("not-executable")
+    p.chmod(0o644)
+
+    with pytest.raises(PermissionError):
+        ki.register_custom_install(p)
+
+
+def test_register_custom_install_persists_across_reload(tmp_path: Path, monkeypatch):
+    """After registration, cached_installs() includes the custom entry even
+    after the auto-detect cache is dropped."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    fake_cli = _fake_kicad_cli(tmp_path, "kicad-cli")
+    _mock_subprocess_kicad_version(monkeypatch, "KiCad version 9.0.5")
+
+    ki.register_custom_install(fake_cli)
+
+    # Drop the auto-detect cache so cached_installs() takes the
+    # "no cache → refresh" branch — custom installs must survive that.
+    cache_file = ki._cache_path()
+    if cache_file.is_file():
+        cache_file.unlink()
+
+    installs = ki.cached_installs()
+    custom_entries = [i for i in installs if i.get("type") == "custom"]
+    assert len(custom_entries) == 1
+    assert custom_entries[0]["kicad_cli_bin"] == str(fake_cli)
+
+
+def test_register_custom_install_replaces_same_path(tmp_path: Path, monkeypatch):
+    """Registering the same binary twice must not produce duplicate entries."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    fake_cli = _fake_kicad_cli(tmp_path, "kicad-cli")
+    _mock_subprocess_kicad_version(monkeypatch, "KiCad version 9.0.5")
+
+    ki.register_custom_install(fake_cli)
+    result = ki.register_custom_install(fake_cli)
+
+    custom_entries = [i for i in result["all_installs"] if i.get("type") == "custom"]
+    assert len(custom_entries) == 1
+    # And the persisted file holds exactly one entry too.
+    persisted = ki._read_custom_installs()
+    assert len(persisted) == 1
+    assert persisted[0]["kicad_cli_bin"] == str(fake_cli)
+
+
+def test_register_custom_install_two_different_paths_coexist(tmp_path: Path, monkeypatch):
+    """Two distinct binaries with the same version get unique ids (sha1
+    fallback) and both appear in all_installs."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    a_dir = tmp_path / "a"
+    b_dir = tmp_path / "b"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    cli_a = _fake_kicad_cli(a_dir, "kicad-cli")
+    cli_b = _fake_kicad_cli(b_dir, "kicad-cli")
+    _mock_subprocess_kicad_version(monkeypatch, "KiCad version 9.0.5")
+
+    ki.register_custom_install(cli_a)
+    result = ki.register_custom_install(cli_b)
+
+    custom_entries = [i for i in result["all_installs"] if i.get("type") == "custom"]
+    assert len(custom_entries) == 2
+    ids = {c["id"] for c in custom_entries}
+    assert len(ids) == 2  # distinct ids
+    paths = {c["kicad_cli_bin"] for c in custom_entries}
+    assert paths == {str(cli_a), str(cli_b)}
+
+
+def test_register_custom_install_accepts_kicad_launcher(tmp_path: Path, monkeypatch):
+    """Picking the `kicad` launcher (not kicad-cli) populates kicad_bin and
+    looks for kicad-cli as the companion."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    fake_kicad = _fake_kicad_cli(tmp_path, "kicad")
+    fake_cli = _fake_kicad_cli(tmp_path, "kicad-cli")
+    _mock_subprocess_kicad_version(monkeypatch, "KiCad 9.0.5 (release build)")
+
+    result = ki.register_custom_install(fake_kicad)
+
+    assert result["install"]["kicad_bin"] == str(fake_kicad)
+    assert result["install"]["kicad_cli_bin"] == str(fake_cli)
+
+
+def test_register_custom_install_uses_system_env(tmp_path: Path, monkeypatch):
+    """The probe must invoke subprocess.run with the scrubbed env so the
+    PyInstaller LD_LIBRARY_PATH leak (alpha.21) doesn't reappear."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    fake_cli = _fake_kicad_cli(tmp_path, "kicad-cli")
+
+    captured = {}
+
+    class _Proc:
+        stdout = "KiCad version 9.0.5"
+        stderr = ""
+        returncode = 0
+
+    def _fake_run(cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        captured["timeout"] = kwargs.get("timeout")
+        return _Proc()
+
+    monkeypatch.setattr("kibrary_sidecar.kicad_install.subprocess.run", _fake_run)
+
+    ki.register_custom_install(fake_cli)
+
+    # env must be a dict (not None — that would mean "inherit", which is the
+    # bug we're guarding against) and must NOT carry the PyInstaller marker.
+    assert isinstance(captured["env"], dict)
+    assert "LD_LIBRARY_PATH_ORIG" not in captured["env"]
+    # Timeout is set so a hung binary doesn't lock the sidecar.
+    assert captured["timeout"] is not None
+
+
+def test_register_custom_install_dict_shape_matches_detect(tmp_path: Path, monkeypatch):
+    """The custom install dict must carry the same keys as detect_installs()
+    so the frontend list-renderer doesn't have to special-case it."""
+    _isolate_custom_dirs(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    # Auto-detected reference dict
+    regular_base = tmp_path / ".config" / "kicad"
+    _make_kicad_config(regular_base, "9.0")
+    detected = ki.detect_installs()
+    assert detected, "fixture should produce one auto install"
+    expected_keys = set(detected[0].keys())
+
+    fake_cli = _fake_kicad_cli(tmp_path / "custom_bin_dir", "kicad-cli")
+    _mock_subprocess_kicad_version(monkeypatch, "KiCad version 9.0.5")
+
+    install = ki.register_custom_install(fake_cli)["install"]
+    assert set(install.keys()) == expected_keys

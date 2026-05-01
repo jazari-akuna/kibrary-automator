@@ -2,6 +2,20 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.28] — 2026-04-29
+
+### Fixed
+- **Settings dropdowns were STILL unreadable in dark mode** despite the alpha.26 global `<select>` / `<option>` CSS rules. WebKitGTK delegates the native `<option>` popup to GTK's combo widget, which respects the OS GTK theme and ignores page CSS — so the alpha.26 rules took on the closed-state `<select>` button but the popup itself still rendered with system colours. Replaced both Settings dropdowns (Theme picker, KiCad install picker) with a small custom Solid `<Dropdown>` component built from a `<button>` + portal-mounted `<div role="listbox">`. Now every option is a styled `<div>`, fully dark-mode aware, with keyboard nav (Up/Down/Enter/Esc) and outside-click close.
+
+### Added
+- **"Browse for your own…" KiCad install option.** The KiCad install dropdown gains an extra row at the bottom (and a fallback standalone Browse button when no install is auto-detected) that opens a Tauri file dialog (`@tauri-apps/plugin-dialog`'s `open()`), then calls a new sidecar method `kicad.register_custom_install` with the picked path. The sidecar validates the binary by running it with `--version`, parses the KiCad version string, locates the companion `kicad` launcher / eeschema / pcbnew binaries in the same directory, and persists the install in `~/.config/kibrary/kicad-custom-installs.json` (separate from the auto-detect cache so customs survive a refresh). On success the picker auto-selects the freshly registered install and toasts the install id; on rejection (binary doesn't exist, isn't executable, or doesn't look like KiCad) the rejection reason is surfaced verbatim in an error toast.
+
+### Notes
+- 11 new tests in `test_kicad_install.py` cover: success path, rejection of non-KiCad binaries, missing-file / non-executable rejections, persistence across reload, dedup by id and by `kicad_cli_bin` path, two same-version installs from different prefixes coexist, env-scrub via `_system_env()` (alpha.21 PyInstaller fix), and dict-shape parity with `detect_installs()`. Total sidecar test count: **237 passed**.
+- The new `<Dropdown>` is reusable: closed state is a focusable `<button>` carrying the trigger's `data-testid` (so the existing `kicad-install-select` smoke testid still resolves), open state is a portal-mounted listbox so it escapes any overflow-clipped ancestor.
+- Smoke probe `alpha.28 Settings dropdown contrast + browse-kicad`: forces dark mode, opens the theme dropdown, asserts `getComputedStyle(option).color !== getComputedStyle(option).backgroundColor` and that the panel background is not in the white range — locks in that the white-on-white regression cannot return. Also asserts `[data-testid="kicad-browse"]` resolves (the dialog itself is OS-modal so we don't actually click it).
+- 3D viewer perf research uncovered a clean 30 fps path (`kicad-cli pcb export glb` once + three.js + WebGL2 OrbitControls). That work is in flight on a parallel agent and will land separately as alpha.29 — design saved at `/tmp/3d-perf-proposal.md`.
+
 ## [26.4.27-alpha.27] — 2026-04-29
 
 ### Fixed

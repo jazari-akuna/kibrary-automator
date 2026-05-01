@@ -336,6 +336,19 @@ def kicad_set_active(p: dict) -> dict:
     return {"active": p.get("id")}
 
 
+def kicad_register_custom_install(p: dict) -> dict:
+    """Register a user-picked KiCad binary as a custom install.
+
+    Frontend hands us a path the user chose via the OS file dialog. We
+    validate, probe ``--version``, and persist the result so it shows up in
+    ``kicad.detect`` alongside auto-detected installs from now on.
+
+    Errors (FileNotFoundError, PermissionError, ValueError) bubble up as
+    JSON-RPC error responses; the frontend just toasts the message.
+    """
+    return kicad_install.register_custom_install(p["path"])
+
+
 def kicad_register_lib(p: dict) -> dict:
     install = p["install"]
     return kicad_register.register_library(install, p["lib_name"], Path(p["lib_dir"]))
@@ -794,6 +807,7 @@ REGISTRY = {
     "kicad.get_active": kicad_get_active,
     "kicad.set_active": kicad_set_active,
     "kicad.refresh": kicad_refresh,
+    "kicad.register_custom_install": kicad_register_custom_install,
     "kicad.register": kicad_register_lib,
     "kicad.unregister": kicad_unregister_lib,
     "kicad.list_registered": kicad_list_registered,

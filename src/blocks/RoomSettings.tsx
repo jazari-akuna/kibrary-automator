@@ -1,8 +1,11 @@
 import { createResource, createSignal, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { type Update } from '@tauri-apps/plugin-updater';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { theme, setTheme, type Theme } from '~/state/theme';
 import { checkForUpdate, downloadAndInstall, quitApp } from '~/api/updater';
+import { pushToast } from '~/state/toasts';
+import Dropdown from '~/blocks/Dropdown';
 
 interface Settings {
   theme: string;
@@ -76,7 +79,7 @@ function VersionsCard() {
 // KiCad versions side-by-side (e.g. flatpak + system) can choose.
 // ---------------------------------------------------------------------------
 function KiCadInstallCard() {
-  const [data, { refetch }] = createResource(() =>
+  const [data, { refetch, mutate }] = createResource(() =>
     invoke<{ installs: KiCadInstall[]; active: string | null }>('sidecar_call', {
       method: 'kicad.detect',
       params: {},
@@ -91,6 +94,50 @@ function KiCadInstallCard() {
     await refetch();
   };
 
+  // alpha.28: Browse for a custom KiCad install. Opens the OS file dialog,
+  // hands the picked path to the sidecar's `kicad.register_custom_install`
+  // method, and on success refreshes the install list with the newly
+  // registered install pre-selected.
+  const browseForInstall = async () => {
+    let picked: string | string[] | null;
+    try {
+      picked = await openDialog({
+        title: 'Select KiCad launcher binary',
+        multiple: false,
+        // Minimal filters — Linux binaries have no extension, Windows uses
+        // .exe, and macOS bundles a .app folder. Letting the user pick
+        // anything is friendlier than over-constraining the filter.
+        filters: [{ name: 'KiCad executable', extensions: ['*', 'exe', 'app'] }],
+      });
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      pushToast({ kind: 'error', message: `Couldn't open file dialog: ${reason}` });
+      return;
+    }
+    if (typeof picked !== 'string') return; // user cancelled
+
+    try {
+      const result = await invoke<{ install: KiCadInstall; all_installs: KiCadInstall[] }>(
+        'sidecar_call',
+        {
+          method: 'kicad.register_custom_install',
+          params: { path: picked },
+        },
+      );
+      // Optimistically update the cached resource so the dropdown shows the
+      // new install immediately, then refetch to stay in sync with sidecar.
+      mutate({ installs: result.all_installs, active: result.install.id });
+      pushToast({
+        kind: 'success',
+        message: `Registered KiCad install: ${result.install.id}`,
+      });
+      await refetch();
+    } catch (e: unknown) {
+      const reason = e instanceof Error ? e.message : String(e);
+      pushToast({ kind: 'error', message: `Couldn't register: ${reason}` });
+    }
+  };
+
   return (
     <div class="rounded border border-zinc-300 dark:border-zinc-700 p-3 space-y-2 text-sm">
       <h3 class="font-semibold mb-1">KiCad install</h3>
@@ -102,25 +149,36 @@ function KiCadInstallCard() {
       <Show
         when={data() && data()!.installs.length > 0}
         fallback={
-          <p class="text-amber-600 dark:text-amber-400" data-testid="kicad-none">
-            No KiCad install detected. Install KiCad and restart kibrary, or
-            point at a custom install location via the env file in your
-            workspace.
-          </p>
+          <div class="space-y-2">
+            <p class="text-amber-600 dark:text-amber-400" data-testid="kicad-none">
+              No KiCad install detected. Install KiCad and restart kibrary, or
+              browse for a custom install location.
+            </p>
+            <button
+              type="button"
+              data-testid="kicad-browse"
+              class="px-3 py-1 bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 rounded text-xs font-semibold"
+              onClick={browseForInstall}
+            >
+              Browse for your own…
+            </button>
+          </div>
         }
       >
-        <select
-          data-testid="kicad-install-select"
-          class="block bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded mt-1 w-full"
+        <Dropdown
+          testId="kicad-install-select"
           value={data()!.active ?? ''}
-          onChange={(e) => setActive(e.currentTarget.value)}
-        >
-          {data()!.installs.map((ins) => (
-            <option value={ins.id}>
-              {ins.type} {ins.version} ({ins.kicad_bin})
-            </option>
-          ))}
-        </select>
+          options={data()!.installs.map((ins) => ({
+            value: ins.id,
+            label: `${ins.type} ${ins.version} (${ins.kicad_bin})`,
+          }))}
+          onChange={(id) => setActive(id)}
+          extraItem={{
+            label: 'Browse for your own…',
+            onSelect: browseForInstall,
+            testId: 'kicad-browse',
+          }}
+        />
         <Show when={data()!.active}>
           <p class="text-xs text-zinc-500 dark:text-zinc-500 font-mono break-all">
             sym-lib-table: {data()!.installs.find((i) => i.id === data()!.active)?.sym_table}
@@ -276,11 +334,15 @@ export default function RoomSettings() {
           <h2 class="text-xl">Settings</h2>
           <label class="block">
             <span class="text-sm">Theme</span>
-            <select value={theme()} onChange={(e) => setTheme(e.currentTarget.value as Theme)}
-              class="block bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded mt-1">
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-            </select>
+            <Dropdown<Theme>
+              testId="theme-select"
+              value={theme()}
+              options={[
+                { value: 'light', label: 'Light' },
+                { value: 'dark', label: 'Dark' },
+              ]}
+              onChange={(v) => setTheme(v)}
+            />
           </label>
           <label class="block">
             <span class="text-sm text-zinc-600 dark:text-zinc-400">Concurrency</span>
