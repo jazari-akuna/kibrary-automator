@@ -1197,17 +1197,136 @@ async function main() {
     log('✅ alpha.24 Open-datasheet enables on https URL + reflects URL in title');
 
     // ---------------------------------------------------------------------
-    // 11d-bis. alpha.25: interactive 3D viewer + jog dial probes.
-    //   1) viewer-mounts          — canvas + img mounted, src is a PNG data URL
-    //   2) jog-x-plus             — clicking the +X outer wedge bumps offset.x
-    //                               by 1.0mm in the positioner input
-    //   3) jog-x-rerender         — clicking +Y inner wedge changes the img.src
-    //   4) drag-orbit-rerender    — synthetic mousedown/move/up on the canvas
-    //                               reorbits and re-renders
-    //   5) jog-z-plus             — +Z 0.1mm button bumps offset.z by 0.1
+    // 11d-bis. alpha.25/26/27 + alpha.28 — interactive 3D viewer probes.
+    //
+    // alpha.28 introduces the WebGL2 / three.js viewer
+    // (Model3DViewerGL.tsx) alongside the existing PNG fallback. When
+    // WebGL2 is available, Model3DPreview prefers the GL viewer; when it
+    // isn't, it falls back to the PNG path. The smoke harness picks the
+    // right branch by querying the GL canvas testid first — that's the
+    // only reliable signal because the PNG canvas testid stays stable
+    // across both viewers.
     // ---------------------------------------------------------------------
-    log('alpha.25: interactive 3D viewer + jog dial probes');
+    log('alpha.25/26/27/28: interactive 3D viewer probes (auto-select GL or PNG branch)');
 
+    // Probe-zero: is the WebGL2 viewer mounted? Wait briefly for either
+    // testid to land — Model3DPreview defaults to the GL viewer and only
+    // flips to PNG via onWebGLError.
+    const viewerKind = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      var deadline = Date.now() + 5000;
+      (async function poll(){
+        while (Date.now() < deadline) {
+          var gl = document.querySelector('[data-testid="3d-viewer-gl-canvas"]');
+          var glErr = document.querySelector('[data-testid="3d-viewer-gl-error"]');
+          var png = document.querySelector('[data-testid="3d-viewer-canvas"]');
+          if (gl) { done({kind:'gl'}); return; }
+          if (glErr || png) { done({kind:'png'}); return; }
+          await new Promise(function(r){ setTimeout(r, 200); });
+        }
+        done({kind:'none'});
+      })();
+    `);
+    log(`  viewer-kind: ${JSON.stringify(viewerKind)}`);
+
+    if (viewerKind?.kind === 'gl') {
+      // -----------------------------------------------------------------
+      // alpha.28 GL probes:
+      //   (G1) glcanvas-mounts        — canvas + non-zero WebGL2 context.
+      //   (G2) glb-loaded             — scene.children grows after load
+      //                                  (GLTFLoader landed the model).
+      //   (G3) orbit-no-sidecar-call  — synthetic drag does NOT trigger
+      //                                  any new library.render_3d_glb_angled
+      //                                  invocations.
+      // -----------------------------------------------------------------
+      log('alpha.28: WebGL2 viewer probes');
+
+      // (G1) Canvas mounts and exposes a working WebGL2 context.
+      const glMount = await execAsync(sid, `
+        var done = arguments[arguments.length - 1];
+        var canvas = document.querySelector('[data-testid="3d-viewer-gl-canvas"]');
+        if (!canvas) { done({ok:false, reason:'gl canvas missing'}); return; }
+        var gl = canvas.getContext('webgl2');
+        if (!gl) { done({ok:false, reason:'webgl2 ctx null'}); return; }
+        done({
+          ok:true,
+          drawingBufferWidth: gl.drawingBufferWidth,
+          drawingBufferHeight: gl.drawingBufferHeight,
+        });
+      `);
+      log(`  glcanvas-mounts: ${JSON.stringify(glMount)}`);
+      if (!glMount?.ok) throw new Error(`alpha.28 glcanvas-mounts failed: ${glMount?.reason}`);
+      if (!(glMount.drawingBufferWidth > 0 && glMount.drawingBufferHeight > 0)) {
+        throw new Error(`alpha.28 WebGL2 drawing buffer is zero-sized: ${JSON.stringify(glMount)}`);
+      }
+
+      // (G2) GLB-loaded: poll until scene.children grows past the
+      //      lights-only baseline (ambient + directional = 2). The
+      //      Model3DViewerGL exposes the Scene on window.__model3dGLScene.
+      const glbLoaded = await execAsync(sid, `
+        var done = arguments[arguments.length - 1];
+        var n0 = (window.__model3dGLScene && window.__model3dGLScene.children.length) || 0;
+        var deadline = Date.now() + 30000;
+        (async function poll(){
+          while (Date.now() < deadline) {
+            await new Promise(function(r){ setTimeout(r, 250); });
+            var s = window.__model3dGLScene;
+            if (s && s.children.length > n0) {
+              done({ok:true, before:n0, after:s.children.length});
+              return;
+            }
+          }
+          var sf = window.__model3dGLScene;
+          done({ok:false, reason:'glb never landed in scene', before:n0,
+                 after: sf ? sf.children.length : -1});
+        })();
+      `);
+      log(`  glb-loaded: ${JSON.stringify(glbLoaded)}`);
+      if (!glbLoaded?.ok) throw new Error(`alpha.28 glb-loaded failed: ${glbLoaded?.reason}`);
+
+      // (G3) Drag-orbit must not trigger any sidecar render calls. We
+      //      count `library.render_3d_glb_angled` invocations via the
+      //      __model3dGLLoadCount counter the viewer increments before
+      //      each fetch. Synthesise a drag and assert the counter
+      //      didn't move.
+      const orbitNoSidecar = await execAsync(sid, `
+        var done = arguments[arguments.length - 1];
+        var canvas = document.querySelector('[data-testid="3d-viewer-gl-canvas"]');
+        if (!canvas) { done({ok:false, reason:'no gl canvas'}); return; }
+        var before = window.__model3dGLLoadCount || 0;
+        var rect = canvas.getBoundingClientRect();
+        function evt(type, dx, dy) {
+          return new MouseEvent(type, {
+            bubbles: true, cancelable: true, button: 0,
+            clientX: rect.left + dx, clientY: rect.top + dy,
+          });
+        }
+        canvas.dispatchEvent(evt('mousedown', 50, 50));
+        canvas.dispatchEvent(evt('mousemove', 110, 50));
+        canvas.dispatchEvent(evt('mousemove', 200, 80));
+        canvas.dispatchEvent(evt('mouseup', 200, 80));
+        // Give any racing sidecar call up to 1s to surface, then check.
+        setTimeout(function(){
+          var after = window.__model3dGLLoadCount || 0;
+          done({ok: after === before, before: before, after: after});
+        }, 1000);
+      `);
+      log(`  orbit-no-sidecar-call: ${JSON.stringify(orbitNoSidecar)}`);
+      if (!orbitNoSidecar?.ok) {
+        throw new Error(
+          `alpha.28 orbit-no-sidecar-call: drag triggered sidecar render ` +
+          `(${orbitNoSidecar?.before} → ${orbitNoSidecar?.after})`
+        );
+      }
+      log('✅ alpha.28 WebGL2 viewer mounts, GLB landed in scene, orbit is sidecar-free');
+    }
+
+    // The PNG-fallback probes below only run when WebGL2 is absent —
+    // the GL viewer mounts a different testid set, so the probes would
+    // never find a 3d-viewer-canvas / 3d-viewer-img. Gate at the top so
+    // the existing probe code stays verbatim.
+    const runPngProbes = viewerKind?.kind !== 'gl';
+    if (runPngProbes) {
     // (1) Viewer mounts.
     const viewerMount = await execAsync(sid, `
       var done = arguments[arguments.length - 1];
@@ -1555,6 +1674,7 @@ async function main() {
     log(`  rerender result: ${JSON.stringify(rerenderResult)}`);
     if (!rerenderResult?.ok) throw new Error(`alpha.23 3D rerender after offset save did not happen: ${rerenderResult?.reason}`);
     log(`✅ alpha.23 3D PNG re-renders on positioner save (rot Z=${rerenderResult.newRot}, src bytes ${rerenderResult.beforeLen}→${rerenderResult.afterLen})`);
+    } // end runPngProbes — alpha.25/26/27 + alpha.23-rerender PNG-only block
 
     // ---------------------------------------------------------------------
     // 12. alpha.18 fuzzy library_suggest — when an existing lib resembles

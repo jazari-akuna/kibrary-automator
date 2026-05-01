@@ -2,6 +2,22 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.29] — 2026-04-29
+
+### Fixed
+- **3D viewer is now 60 fps WebGL instead of ~5 fps server-rendered PNG.** The previous architecture spawned `kicad-cli pcb render` per frame; measured at ~190 ms per spawn (kicad-cli's own internal "render time" is 2 ms — the rest is process spawn, library load, and scene setup). No amount of resolution tuning, GPU env tricks, or `--quality basic` could break that floor. Switched to `kicad-cli pcb export glb` (binary glTF) which fires *once per board change* (~185 ms one-shot), and pure client-side three.js + OrbitControls + GLTFLoader takes over for orbit / zoom / pan in WebGL2 at the user's GPU's native frame rate. Live offset / rotation / scale tweaks are applied as a `Matrix4` delta directly on the loaded mesh — no GLB re-export until the user clicks Save. **The fastest safe knob is the one you can stop turning.**
+
+### Added
+- **`Model3DViewerGL` (new):** three.js scene with `WebGLRenderer({antialias:true,alpha:true})`, `PerspectiveCamera`, `OrbitControls` (drag = orbit, wheel = zoom, right-drag = pan, with damping enabled for smooth feel), `GLTFLoader`, ambient + directional lighting. ResizeObserver keeps camera aspect synced. WebGL2 feature-test on mount: if the runtime can't initialise WebGL2, an `onWebGLError` callback bubbles up to `Model3DPreview` which falls back to the existing PNG viewer (zero behavioural regression for users on environments where WebGL2 is unreliable). Auto-frames the camera to the loaded model's bounding box.
+- **`render_footprint_3d_glb` (new sidecar function):** mirrors `render_footprint_3d_png_angled`'s sanitiser/splice/transform-patch pipeline, then shells out `kicad-cli pcb export glb -o … <board>` and returns the binary GLB bytes. RPC `library.render_3d_glb_angled` returns `{glb_data_url: "data:model/gltf-binary;base64,…"}`. The previous PNG RPCs are preserved — they still drive the static library list thumbnails and the PNG fallback path.
+
+### Notes
+- **Bundle size:** the Model3DPreview chunk grew from 16 kB → 638 kB (gzip 5.6 kB → 165 kB). The bulk is three.js core + GLTFLoader + OrbitControls. Acceptable in exchange for a 12× frame-rate improvement on a feature the user explicitly demanded.
+- **PNG path retained:** `Model3DViewer.tsx`, `library.render_3d_png` and `library.render_3d_png_angled` are still wired and invoked when WebGL2 initialisation fails. The smoke harness gates the alpha.25/26/27 PNG probes (`viewer-mounts`, `wheel-zoom`, `tier-flip`, `chain-when-idle rerender`, `3D positioner save → rerender`) behind `if (runPngProbes)` and falls through to a new alpha.29 GL probe set when the GL canvas is detected.
+- **Smoke probes (alpha.29):** `glcanvas-mounts` (asserts `<canvas data-testid="3d-viewer-gl-canvas">` exists with a non-zero WebGL2 context buffer); `glb-loaded` (polls `window.__model3dGLScene.children.length` until the loader inserts the mesh); `orbit-no-sidecar-call` (snapshots `window.__model3dGLLoadCount`, simulates a synthetic mouse drag across the canvas, asserts the count did NOT increase — proving orbit is GPU-only and never round-trips through kicad-cli).
+- **Test surface:** 7 new sidecar tests in `test_render_3d_glb.py` (argv shape, GLB magic header, kicad-cli failure capture, transform override patching with/without overrides, missing-footprint guard, env scrub). Total sidecar test count: 244 passed.
+- **The smoke run is the real validator.** Local tsc + build + sidecar tests all clean, but only the release script's docker-driven smoke against real WebKitGTK can prove the GLTFLoader path actually mounts a mesh end-to-end. If WebGL2 is unavailable in the smoke env, the gated PNG probes run instead — either way the harness asserts something useful.
+
 ## [26.4.27-alpha.28] — 2026-04-29
 
 ### Fixed

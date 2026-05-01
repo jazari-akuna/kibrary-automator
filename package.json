@@ -1,7 +1,7 @@
 {
   "name": "kibrary",
   "private": true,
-  "version": "26.4.27-alpha.28",
+  "version": "26.4.27-alpha.29",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -25,7 +25,8 @@
     "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2",
-    "solid-js": "^1.9.0"
+    "solid-js": "^1.9.0",
+    "three": "^0.184.0"
   },
   "bundledAssets": {
     "kicanvas": "https://kicanvas.org/kicanvas/kicanvas.js (bundled in public/kicanvas.js — not on npm)"
@@ -34,6 +35,7 @@
     "@playwright/test": "^1.48.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/node": "^22.0.0",
+    "@types/three": "^0.184.0",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.0.0",
     "postcss": "^8.4.47",

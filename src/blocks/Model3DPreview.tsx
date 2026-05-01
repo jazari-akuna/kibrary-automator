@@ -24,6 +24,7 @@ import { currentWorkspace } from '~/state/workspace';
 import { pushToast } from '~/state/toasts';
 import Model3DPositioner from '~/blocks/Model3DPositioner';
 import Model3DViewer from '~/blocks/Model3DViewer';
+import Model3DViewerGL from '~/blocks/Model3DViewerGL';
 import Model3DJogDial from '~/blocks/Model3DJogDial';
 import Model3DJogZ from '~/blocks/Model3DJogZ';
 
@@ -110,6 +111,12 @@ export default function Model3DPreview(props: Props) {
       setLiveScale(m.scale);
     }
   });
+
+  // alpha.28: prefer the WebGL2 / three.js viewer (60+ fps interactive
+  // GLB render). If WebGL2 init fails (older WebKitGTK builds), the GL
+  // viewer surfaces an `onWebGLError` callback and we fall back to the
+  // existing PNG viewer (kicad-cli pcb render per frame).
+  const [useGL, setUseGL] = createSignal(true);
 
   // --------------------------------------------------------------------------
   // Handlers
@@ -224,14 +231,32 @@ export default function Model3DPreview(props: Props) {
                 </Show>
               }
             >
-              <Model3DViewer
-                libDir={props.libDir!}
-                componentName={props.componentName!}
-                offset={liveOffset()}
-                rotation={liveRotation()}
-                scale={liveScale()}
-                savedRev={savedRev()}
-              />
+              <Show
+                when={useGL()}
+                fallback={
+                  <Model3DViewer
+                    libDir={props.libDir!}
+                    componentName={props.componentName!}
+                    offset={liveOffset()}
+                    rotation={liveRotation()}
+                    scale={liveScale()}
+                    savedRev={savedRev()}
+                  />
+                }
+              >
+                <Model3DViewerGL
+                  libDir={props.libDir!}
+                  componentName={props.componentName!}
+                  offset={liveOffset()}
+                  rotation={liveRotation()}
+                  scale={liveScale()}
+                  savedRev={savedRev()}
+                  onWebGLError={(reason) => {
+                    console.warn('[3D viewer] WebGL2 unavailable; falling back to PNG renderer:', reason);
+                    setUseGL(false);
+                  }}
+                />
+              </Show>
               <div class="flex items-start justify-center gap-3 pt-2">
                 <Model3DJogDial
                   onJog={(axis, amount) => setJogDelta({ axis, amount })}

@@ -659,6 +659,44 @@ def library_render_3d_png_angled(p: dict) -> dict:
     return {"png_data_url": f"data:image/png;base64,{b64}"}
 
 
+def library_render_3d_glb_angled(p: dict) -> dict:
+    """alpha.28: GLB-based variant of ``library.render_3d_png_angled``.
+
+    Renders the spliced board to a binary glTF (GLB) via
+    ``kicad-cli pcb export glb`` and returns it as a base64 data URL the
+    frontend can hand to three.js's ``GLTFLoader.parse``. The camera lives
+    in the browser now (three.js + OrbitControls), so this RPC takes no
+    azimuth/elevation/zoom/width/height — only the transform-override
+    inputs (offset/rotation/scale) for the live-preview path.
+
+    Compared to the PNG path:
+
+    * ~185 ms one-time cost per board (same kicad-cli spawn floor) instead
+      of ~200 ms PER FRAME.
+    * Once loaded, three.js renders + orbits + zooms at 60+ fps in pure
+      WebGL — no further sidecar calls until the user commits a transform
+      change (Save button).
+    """
+    from kibrary_sidecar import lib_scanner, render_3d_glb
+    import base64
+    lib_dir = Path(p["lib_dir"])
+    component_name = p["component_name"]
+    fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
+    if fp_path is None:
+        raise FileNotFoundError(
+            f"No .kicad_mod for symbol {component_name!r} in {lib_dir}"
+        )
+    glb_bytes = render_3d_glb.render_footprint_3d_glb(
+        lib_dir=lib_dir,
+        footprint_file=fp_path,
+        offset=tuple(p["offset"]) if "offset" in p else None,
+        rotation=tuple(p["rotation"]) if "rotation" in p else None,
+        scale=tuple(p["scale"]) if "scale" in p else None,
+    )
+    b64 = base64.b64encode(glb_bytes).decode("ascii")
+    return {"glb_data_url": f"data:model/gltf-binary;base64,{b64}"}
+
+
 def library_set_3d_offset(p: dict) -> dict:
     """Update the offset / rotation / scale of the first 3D model block in
     a committed component's ``.kicad_mod``."""
@@ -793,6 +831,7 @@ REGISTRY = {
     "library.write_props": library_write_props,
     "library.render_3d_png": library_render_3d_png,
     "library.render_3d_png_angled": library_render_3d_png_angled,
+    "library.render_3d_glb_angled": library_render_3d_glb_angled,
     "parts.delete_staged": parts_delete_staged,
     "parts.read_props": parts_read_props,
     "parts.write_props": parts_write_props,
