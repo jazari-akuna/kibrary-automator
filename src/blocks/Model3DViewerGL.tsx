@@ -255,6 +255,50 @@ export default function Model3DViewerGL(props: Props) {
 
           loadedRoot = gltf.scene;
           loadedRootBaseMatrix = loadedRoot.matrix.clone();
+
+          // alpha.31 material fix-up — kicad-cli's GLB output uses two
+          // PBR encodings that GLTFLoader handles per-spec but render
+          // unusable in our scene. Patch them on every successful load
+          // BEFORE attaching the root so the very first frame is correct.
+          //
+          //   (1) PCB substrate + soldermask come through as
+          //       alphaMode: BLEND with opacity ≈ 0.83–0.90. GLTFLoader
+          //       sets transparent=true, depthWrite=false → deeper
+          //       geometry leaks through closer pixels and the dim
+          //       blend against the dark backdrop reads as muddy/wrong.
+          //       For ≥ 0.7 opacity it's a kicad-cli artifact, not real
+          //       transparency — force the material opaque.
+          //
+          //   (2) OCCT-exported STEP bodies (IC packages) come through
+          //       as metalness=1.0 baseColorFactor=(0.5,0.5,0.5) with no
+          //       metalnessMap. That's an OCCT default for "unknown
+          //       shading", not a real metallic intent: a fully metallic
+          //       surface has zero diffuse so without IBL it renders
+          //       black, with IBL it renders chrome. Demote to matte
+          //       plastic.
+          gltf.scene.traverse((obj) => {
+            const mesh = obj as THREE.Mesh;
+            if (!(mesh as THREE.Mesh).isMesh || !mesh.material) return;
+            const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            for (const m of mats) {
+              const std = m as THREE.MeshStandardMaterial;
+
+              if (std.transparent && std.opacity >= 0.7) {
+                std.transparent = false;
+                std.depthWrite = true;
+                std.opacity = 1;
+                std.alphaTest = 0;
+                std.needsUpdate = true;
+              }
+
+              if (std.metalness !== undefined && std.metalness > 0.9 && !std.metalnessMap) {
+                std.metalness = 0.1;
+                std.roughness = Math.max(std.roughness ?? 0.5, 0.6);
+                std.needsUpdate = true;
+              }
+            }
+          });
+
           scene.add(loadedRoot);
 
           // Apply any pending live delta (props may have changed since

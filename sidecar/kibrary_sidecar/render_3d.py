@@ -192,10 +192,7 @@ def _sanitise_footprint(
             f'(layer "{canonical}")',
             text,
         )
-    text = _MODEL_PATH_RE.sub(
-        lambda m: m.group(1) + '"' + _resolve_model_path(m.group(2), lib_dir) + '"',
-        text,
-    )
+    text = _rewrite_or_strip_model_blocks(text, lib_dir)
     if (
         override_offset is not None
         and override_rotation is not None
@@ -205,6 +202,102 @@ def _sanitise_footprint(
             text, override_offset, override_rotation, override_scale
         )
     return text
+
+
+def _rewrite_or_strip_model_blocks(text: str, lib_dir: Path) -> str:
+    """Rewrite each ``(model …)`` path to absolute, OR strip the whole
+    block when the resolved path doesn't exist on disk.
+
+    Stripping is the safe choice: ``kicad-cli pcb export glb`` silently
+    drops a missing-file 3D model and emits a board-plane-only GLB with
+    exit 0 (see :func:`_resolve_model_path` docstring). By removing the
+    block here we give kicad-cli nothing to fail on, AND the call site
+    can decide independently whether to warn the user about the missing
+    .step.
+
+    Uses a paren-depth scanner because nested S-exprs (``(offset …)``,
+    ``(scale …)``, ``(rotate …)``) can't be balanced with a flat regex.
+    """
+    out_parts: list[str] = []
+    i = 0
+    while i < len(text):
+        match = _MODEL_PATH_RE.search(text, i)
+        if match is None:
+            out_parts.append(text[i:])
+            break
+        # group(1) is "(model "; the opening paren is its first char.
+        block_start = match.start(1)
+        # Sanity: the matched prefix MUST start with '('. If the regex
+        # ever changes shape, abort cleanly rather than corrupt input.
+        if text[block_start] != "(":  # pragma: no cover - defensive
+            out_parts.append(text[i:match.end(2)])
+            i = match.end(2)
+            continue
+        out_parts.append(text[i:block_start])
+
+        # Walk the (model …) block to its closing paren.
+        depth = 0
+        end = block_start
+        for j in range(block_start, len(text)):
+            ch = text[j]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = j + 1
+                    break
+        else:
+            # Unbalanced — emit as-is and stop scanning.
+            out_parts.append(text[block_start:])
+            i = len(text)
+            break
+
+        resolved = _resolve_model_path(match.group(2), lib_dir)
+        if resolved is None:
+            log.warning(
+                "render_3d: stripping (model …) block — file not found "
+                "on disk for token %r (lib_dir=%s). kicad-cli would "
+                "silently drop this model and produce an empty-board GLB.",
+                match.group(2), lib_dir,
+            )
+            # Skip the entire block. Also swallow the trailing newline +
+            # leading whitespace if present so we don't leave a blank line.
+            while end < len(text) and text[end] in " \t":
+                end += 1
+            if end < len(text) and text[end] == "\n":
+                end += 1
+            i = end
+            continue
+
+        # Rewrite the path token in-place inside the block.
+        block = text[block_start:end]
+        prefix_in_block = match.group(1)  # "(model "
+        new_block = block.replace(
+            prefix_in_block + match.group(2),
+            prefix_in_block + '"' + resolved + '"',
+            1,
+        )
+        out_parts.append(new_block)
+        i = end
+
+    return "".join(out_parts)
+
+
+def footprint_has_model_block(footprint_file: Path) -> bool:
+    """Return True iff the .kicad_mod source contains any ``(model …)``.
+
+    Used by the GLB renderer to decide whether kicad-cli's ``Could not
+    add 3D model`` stderr line is a hard failure (we expected a model
+    and kicad-cli silently dropped it) or just a benign no-op (the
+    sanitiser stripped the block because the .step was missing, so
+    there's nothing for kicad-cli to drop).
+    """
+    try:
+        text = footprint_file.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return _MODEL_PATH_RE.search(text) is not None
 
 
 def _patch_model_transform(
@@ -347,11 +440,21 @@ def render_footprint_3d_png_angled(
             )
 
 
-def _resolve_model_path(raw: str, lib_dir: Path) -> str:
+def _resolve_model_path(raw: str, lib_dir: Path) -> str | None:
     """Turn a ``(model …)`` path argument into an absolute filesystem path.
 
     Accepts the path token as kicad-cli sees it (quoted or bare) and
     returns just the resolved string (no surrounding quotes).
+
+    Returns ``None`` when no candidate path exists on disk. The caller
+    (:func:`_sanitise_footprint`) interprets that as "strip the entire
+    ``(model …)`` block", because ``kicad-cli pcb export glb`` SILENTLY
+    DROPS missing-file 3D models (returncode=0, stderr ``Could not add
+    3D model``) — leaving a GLB that contains only the PCB plane. The
+    user then sees an empty board with no chip body. By stripping the
+    block ahead of time we get a deterministic degraded-but-functional
+    GLB, and the GLB-render shell-out can additionally raise loudly if
+    it ever sees the silent-drop pattern in stderr.
 
     Resolution rules
     ----------------
@@ -359,7 +462,8 @@ def _resolve_model_path(raw: str, lib_dir: Path) -> str:
     * ``./foo.step`` or ``foo.step`` (staging form) → ``<lib_dir>/<lcsc>.3dshapes/foo.step``
       (we look for any ``*.3dshapes`` dir under lib_dir and pick the first
       that contains ``foo.step``)
-    * Already-absolute paths pass through unchanged.
+    * Already-absolute paths pass through if they exist on disk.
+    * If no candidate exists, returns ``None``.
     """
     raw = raw.strip().strip('"').strip("'")
     ksl_root = str(lib_dir.parent)
@@ -367,7 +471,9 @@ def _resolve_model_path(raw: str, lib_dir: Path) -> str:
 
     p = Path(expanded)
     if p.is_absolute():
-        return str(p)
+        if p.is_file():
+            return str(p)
+        return None
 
     bare = expanded.lstrip("./").lstrip(".\\")
     bare_name = Path(bare).name
@@ -377,7 +483,15 @@ def _resolve_model_path(raw: str, lib_dir: Path) -> str:
         if cand.is_file():
             return str(cand)
 
-    return str((lib_dir / bare).resolve())
+    # Final fallback: lib_dir/<bare> as a literal sibling, but only if
+    # it actually exists. The pre-fix code unconditionally returned this
+    # path, which let a missing-file (model …) reach kicad-cli — which
+    # then silently dropped the body and produced an empty-board GLB.
+    fallback = (lib_dir / bare).resolve()
+    if fallback.is_file():
+        return str(fallback)
+
+    return None
 
 
 def _splice_into_template(footprint_text: str) -> str:

@@ -1346,6 +1346,42 @@ async function main() {
           `(${orbitNoSidecar?.before} → ${orbitNoSidecar?.after})`
         );
       }
+
+      // (G4) alpha.31 material-fixup — verify the post-load traversal
+      //      patched away kicad-cli's two bogus PBR encodings:
+      //        * near-opaque (≥ 0.7) materials must NOT be transparent
+      //          (board substrate + soldermask false-positives).
+      //        * fully metallic materials with no metalnessMap must NOT
+      //          remain at metalness > 0.9 (OCCT default → chrome IC body).
+      //      If a future change drops the traversal, the bogus counters
+      //      become non-zero and smoke fails.
+      const materialsFixed = await execAsync(sid, `
+        var done = arguments[arguments.length - 1];
+        var s = window.__model3dGLScene;
+        if (!s) { done({ok:false, reason:'no scene'}); return; }
+        var bogusMetal = 0, leftoverTransparent = 0, total = 0;
+        s.traverse(function(o){
+          if (!o.isMesh || !o.material) return;
+          var mats = Array.isArray(o.material) ? o.material : [o.material];
+          mats.forEach(function(m){
+            total++;
+            // After our fix: no near-opaque material should still be transparent,
+            // and no material should still be 100% metallic (without a map).
+            if (m.transparent && m.opacity >= 0.7) leftoverTransparent++;
+            if (m.metalness !== undefined && m.metalness > 0.9 && !m.metalnessMap) bogusMetal++;
+          });
+        });
+        done({ok: bogusMetal === 0 && leftoverTransparent === 0,
+              bogusMetal: bogusMetal, leftoverTransparent: leftoverTransparent, total: total});
+      `);
+      log(`  alpha.31 material-fixup: ${JSON.stringify(materialsFixed)}`);
+      if (!materialsFixed?.ok) {
+        throw new Error(
+          `alpha.31 material fixup did not run: bogusMetal=${materialsFixed?.bogusMetal} ` +
+          `leftoverTransparent=${materialsFixed?.leftoverTransparent} of ${materialsFixed?.total} materials`
+        );
+      }
+
       log('✅ alpha.28 WebGL2 viewer mounts, GLB landed in scene, orbit is sidecar-free');
     }
 

@@ -297,6 +297,122 @@ def test_template_outline_is_centered_at_origin():
 # top-level paren depth must still balance to zero.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Test 12: _resolve_model_path returns None when no candidate file exists
+# anywhere on disk. Pre-fix this would silently fall through to
+# `(lib_dir / bare).resolve()` and hand kicad-cli a path that doesn't
+# exist — kicad-cli then exits 0 but emits a board-only GLB (the alpha.31
+# empty-board bug). With the fix, the resolver returns None so the
+# sanitiser can strip the (model …) block before kicad-cli ever sees it.
+# ---------------------------------------------------------------------------
+
+def test_resolve_model_path_returns_none_when_no_candidate_exists(tmp_path: Path):
+    lib_dir = tmp_path / "MissingPart"
+    (lib_dir / "MissingPart.3dshapes").mkdir(parents=True)
+    # Note: NO .step file written — every candidate path will miss.
+
+    # Staging form (./foo.step) → glob-based lookup misses.
+    assert render_3d._resolve_model_path("./missing.step", lib_dir) is None
+    assert render_3d._resolve_model_path("missing.step", lib_dir) is None
+    # ${KSL_ROOT} form pointing at a non-existent file under a sibling dir.
+    raw = "${KSL_ROOT}/MissingPart/MissingPart.3dshapes/missing.step"
+    assert render_3d._resolve_model_path(raw, lib_dir) is None
+    # Already-absolute path that doesn't exist.
+    abs_missing = str(tmp_path / "nope" / "missing.step")
+    assert render_3d._resolve_model_path(abs_missing, lib_dir) is None
+
+
+# ---------------------------------------------------------------------------
+# Test 13: _resolve_model_path returns the absolute path when the file IS
+# present (regression guard — the existence check must NOT short-circuit
+# the happy path).
+# ---------------------------------------------------------------------------
+
+def test_resolve_model_path_returns_path_when_candidate_exists(tmp_path: Path):
+    lib_dir = tmp_path / "FoundPart"
+    shapes = lib_dir / "FoundPart.3dshapes"
+    shapes.mkdir(parents=True)
+    step = shapes / "FoundPart.step"
+    step.write_text("FAKE_STEP", encoding="utf-8")
+
+    # Staging form resolves via the *.3dshapes glob.
+    assert render_3d._resolve_model_path("./FoundPart.step", lib_dir) == str(step)
+    # ${KSL_ROOT} form resolves to absolute and that absolute exists.
+    raw = "${KSL_ROOT}/FoundPart/FoundPart.3dshapes/FoundPart.step"
+    assert render_3d._resolve_model_path(raw, lib_dir) == str(step)
+
+
+# ---------------------------------------------------------------------------
+# Test 14: when _resolve_model_path returns None, the sanitiser strips
+# the entire (model …) block from the spliced board. kicad-cli sees no
+# 3D model reference at all — instead of seeing a broken one and emitting
+# a misleading "exit 0, board-only GLB" combo.
+# ---------------------------------------------------------------------------
+
+def test_sanitiser_strips_model_block_when_path_unresolvable(tmp_path: Path):
+    lib_dir = tmp_path / "Stripped"
+    pretty = lib_dir / "Stripped.pretty"
+    pretty.mkdir(parents=True)
+    # Note: NO .3dshapes/ at all → every model-path candidate misses.
+    mod = pretty / "X.kicad_mod"
+    mod.write_text(
+        '(footprint "X" (layer "F.Cu")\n'
+        '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))\n'
+        '  (model "${KSL_ROOT}/Stripped/Stripped.3dshapes/X.step"\n'
+        '    (offset (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0))\n'
+        '  )\n'
+        ')\n',
+        encoding="utf-8",
+    )
+
+    sanitised = render_3d._sanitise_footprint(mod, lib_dir)
+    # Whole (model …) block is gone — kicad-cli won't try to load it.
+    assert "(model" not in sanitised, (
+        f"expected (model …) block to be stripped, got:\n{sanitised}"
+    )
+    # The rest of the footprint must survive intact.
+    assert '(footprint "X"' in sanitised
+    assert '(pad "1"' in sanitised
+    # Paren balance still holds.
+    depth = 0
+    in_str = False
+    for ch in sanitised:
+        if ch == '"':
+            in_str = not in_str
+        elif not in_str:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                assert depth >= 0
+    assert depth == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 15: footprint_has_model_block predicate — used by the GLB renderer
+# to decide whether kicad-cli's "Could not add 3D model" stderr is a hard
+# failure (model expected) or benign (no model expected).
+# ---------------------------------------------------------------------------
+
+def test_footprint_has_model_block_predicate(tmp_path: Path):
+    with_model = tmp_path / "with.kicad_mod"
+    with_model.write_text(
+        '(footprint "Y" (layer "F.Cu")\n'
+        '  (model "foo.step" (offset (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0)))\n'
+        ')\n',
+        encoding="utf-8",
+    )
+    without_model = tmp_path / "without.kicad_mod"
+    without_model.write_text(
+        '(footprint "Z" (layer "F.Cu")\n'
+        '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))\n'
+        ')\n',
+        encoding="utf-8",
+    )
+    assert render_3d.footprint_has_model_block(with_model) is True
+    assert render_3d.footprint_has_model_block(without_model) is False
+
+
 def test_spliced_board_keeps_edge_cuts_outline(tmp_path: Path):
     lib_dir, mod = _make_sample_kicad_mod(tmp_path, name="OutlineProbe")
     out_png = tmp_path / "out.png"

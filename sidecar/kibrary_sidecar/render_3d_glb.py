@@ -26,6 +26,7 @@ PyInstaller scrub the PNG path uses.
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -34,8 +35,22 @@ from kibrary_sidecar.render_3d import (
     _patch_model_transform,
     _sanitise_footprint,
     _splice_into_template,
+    footprint_has_model_block,
 )
 from kibrary_sidecar.svg_render import _system_env
+
+# kicad-cli's silent-drop signature when ``pcb export glb`` is asked to
+# embed a model whose file isn't present on disk. The CLI prints this on
+# stderr but exits 0 and emits a GLB containing only the PCB plane —
+# i.e. the empty-board failure mode that prompted the alpha.31 fix.
+# We watch for this AFTER pre-flight stripping; if it ever fires here it
+# means the .step disappeared between sanitise and kicad-cli (race) or
+# kicad-cli rejected the model for an unrelated reason. Either way, we
+# raise loudly rather than return a bait-and-switch board-only GLB.
+_KICAD_CLI_SILENT_DROP_RE = re.compile(
+    r"Could not add 3D model.*?File not found:\s*(\S+)",
+    flags=re.DOTALL,
+)
 
 log = logging.getLogger(__name__)
 
@@ -80,13 +95,22 @@ def render_footprint_3d_glb(
         ``footprint_file`` doesn't exist, OR kicad-cli returned 0 but
         produced no GLB at the expected path.
     RuntimeError
-        ``kicad-cli pcb export glb`` exited non-zero. The captured
-        stderr is included in the exception message.
+        ``kicad-cli pcb export glb`` exited non-zero (captured stderr
+        in the message), OR exited 0 but its stderr matched the silent-
+        drop pattern AND the source .kicad_mod expected a 3D model —
+        i.e. kicad-cli would have produced a board-only GLB and the
+        user would have seen an empty PCB plane.
     """
     if not footprint_file.is_file():
         raise FileNotFoundError(
             f"render_footprint_3d_glb: footprint file not found: {footprint_file}"
         )
+
+    # Snapshot of intent: did the source .kicad_mod ask kicad-cli to
+    # embed a 3D model? Used post-render to decide if a "silent drop"
+    # stderr line is a hard failure (model expected, kicad-cli dropped
+    # it) or benign (no model expected → no body, and that's correct).
+    expected_3d_model = footprint_has_model_block(footprint_file)
 
     with tempfile.TemporaryDirectory() as tmp_dir_str:
         tmp_dir = Path(tmp_dir_str)
@@ -130,6 +154,27 @@ def render_footprint_3d_glb(
                 f"for footprint {fp_name!r}"
             )
 
+        # Silent-drop guard: kicad-cli prints "Could not add 3D model"
+        # but exits 0 when a referenced .step file is missing. Pre-flight
+        # stripping in _sanitise_footprint avoids feeding kicad-cli a
+        # path that doesn't resolve in the first place — but if the file
+        # vanishes between sanitise and render (race) or kicad-cli fails
+        # to load it for some other reason, the stderr line still fires
+        # and the GLB will contain ONLY the PCB plane (board-only,
+        # ~3.7 KB instead of the expected size). When the source
+        # .kicad_mod expected a model, treat that as a hard failure
+        # rather than letting the empty board reach the user.
+        stderr_text = proc.stderr or ""
+        silent_drop = _KICAD_CLI_SILENT_DROP_RE.search(stderr_text)
+        if expected_3d_model and silent_drop is not None:
+            missing = silent_drop.group(1)
+            raise RuntimeError(
+                f"kicad-cli silently dropped 3D model for footprint "
+                f"{fp_name!r}: file not found: {missing}. "
+                f"GLB would render only the empty PCB plane. "
+                f"Full stderr: {stderr_text.strip()}"
+            )
+
         return out_glb.read_bytes()
 
 
@@ -140,4 +185,5 @@ __all__ = [
     "_sanitise_footprint",
     "_splice_into_template",
     "_patch_model_transform",
+    "footprint_has_model_block",
 ]
