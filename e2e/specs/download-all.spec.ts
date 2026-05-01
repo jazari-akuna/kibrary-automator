@@ -1078,23 +1078,33 @@ async function main() {
       throw new Error(`alpha.22 3D render did not return a PNG data URL: ${render3d.prefix}`);
     }
     log(`✅ alpha.22 3D render PNG returned (${render3d.len} bytes data URL)`);
-    // Wait for the UI <img data-testid="3d-render-png"> to mount + paint,
-    // then scroll IT into view (scrolling its scrollable ancestor to the
-    // image's offsetTop). Earlier "scroll each .overflow-y-auto to bottom"
-    // pushed the image above the viewport.
+    // alpha.29: the 3D viewer is now either the legacy PNG <img> or the
+    // new GL <canvas>. The RPC sub-probe above already proved the sidecar
+    // PNG path works; this DOM check just confirms a viewer mounted —
+    // either kind counts. Naturally-painted check applies only to the PNG
+    // path (canvas has no naturalWidth).
     await new Promise((r) => setTimeout(r, 1500));
     const scrollResult = await execAsync(sid, `
       var done = arguments[arguments.length - 1];
       try {
         var img = document.querySelector('[data-testid="3d-viewer-img"]');
-        if (!img) { done({ok:false, reason:'img not found'}); return; }
-        img.scrollIntoView({block: 'center', inline: 'center'});
-        done({ok:true, complete: img.complete, naturalWidth: img.naturalWidth});
+        var gl  = document.querySelector('[data-testid="3d-viewer-gl-canvas"]');
+        var el = img || gl;
+        if (!el) { done({ok:false, reason:'neither 3d-viewer-img nor 3d-viewer-gl-canvas found'}); return; }
+        el.scrollIntoView({block: 'center', inline: 'center'});
+        done({
+          ok: true,
+          kind: img ? 'png' : 'gl',
+          complete: img ? img.complete : null,
+          naturalWidth: img ? img.naturalWidth : null,
+        });
       } catch (e) { done({ok:false, reason:String(e)}); }
     `);
     log(`  3D render scroll-into-view: ${JSON.stringify(scrollResult)}`);
-    if (!scrollResult?.ok) throw new Error(`alpha.22 3D render <img> not in DOM: ${scrollResult?.reason}`);
-    if (!scrollResult?.naturalWidth) throw new Error(`alpha.22 3D render <img> not painted (naturalWidth=0)`);
+    if (!scrollResult?.ok) throw new Error(`alpha.22/29 3D viewer not in DOM: ${scrollResult?.reason}`);
+    if (scrollResult.kind === 'png' && !scrollResult.naturalWidth) {
+      throw new Error(`alpha.22 3D render <img> not painted (naturalWidth=0)`);
+    }
     await new Promise((r) => setTimeout(r, 600));
     await screenshot(sid, `${OUT}/renderers-3d-render.png`);
 
