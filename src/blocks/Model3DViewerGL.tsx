@@ -52,6 +52,7 @@ declare global {
   interface Window {
     __model3dGLScene?: THREE.Scene;
     __model3dGLLoadCount?: number;
+    __model3dGLLastError?: string;
   }
 }
 
@@ -182,6 +183,10 @@ export default function Model3DViewerGL(props: Props) {
 
   async function loadGLB() {
     if (!scene) return;
+    // Guard: Solid effects can fire with falsy props during mount/unmount churn
+    // (parent Show gating doesn't always synchronise with our effect schedule).
+    // Without this the sidecar throws `Path(None)` → TypeError → silent fail.
+    if (!props.libDir || !props.componentName) return;
     setLoading(true);
     const myId = ++loadId;
     window.__model3dGLLoadCount = (window.__model3dGLLoadCount || 0) + 1;
@@ -234,6 +239,7 @@ export default function Model3DViewerGL(props: Props) {
         (err) => {
           if (myId !== loadId) return;
           console.warn('[3D viewer GL] GLTFLoader.parse failed:', err);
+          window.__model3dGLLastError = `GLTFLoader.parse: ${err instanceof Error ? err.message : String(err)}`;
           setWebglError('GLB parse failed');
           setLoading(false);
         },
@@ -242,6 +248,7 @@ export default function Model3DViewerGL(props: Props) {
       if (myId !== loadId) return;
       const reason = e instanceof Error ? e.message : String(e);
       console.warn('[3D viewer GL] GLB fetch failed:', e);
+      window.__model3dGLLastError = `GLB fetch: ${reason}`;
       setWebglError(reason);
       props.onWebGLError?.(reason);
       setLoading(false);

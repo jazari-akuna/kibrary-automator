@@ -1273,26 +1273,44 @@ async function main() {
       // (G2) GLB-loaded: poll until scene.children grows past the
       //      lights-only baseline (ambient + directional = 2). The
       //      Model3DViewerGL exposes the Scene on window.__model3dGLScene.
+      // Three.js's THREE.Scene starts with our 2 lights (ambient + directional).
+      // After GLB load, scene.add(gltf.scene) increments children to 3+. The
+      // GLB load completes very quickly (~700 ms × 1-3 mounts < 3 s), so by
+      // the time this probe runs the load is usually already done. Detect
+      // "load happened" by looking for a non-Light child in the scene, NOT
+      // by waiting for further growth — that's the previous probe's bug.
       const glbLoaded = await execAsync(sid, `
         var done = arguments[arguments.length - 1];
-        var n0 = (window.__model3dGLScene && window.__model3dGLScene.children.length) || 0;
-        var deadline = Date.now() + 30000;
+        var deadline = Date.now() + 15000;
+        function meshChildren(s){
+          if (!s) return -1;
+          var n = 0;
+          for (var i = 0; i < s.children.length; i++) {
+            var t = s.children[i].type || '';
+            if (t.indexOf('Light') === -1 && t !== 'AudioListener') n++;
+          }
+          return n;
+        }
         (async function poll(){
           while (Date.now() < deadline) {
-            await new Promise(function(r){ setTimeout(r, 250); });
-            var s = window.__model3dGLScene;
-            if (s && s.children.length > n0) {
-              done({ok:true, before:n0, after:s.children.length});
+            var n = meshChildren(window.__model3dGLScene);
+            if (n >= 1) {
+              done({ok:true, meshChildren:n, totalChildren:window.__model3dGLScene.children.length,
+                     loadCount: window.__model3dGLLoadCount || 0,
+                     loaderState: window.__model3dGLLoaderState || null});
               return;
             }
+            await new Promise(function(r){ setTimeout(r, 250); });
           }
-          var sf = window.__model3dGLScene;
-          done({ok:false, reason:'glb never landed in scene', before:n0,
-                 after: sf ? sf.children.length : -1});
+          done({ok:false, reason:'no non-Light child in scene after 15s',
+                 totalChildren: window.__model3dGLScene ? window.__model3dGLScene.children.length : -1,
+                 loadCount: window.__model3dGLLoadCount || 0,
+                 lastErr: window.__model3dGLLastError || null,
+                 loaderState: window.__model3dGLLoaderState || null});
         })();
       `);
       log(`  glb-loaded: ${JSON.stringify(glbLoaded)}`);
-      if (!glbLoaded?.ok) throw new Error(`alpha.28 glb-loaded failed: ${glbLoaded?.reason}`);
+      if (!glbLoaded?.ok) throw new Error(`alpha.28 glb-loaded failed: ${JSON.stringify(glbLoaded)}`);
 
       // (G3) Drag-orbit must not trigger any sidecar render calls. We
       //      count `library.render_3d_glb_angled` invocations via the
