@@ -1270,39 +1270,55 @@ async function main() {
         throw new Error(`alpha.28 WebGL2 drawing buffer is zero-sized: ${JSON.stringify(glMount)}`);
       }
 
-      // (G2) GLB-loaded: poll until scene.children grows past the
-      //      lights-only baseline (ambient + directional = 2). The
-      //      Model3DViewerGL exposes the Scene on window.__model3dGLScene.
-      // Three.js's THREE.Scene starts with our 2 lights (ambient + directional).
-      // After GLB load, scene.add(gltf.scene) increments children to 3+. The
-      // GLB load completes very quickly (~700 ms × 1-3 mounts < 3 s), so by
-      // the time this probe runs the load is usually already done. Detect
-      // "load happened" by looking for a non-Light child in the scene, NOT
-      // by waiting for further growth — that's the previous probe's bug.
+      // (G2) GLB-loaded: poll until the loaded scene actually contains the
+      //      expected meshes. The previous probe only counted non-Light
+      //      *children of scene root* — but `scene.add(gltf.scene)` adds the
+      //      whole GLB tree as a single Group, so a board-only GLB (kicad-cli
+      //      silently dropped the chip) would still register as 1 non-Light
+      //      child and PASS. Walk the entire tree with .traverse() and count
+      //      actual Mesh nodes + total vertex positions, so a missing chip
+      //      surfaces as meshCount<2 / totalPositions≤100.
+      //
+      //      RealRenderProbe_KSL/R0603 fixture (per
+      //      /tmp/glb-orientation-findings.md): board mesh ~6 prims, R0603
+      //      chip mesh ~264 prims → a correct load has ≥2 meshes and
+      //      thousands of vertex positions. A board-only GLB has 1 mesh and
+      //      ~6 prims.
       const glbLoaded = await execAsync(sid, `
         var done = arguments[arguments.length - 1];
         var deadline = Date.now() + 15000;
-        function meshChildren(s){
-          if (!s) return -1;
-          var n = 0;
-          for (var i = 0; i < s.children.length; i++) {
-            var t = s.children[i].type || '';
-            if (t.indexOf('Light') === -1 && t !== 'AudioListener') n++;
-          }
-          return n;
+        function meshStats(s){
+          if (!s) return null;
+          var meshCount = 0, primCount = 0, totalPositions = 0;
+          s.traverse(function(o){
+            if (!o.isMesh) return;
+            meshCount++;
+            var geom = o.geometry;
+            if (geom && geom.attributes && geom.attributes.position) {
+              totalPositions += geom.attributes.position.count;
+            }
+            if (geom && geom.index) primCount += geom.index.count / 3;
+            else if (geom && geom.attributes && geom.attributes.position) primCount += geom.attributes.position.count / 3;
+          });
+          return { meshCount: meshCount, primCount: primCount, totalPositions: totalPositions };
         }
         (async function poll(){
           while (Date.now() < deadline) {
-            var n = meshChildren(window.__model3dGLScene);
-            if (n >= 1) {
-              done({ok:true, meshChildren:n, totalChildren:window.__model3dGLScene.children.length,
+            var stats = meshStats(window.__model3dGLScene);
+            if (stats && stats.meshCount >= 2 && stats.totalPositions > 100) {
+              done({ok:true, meshCount: stats.meshCount, primCount: stats.primCount,
+                     totalPositions: stats.totalPositions,
+                     totalChildren: window.__model3dGLScene.children.length,
                      loadCount: window.__model3dGLLoadCount || 0,
                      loaderState: window.__model3dGLLoaderState || null});
               return;
             }
             await new Promise(function(r){ setTimeout(r, 250); });
           }
-          done({ok:false, reason:'no non-Light child in scene after 15s',
+          var finalStats = meshStats(window.__model3dGLScene) || {meshCount:-1, primCount:-1, totalPositions:-1};
+          done({ok:false, reason:'mesh tree did not reach >=2 meshes / >100 positions in 15s',
+                 meshCount: finalStats.meshCount, primCount: finalStats.primCount,
+                 totalPositions: finalStats.totalPositions,
                  totalChildren: window.__model3dGLScene ? window.__model3dGLScene.children.length : -1,
                  loadCount: window.__model3dGLLoadCount || 0,
                  lastErr: window.__model3dGLLastError || null,
@@ -1310,7 +1326,64 @@ async function main() {
         })();
       `);
       log(`  glb-loaded: ${JSON.stringify(glbLoaded)}`);
-      if (!glbLoaded?.ok) throw new Error(`alpha.28 glb-loaded failed: ${JSON.stringify(glbLoaded)}`);
+      if (!glbLoaded?.ok) {
+        throw new Error(
+          `alpha.28+ GLB load incomplete — meshCount=${glbLoaded?.meshCount} ` +
+          `(expected ≥2: board + chip), totalPositions=${glbLoaded?.totalPositions}. ` +
+          `kicad-cli likely silently dropped the 3D model — check (model …) path resolution.`
+        );
+      }
+
+      // (G2b) alpha.32 chip-bbox-sanity — walk all meshes, find the
+      //       smallest (chip) and largest (board) by max bbox dimension,
+      //       and assert the chip is millimetre-scale and the board is
+      //       centimetre-scale. Locks in:
+      //         • chip mesh present (meshCount ≥ 2),
+      //         • chip geometry not degenerate (chipMax > 0, < 10mm),
+      //         • board outline survived alpha.30's 40 mm enlargement
+      //           (boardMax > 20mm).
+      //       Three.js stores GLB units in metres after our pipeline.
+      const chipBbox = await execAsync(sid, `
+        var done = arguments[arguments.length - 1];
+        var s = window.__model3dGLScene;
+        if (!s) { done({ok:false, reason:'no scene'}); return; }
+        var meshes = [];
+        s.traverse(function(o){ if (o.isMesh) meshes.push(o); });
+        if (meshes.length < 2) { done({ok:false, reason:'fewer than 2 meshes', meshCount: meshes.length}); return; }
+
+        function meshBbox(m){
+          if (!m.geometry || !m.geometry.boundingBox) m.geometry.computeBoundingBox();
+          var b = m.geometry.boundingBox;
+          return {
+            sx: b.max.x - b.min.x,
+            sy: b.max.y - b.min.y,
+            sz: b.max.z - b.min.z,
+          };
+        }
+        var bboxes = meshes.map(meshBbox);
+        bboxes.sort(function(a,b){
+          return Math.max(a.sx,a.sy,a.sz) - Math.max(b.sx,b.sy,b.sz);
+        });
+        var chip = bboxes[0];
+        var board = bboxes[bboxes.length - 1];
+        var chipMax = Math.max(chip.sx, chip.sy, chip.sz);
+        var boardMax = Math.max(board.sx, board.sy, board.sz);
+        // For RealRenderProbe_KSL R0603, expected ranges in METRES:
+        //   chipMax  ≈ 0.0016 m (1.6 mm — R0603 length)
+        //   boardMax ≈ 0.04   m (40 mm — alpha.30 enlarged outline)
+        done({
+          ok: chipMax > 0 && chipMax < 0.01 && boardMax > 0.02,
+          chipMax: chipMax, boardMax: boardMax, meshCount: meshes.length,
+        });
+      `);
+      log(`  alpha.32 chip-bbox-sanity: ${JSON.stringify(chipBbox)}`);
+      if (!chipBbox?.ok) {
+        throw new Error(
+          `alpha.32 chip bbox sanity failed: chipMax=${chipBbox?.chipMax} ` +
+          `boardMax=${chipBbox?.boardMax} meshCount=${chipBbox?.meshCount} ` +
+          `(expected chip < 10mm, board > 20mm in metres)`
+        );
+      }
 
       // (G3) Drag-orbit must not trigger any sidecar render calls. We
       //      count `library.render_3d_glb_angled` invocations via the

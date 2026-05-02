@@ -2,6 +2,22 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.4.27-alpha.32] — 2026-05-02
+
+### Fixed
+- **The footprint STILL wasn't rendering on the PCB** — alpha.31's fix only addressed the silent-drop case where `_resolve_model_path` returned None. But the resolver itself was too narrow: it only knew about `${KSL_ROOT}` and the `lib_dir/*.3dshapes/` glob. Footprints whose `(model …)` block referenced `${KICAD9_3DMODEL_DIR}` (the stock KiCad 9 model dir — used by every stock symbol kibrary doesn't manage), `${KICAD8_3DMODEL_DIR}`, `${KICAD_USER_3DMODEL_DIR}`, or `${KIPRJMOD}` all hit the resolver's "no candidate" path → the model block got stripped → user saw an empty PCB plane. Added a substitution table covering all five env vars (with OS-aware default fallbacks for the system dirs) and a "directory-name mismatch" last-ditch fallback that scans `lib_dir.glob("*.3dshapes")` by basename — catches the case where the `.kicad_mod` references `Foo_KSL.3dshapes/X.step` but the file actually lives at `<lcsc>.3dshapes/X.step` (legacy JLC2KiCadLib output).
+- **"Thickness seems inverted"** was actually a camera near-plane clipping bug. The viewer's `camera.near` was clamped to `0.01 m = 10 mm`. The chip body in a typical kicad-cli GLB is ~0.45 mm thick. When the user wheel-zoomed in, the chip fell behind the near plane and disappeared while the much-thicker board stayed visible — perceived as "the thickness inverted". Fix: drop the 10 mm floor; compute `near = max(minFeatureSize / 100, 1e-5)` from the smallest mesh dimension. For a 0.45 mm chip that's 4.5 µm — three orders of magnitude under chip thickness, so the chip never clips at any zoom.
+- **Camera was at metres-scale "(40, 40, 40)" looking at a 4 cm board.** Initial position was 1700× too far away. Even after `frameCameraTo` ran post-load, the framing was to the WHOLE board bbox (`maxDim * 3`), making the chip render as ~3 pixels at typical viewport sizes — perceptually invisible. Fix: initial position now `(0.12, 0.10, 0.12)` (~12 cm), and `frameCameraTo` now identifies the smallest mesh as the component, frames `dist = max(componentMaxDim * 6, 0.02)` so the chip is the focal subject with the board still in frame.
+
+### Added
+- **Smoke probe `glb-loaded` strengthened to recursive Mesh count + position-buffer sanity.** The previous probe used `scene.children.length` — but `gltf.scene` always lands as exactly one Group regardless of internal mesh count, so a board-only GLB (chip silently dropped) passed the probe. New probe `s.traverse(o => isMesh)` counts actual meshes and asserts ≥ 2 + > 100 vertex positions. The error message now names the suspect: "kicad-cli likely silently dropped the 3D model — check (model …) path resolution."
+- **New smoke probe `chip-bbox-sanity`** computes per-mesh bounding boxes, sorts by max dim, and asserts the smallest mesh (chip) has max dim < 10 mm AND the largest mesh (board) has max dim > 20 mm. Locks in both "chip present with real geometry" AND "alpha.30's 40 mm Edge.Cuts outline didn't regress".
+
+### Notes
+- 7 new sidecar tests in `test_render_3d.py` cover each new env-var substitution, the OS-default fallback paths, and the dir-name-mismatch last-ditch search. Total sidecar: **262 passed** (was 255).
+- Hidden assumption flagged by the implementer agent: `KSL_ROOT` is mapped to `lib_dir.parent`, which works for committed libraries laid out as `<workspace>/<lib_name>/...` but NOT for staging at `<workspace>/staging/<lcsc>/...`. Documented in the new helper docstring; not fixed in this release because no current callsite exercises that path.
+- Camera math for a typical R0603 fixture: `dist = max(0.00162 m × 6, 0.02 m) = 0.02 m` (chip clearly resolved, full 4 cm board still in frame); `near = 0.45 mm / 4 / 100 = 4.5 µm`; `far = 40 mm × 100 = 4 m`.
+
 ## [26.4.27-alpha.31] — 2026-04-29
 
 ### Fixed

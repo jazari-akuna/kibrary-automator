@@ -147,8 +147,16 @@ export default function Model3DViewerGL(props: Props) {
 
     const rect = containerEl.getBoundingClientRect();
     const aspect = rect.width > 0 && rect.height > 0 ? rect.width / rect.height : 1.5;
-    camera = new THREE.PerspectiveCamera(45, aspect, 0.01, 1000);
-    camera.position.set(40, 40, 40);
+    // kicad-cli's GLB output is in METRES with Y-up. A typical board is
+    // ~4 cm and an IC chip is ~1.6 mm × 0.45 mm. The previous default of
+    // (40, 40, 40) was 40 metres from the origin — frame ratio ~1700:1,
+    // catastrophically zoomed out before frameCameraTo refines on load.
+    // 0.12 m ≈ 12 cm gives comfortable framing for a 4 cm board.
+    // Near plane is set very tight (1 µm) to avoid clipping sub-mm
+    // component thicknesses at any zoom level. frameCameraTo recomputes
+    // both near + far + position once the GLB lands.
+    camera = new THREE.PerspectiveCamera(45, aspect, 1e-5, 100);
+    camera.position.set(0.12, 0.10, 0.12);
     camera.lookAt(0, 0, 0);
 
     controls = new OrbitControls(camera, canvasEl);
@@ -376,19 +384,80 @@ export default function Model3DViewerGL(props: Props) {
 
   function frameCameraTo(obj: THREE.Object3D) {
     if (!camera || !controls) return;
-    const box = new THREE.Box3().setFromObject(obj);
-    if (box.isEmpty()) return;
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    if (!isFinite(maxDim) || maxDim <= 0) return;
-    // ~3× the largest dimension gives a comfortable iso-ish view that
-    // shows the whole board without clipping the silkscreen layers.
-    const dist = maxDim * 3;
+
+    // Walk every Mesh under the loaded root. A typical kicad-cli GLB
+    // contains the board as one large mesh and each component as a
+    // smaller mesh. Framing to the WHOLE-board bbox makes a 1.6 mm chip
+    // project to ~3 px on a 320 px canvas — the user perceives "no
+    // chip / no footprint". Frame to the COMPONENT (smallest mesh)
+    // instead so the chip is visibly resolved.
+    const meshes: THREE.Mesh[] = [];
+    obj.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) meshes.push(m);
+    });
+    if (!meshes.length) return;
+
+    const meshMaxDim = (m: THREE.Mesh): number => {
+      const b = new THREE.Box3().setFromObject(m);
+      if (b.isEmpty()) return 0;
+      const s = new THREE.Vector3();
+      b.getSize(s);
+      return Math.max(s.x, s.y, s.z);
+    };
+    const meshMinDim = (m: THREE.Mesh): number => {
+      const b = new THREE.Box3().setFromObject(m);
+      if (b.isEmpty()) return 0;
+      const s = new THREE.Vector3();
+      b.getSize(s);
+      // Only consider non-zero axes — a perfectly flat plate would
+      // otherwise return 0 and zero out the near plane.
+      const dims = [s.x, s.y, s.z].filter((d) => d > 0);
+      return dims.length ? Math.min(...dims) : 0;
+    };
+
+    // Sort by max dimension; smallest non-trivial mesh = component,
+    // largest = board.
+    const sorted = meshes
+      .map((m) => ({ m, dim: meshMaxDim(m) }))
+      .filter((e) => isFinite(e.dim) && e.dim > 0)
+      .sort((a, b) => a.dim - b.dim);
+    if (!sorted.length) return;
+
+    const compDim = sorted[0].dim;
+    const boardDim = sorted[sorted.length - 1].dim;
+    const haveComponent = sorted.length >= 2;
+    const targetDim = haveComponent ? compDim : boardDim;
+
+    // 6× the component's max dim leaves clear margin around the chip;
+    // 3× the board's max dim is the legacy whole-board fallback. The
+    // 0.02 m (2 cm) floor keeps us from over-zooming when the
+    // component bbox is sub-mm and the board would disappear entirely.
+    const dist = Math.max(targetDim * (haveComponent ? 6 : 3), 0.02);
+
+    // Center on the OVERALL bbox so the board is still visible — we
+    // just frame the camera tighter so the chip is resolved.
+    const overallBox = new THREE.Box3().setFromObject(obj);
+    if (overallBox.isEmpty()) return;
+    const center = new THREE.Vector3();
+    overallBox.getCenter(center);
+
     camera.position.set(center.x + dist, center.y + dist, center.z + dist);
-    camera.near = Math.max(maxDim / 1000, 0.01);
-    camera.far = Math.max(maxDim * 100, 1000);
+    camera.lookAt(center);
+
+    // Near/far derived from real model scale. The smallest feature we
+    // need to render unclipped is roughly the smallest non-zero
+    // dimension of the component (chip thickness ~0.45 mm). We divide
+    // by 4 for a safety margin and by another 100 for the actual near
+    // plane — well below sub-mm features so wheel zoom never clips
+    // the component out.
+    const minFeatureSize = haveComponent
+      ? meshMinDim(sorted[0].m) || compDim / 4
+      : compDim / 4;
+    camera.near = Math.max(minFeatureSize / 100, 1e-5);
+    camera.far = Math.max(boardDim * 100, 100);
     camera.updateProjectionMatrix();
+
     controls.target.copy(center);
     controls.update();
   }

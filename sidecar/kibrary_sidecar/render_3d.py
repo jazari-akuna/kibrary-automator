@@ -35,6 +35,8 @@ docstring for the PyInstaller leak it works around.
 from __future__ import annotations
 
 import logging
+import os
+import platform
 import re
 import subprocess
 import tempfile
@@ -440,6 +442,87 @@ def render_footprint_3d_png_angled(
             )
 
 
+def _kicad_default_3dmodel_dir(major: int) -> Path | None:
+    """Return the OS-appropriate default ``share/kicad/3dmodels`` dir for
+    KiCad *major* version, or ``None`` if it can't be located.
+
+    The actual lookup is best-effort: when the env var ``KICAD{major}_3DMODEL_DIR``
+    is unset (the common case in headless containers without KiCad's
+    asset bundle installed), this provides the OS-default directory KiCad
+    itself would use. Returns ``None`` when the directory doesn't exist on
+    disk, so substitution gracefully falls through to the glob fallback.
+    """
+    system = platform.system()
+    if system == "Linux":
+        candidate = Path("/usr/share/kicad/3dmodels")
+    elif system == "Darwin":
+        candidate = Path(
+            "/Applications/KiCad/KiCad.app/Contents/SharedSupport/3dmodels"
+        )
+    elif system == "Windows":
+        candidate = Path(
+            rf"C:\Program Files\KiCad\{major}.0\share\kicad\3dmodels"
+        )
+    else:
+        return None
+    return candidate if candidate.is_dir() else None
+
+
+def _model_env_substitutions(lib_dir: Path) -> dict[str, str]:
+    """Build the KiCad-style env-var substitution table for model paths.
+
+    Mirrors the variables the KiCad path resolver itself recognises plus
+    kibrary's own ``${KSL_ROOT}``. Keys map ``VAR_NAME`` → resolved
+    filesystem path. Variables whose value is ``None`` (env unset and no
+    OS default available) are omitted so a non-match falls through to the
+    glob fallback rather than producing a spurious ``${VAR}`` literal.
+
+    Note: ``${KSL_ROOT}`` resolves to ``lib_dir.parent``. This assumes
+    lib_dir is a direct child of the workspace (the committed-library
+    layout). For staging layouts where lib_dir might live a level deeper,
+    callers should still pass the committed-library equivalent so this
+    convention holds.
+    """
+    table: dict[str, str | None] = {
+        "KSL_ROOT": str(lib_dir.parent),
+        "KICAD9_3DMODEL_DIR": (
+            os.environ.get("KICAD9_3DMODEL_DIR")
+            or (str(d) if (d := _kicad_default_3dmodel_dir(9)) else None)
+        ),
+        "KICAD8_3DMODEL_DIR": (
+            os.environ.get("KICAD8_3DMODEL_DIR")
+            or (str(d) if (d := _kicad_default_3dmodel_dir(8)) else None)
+        ),
+        "KICAD_USER_3DMODEL_DIR": os.environ.get("KICAD_USER_3DMODEL_DIR"),
+        # KiCad project-relative: by convention the "project" for a
+        # standalone .kicad_mod render is the library directory itself.
+        "KIPRJMOD": str(lib_dir),
+    }
+    return {k: v for k, v in table.items() if v}
+
+
+def _expand_model_env_vars(raw: str, lib_dir: Path) -> str:
+    """Substitute ``${VAR}`` (KiCad's preferred form) tokens in *raw*.
+
+    Only the bracketed ``${VAR_NAME}`` form is handled — KiCad's own
+    docs and emitted footprints standardise on it. Bare ``$VAR`` and
+    Windows ``%VAR%`` are intentionally NOT substituted to avoid false
+    matches against shell-style fragments inside legitimate paths.
+
+    The legacy ``$KSL_ROOT`` (no braces) form is preserved as a special
+    case for backward compatibility with kibrary-committed libraries
+    written before the alpha.21 standardisation.
+    """
+    table = _model_env_substitutions(lib_dir)
+    out = raw
+    for var_name, value in table.items():
+        out = out.replace(f"${{{var_name}}}", value)
+    # Backward compat: the legacy un-braced form for KSL_ROOT only.
+    if "KSL_ROOT" in table:
+        out = out.replace("$KSL_ROOT", table["KSL_ROOT"])
+    return out
+
+
 def _resolve_model_path(raw: str, lib_dir: Path) -> str | None:
     """Turn a ``(model …)`` path argument into an absolute filesystem path.
 
@@ -458,21 +541,45 @@ def _resolve_model_path(raw: str, lib_dir: Path) -> str | None:
 
     Resolution rules
     ----------------
-    * ``${KSL_ROOT}/<lib>/<lib>.3dshapes/foo.step`` → ``<lib_dir.parent>/<lib>/<lib>.3dshapes/foo.step``
+    * ``${KSL_ROOT}/<lib>/<lib>.3dshapes/foo.step`` → expanded to
+      ``<lib_dir.parent>/<lib>/<lib>.3dshapes/foo.step``.
+    * ``${KICAD9_3DMODEL_DIR}/...`` / ``${KICAD8_3DMODEL_DIR}/...`` /
+      ``${KICAD_USER_3DMODEL_DIR}/...`` — KiCad's own stock-library env
+      vars; falls back to the OS-default dir when the env var is unset.
+    * ``${KIPRJMOD}/...`` — KiCad project-relative; resolves under
+      ``lib_dir``.
     * ``./foo.step`` or ``foo.step`` (staging form) → ``<lib_dir>/<lcsc>.3dshapes/foo.step``
       (we look for any ``*.3dshapes`` dir under lib_dir and pick the first
-      that contains ``foo.step``)
+      that contains ``foo.step``).
     * Already-absolute paths pass through if they exist on disk.
+    * Last-ditch dir-name-mismatch fallback: when an absolute path
+      doesn't resolve, search any ``*.3dshapes/`` subdir of ``lib_dir``
+      for a file with the same basename (catches legacy JLC2KiCadLib
+      output where the dir is named after the LCSC but the .kicad_mod
+      references a library-named dir).
     * If no candidate exists, returns ``None``.
     """
     raw = raw.strip().strip('"').strip("'")
-    ksl_root = str(lib_dir.parent)
-    expanded = raw.replace("${KSL_ROOT}", ksl_root).replace("$KSL_ROOT", ksl_root)
+    expanded = _expand_model_env_vars(raw, lib_dir)
 
     p = Path(expanded)
     if p.is_absolute():
         if p.is_file():
             return str(p)
+        # Absolute but missing — try the dir-name-mismatch fallback
+        # before giving up. Catches legacy JLC2KiCadLib output where
+        # the .kicad_mod references e.g. ``Foo_KSL.3dshapes/X.step`` but
+        # the file actually sits at ``C25804.3dshapes/X.step``.
+        basename = p.name
+        for shapes_dir in sorted(lib_dir.glob("*.3dshapes")):
+            cand = shapes_dir / basename
+            if cand.is_file():
+                log.warning(
+                    "_resolve_model_path: matched %s under %s via "
+                    "dir-name fallback (orig URI: %s)",
+                    cand, shapes_dir, raw,
+                )
+                return str(cand)
         return None
 
     bare = expanded.lstrip("./").lstrip(".\\")

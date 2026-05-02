@@ -413,6 +413,182 @@ def test_footprint_has_model_block_predicate(tmp_path: Path):
     assert render_3d.footprint_has_model_block(without_model) is False
 
 
+# ---------------------------------------------------------------------------
+# Test 16: ${KICAD9_3DMODEL_DIR} substitution — when KiCad 9's stock-model
+# env var is set, the resolver expands it and returns the absolute path.
+# Required because most KiCad-stock symbols emit (model …) paths that use
+# this var; alpha.31 stripped them all.
+# ---------------------------------------------------------------------------
+
+def test_resolve_model_path_substitutes_kicad9_3dmodel_dir(
+    tmp_path: Path, monkeypatch
+):
+    stock_root = tmp_path / "kicad9-stock"
+    (stock_root / "Resistor_THT.3dshapes").mkdir(parents=True)
+    step = stock_root / "Resistor_THT.3dshapes" / "R_Axial.step"
+    step.write_text("FAKE_STEP", encoding="utf-8")
+
+    monkeypatch.setenv("KICAD9_3DMODEL_DIR", str(stock_root))
+
+    lib_dir = tmp_path / "AnyLib"
+    lib_dir.mkdir()
+    raw = "${KICAD9_3DMODEL_DIR}/Resistor_THT.3dshapes/R_Axial.step"
+    assert render_3d._resolve_model_path(raw, lib_dir) == str(step)
+
+
+# ---------------------------------------------------------------------------
+# Test 17: ${KICAD8_3DMODEL_DIR} substitution — backward-compat for users
+# still on KiCad 8 footprint libraries.
+# ---------------------------------------------------------------------------
+
+def test_resolve_model_path_substitutes_kicad8_3dmodel_dir(
+    tmp_path: Path, monkeypatch
+):
+    stock_root = tmp_path / "kicad8-stock"
+    (stock_root / "Capacitor_SMD.3dshapes").mkdir(parents=True)
+    step = stock_root / "Capacitor_SMD.3dshapes" / "C_0805.step"
+    step.write_text("FAKE_STEP", encoding="utf-8")
+
+    monkeypatch.setenv("KICAD8_3DMODEL_DIR", str(stock_root))
+
+    lib_dir = tmp_path / "AnyLib"
+    lib_dir.mkdir()
+    raw = "${KICAD8_3DMODEL_DIR}/Capacitor_SMD.3dshapes/C_0805.step"
+    assert render_3d._resolve_model_path(raw, lib_dir) == str(step)
+
+
+# ---------------------------------------------------------------------------
+# Test 18: ${KICAD_USER_3DMODEL_DIR} substitution — user's custom 3D
+# model directory.
+# ---------------------------------------------------------------------------
+
+def test_resolve_model_path_substitutes_kicad_user_3dmodel_dir(
+    tmp_path: Path, monkeypatch
+):
+    user_root = tmp_path / "user-3dmodels"
+    (user_root / "MyParts.3dshapes").mkdir(parents=True)
+    step = user_root / "MyParts.3dshapes" / "Custom.step"
+    step.write_text("FAKE_STEP", encoding="utf-8")
+
+    monkeypatch.setenv("KICAD_USER_3DMODEL_DIR", str(user_root))
+
+    lib_dir = tmp_path / "AnyLib"
+    lib_dir.mkdir()
+    raw = "${KICAD_USER_3DMODEL_DIR}/MyParts.3dshapes/Custom.step"
+    assert render_3d._resolve_model_path(raw, lib_dir) == str(step)
+
+
+# ---------------------------------------------------------------------------
+# Test 19: ${KIPRJMOD} substitution — KiCad's project-relative variable.
+# Footprints checked into a KiCad project commonly reference models via
+# this var. We map it to lib_dir (the standalone-render convention).
+# ---------------------------------------------------------------------------
+
+def test_resolve_model_path_substitutes_kiprjmod_to_lib_dir(tmp_path: Path):
+    lib_dir = tmp_path / "ProjectLib"
+    shapes = lib_dir / "3dshapes"
+    shapes.mkdir(parents=True)
+    step = shapes / "Local.step"
+    step.write_text("FAKE_STEP", encoding="utf-8")
+
+    raw = "${KIPRJMOD}/3dshapes/Local.step"
+    assert render_3d._resolve_model_path(raw, lib_dir) == str(step)
+
+
+# ---------------------------------------------------------------------------
+# Test 20: dir-name-mismatch fallback — legacy JLC2KiCadLib output writes
+# the .step into ``<lcsc>.3dshapes/`` but the .kicad_mod references the
+# library-named ``<lib>.3dshapes/``. The absolute-path resolution misses;
+# the resolver must scan *.3dshapes/ subdirs by basename as a last ditch.
+# ---------------------------------------------------------------------------
+
+def test_resolve_model_path_dir_name_mismatch_fallback(tmp_path: Path, caplog):
+    import logging as _logging
+
+    lib_dir = tmp_path / "Foo_KSL"
+    # File actually lives under the LCSC-named dir.
+    actual_dir = lib_dir / "C25804.3dshapes"
+    actual_dir.mkdir(parents=True)
+    step = actual_dir / "X.step"
+    step.write_text("FAKE_STEP", encoding="utf-8")
+
+    # Footprint references the library-named dir, which doesn't exist.
+    raw = "${KSL_ROOT}/Foo_KSL/Foo_KSL.3dshapes/X.step"
+
+    with caplog.at_level(_logging.WARNING, logger="kibrary_sidecar.render_3d"):
+        result = render_3d._resolve_model_path(raw, lib_dir)
+
+    assert result == str(step)
+    # The fallback path must be logged at WARNING so production layout
+    # mismatches are visible.
+    assert any(
+        "dir-name fallback" in rec.message for rec in caplog.records
+    ), f"expected dir-name fallback log, got: {[r.message for r in caplog.records]}"
+
+
+# ---------------------------------------------------------------------------
+# Test 21: env var unset and no fallback — when ${KICAD9_3DMODEL_DIR} is
+# not set in the environment AND the OS default doesn't exist, the
+# substitution leaves the literal token in place. The resulting path is
+# still treated as absolute (starts with /), misses on disk, and the
+# dir-name-mismatch fallback finds nothing → returns None.
+# ---------------------------------------------------------------------------
+
+def test_resolve_model_path_returns_none_when_env_var_unset_and_no_fallback(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.delenv("KICAD9_3DMODEL_DIR", raising=False)
+
+    lib_dir = tmp_path / "Empty"
+    lib_dir.mkdir()
+    # No matching file anywhere; substitution leaves ${KICAD9_3DMODEL_DIR}
+    # literal so the path doesn't even look absolute. Either way, no candidate.
+    raw = "${KICAD9_3DMODEL_DIR}/some/path/x.step"
+
+    # Force the OS default to also not exist by pointing the helper's
+    # check at a non-existent dir via monkeypatch.
+    def _no_default(_major):
+        return None
+    monkeypatch.setattr(render_3d, "_kicad_default_3dmodel_dir", _no_default)
+
+    assert render_3d._resolve_model_path(raw, lib_dir) is None
+
+
+# ---------------------------------------------------------------------------
+# Test 22: KiCad OS-default dir is only used when it actually exists. In
+# headless containers without KiCad's asset bundle, /usr/share/kicad/3dmodels
+# doesn't exist — the resolver must NOT crash and must fall through cleanly.
+# ---------------------------------------------------------------------------
+
+def test_resolve_model_path_kicad_default_dir_only_used_when_exists(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.delenv("KICAD9_3DMODEL_DIR", raising=False)
+    monkeypatch.delenv("KICAD8_3DMODEL_DIR", raising=False)
+    monkeypatch.delenv("KICAD_USER_3DMODEL_DIR", raising=False)
+
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    # Force any candidate OS-default dir lookup to return None so we
+    # exercise the "no default available" branch deterministically.
+    monkeypatch.setattr(
+        render_3d, "_kicad_default_3dmodel_dir", lambda _major: None
+    )
+
+    # Helper itself doesn't crash and returns sensible substitutions.
+    table = render_3d._model_env_substitutions(lib_dir)
+    assert "KICAD9_3DMODEL_DIR" not in table
+    assert "KICAD8_3DMODEL_DIR" not in table
+    # KSL_ROOT and KIPRJMOD are always available (derived from lib_dir).
+    assert table["KSL_ROOT"] == str(lib_dir.parent)
+    assert table["KIPRJMOD"] == str(lib_dir)
+
+    # Resolver call must not crash and returns None for an unresolvable
+    # ${KICAD9_3DMODEL_DIR} URI.
+    raw = "${KICAD9_3DMODEL_DIR}/x/y.step"
+    assert render_3d._resolve_model_path(raw, lib_dir) is None
+
+
 def test_spliced_board_keeps_edge_cuts_outline(tmp_path: Path):
     lib_dir, mod = _make_sample_kicad_mod(tmp_path, name="OutlineProbe")
     out_png = tmp_path / "out.png"
