@@ -1471,11 +1471,11 @@ async function main() {
         );
       }
 
-      // (G7) alpha.34/35/36 axis-indicators — assert the ±X / ±Y / ±Z
-      //      group exists with 6 axes (3 KiCad axes × 2 directions).
-      //      alpha.36 dropped ArrowHelper in favor of standalone cone
-      //      meshes (no shaft line). So the probe counts cone Meshes +
-      //      Sprite labels: 6 cones + 6 sprites = 12 children.
+      // (G7) alpha.34/35/36 axis-indicators — Wave 7-B (alpha.5) hid
+      //      these by default via `showAxisIndicators` prop (defaults
+      //      false). When the group IS present, the structure must still
+      //      be 6 cones + 6 sprites. When absent, that's expected for
+      //      the default state — pass.
       const axisIndicators = await execAsync(sid, `
         var done = arguments[arguments.length - 1];
         var s = window.__model3dGLScene;
@@ -1484,7 +1484,7 @@ async function main() {
         s.traverse(function(o){
           if (o.name === 'axis_indicators') group = o;
         });
-        if (!group) { done({ok:false, reason:'no axis_indicators group'}); return; }
+        if (!group) { done({ok:true, reason:'axis_indicators hidden by default (alpha.5)'}); return; }
         var coneCount = 0, spriteCount = 0;
         group.children.forEach(function(o){
           if (o.isMesh && o.geometry && o.geometry.type === 'ConeGeometry') coneCount++;
@@ -1498,14 +1498,14 @@ async function main() {
         throw new Error(
           `alpha.36 axis indicators broken: ` +
           `(children=${axisIndicators?.childCount} cones=${axisIndicators?.coneCount} sprites=${axisIndicators?.spriteCount}) — ` +
-          `expected 6 cones + 6 sprites`
+          `expected 6 cones + 6 sprites OR group absent (alpha.5 default-hidden)`
         );
       }
 
-      // (G7c) alpha.36 substrate-opacity — substrate material now
-      //       sits at opacity 0.8 (transparent=true) so the user can
-      //       partially see chip leads through the board. Chip body
-      //       must remain opaque.
+      // (G7c) alpha.5-visual-parity substrate-opacity — Wave 2-B reverted
+      //       alpha.36's 0.8-transparent substrate; the board is now
+      //       opaque deep KiCad green to match the kicad-cli PNG render.
+      //       Decal sits above with depthWrite:false + alphaTest:0.01.
       const opacity = await execAsync(sid, `
         var done = arguments[arguments.length - 1];
         var s = window.__model3dGLScene;
@@ -1525,7 +1525,7 @@ async function main() {
         });
         if (!sub) { done({ok:false, reason:'no substrate'}); return; }
         var subMats = Array.isArray(sub.material) ? sub.material : [sub.material];
-        var subOk = subMats.every(function(m){ return m.transparent === true && Math.abs(m.opacity - 0.8) < 0.01; });
+        var subOk = subMats.every(function(m){ return m.transparent === false && Math.abs(m.opacity - 1.0) < 0.01; });
         done({
           ok: subOk,
           substrateOpacity: subMats.map(function(m){ return m.opacity; }),
@@ -1533,10 +1533,10 @@ async function main() {
           chipMatCount: chipMats.length,
         });
       `);
-      log(`  alpha.36 substrate-opacity: ${JSON.stringify(opacity)}`);
+      log(`  alpha.5 substrate-opacity: ${JSON.stringify(opacity)}`);
       if (!opacity?.ok) {
         throw new Error(
-          `alpha.36 substrate opacity not 0.8: ` +
+          `alpha.5 substrate opacity not 1.0/opaque: ` +
           `opacity=${opacity?.substrateOpacity} transparent=${opacity?.substrateTransparent}`
         );
       }
