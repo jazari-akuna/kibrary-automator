@@ -21,6 +21,7 @@ export default function RoomAdd() {
       <div class="flex-1 min-w-0 space-y-4">
         <BlockHost id="import" />
         <BlockHost id="queue" />
+        <BlockHost id="drop-import-list" />
         <BlockHost id="review-bulk-assign" />
       </div>
       <aside

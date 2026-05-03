@@ -15,6 +15,8 @@ export const blocks: Record<string, BlockDef> = {
   'import':              { id: 'import',              load: () => import('./Import') },
   'queue':               { id: 'queue',               load: () => import('./Queue') },
   'review-bulk-assign':  { id: 'review-bulk-assign',  load: () => import('./ReviewBulkAssign') },
+  'drop-import-list':    { id: 'drop-import-list',    load: () => import('./DropImportList') },
+  'drop-zone-overlay':   { id: 'drop-zone-overlay',   load: () => import('./DropZoneOverlay') },
   'review-sequential':   { id: 'review-sequential',   load: () => import('./ReviewSequential') },
   'search-panel':        { id: 'search-panel',        load: () => import('./SearchPanel') },
 

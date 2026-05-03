@@ -11,6 +11,7 @@ import {
   openWorkspace,
 } from '~/state/workspace';
 import UpdatePrompt from '~/blocks/UpdatePrompt';
+import DropZoneOverlay from '~/blocks/DropZoneOverlay';
 
 const FirstRunWizard = lazy(() => import('~/blocks/FirstRunWizard'));
 
@@ -55,6 +56,7 @@ export default function Shell() {
         </main>
       </div>
       <UpdatePrompt />
+      <DropZoneOverlay />
       <ToastHost />
       <Show when={firstRun()}>
         <FirstRunWizard />

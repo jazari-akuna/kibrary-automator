@@ -28,6 +28,7 @@ from kibrary_sidecar import model3d_ops
 from kibrary_sidecar import bootstrap
 from kibrary_sidecar import secrets
 from kibrary_sidecar import icons as icons_mod
+from kibrary_sidecar import drop_import
 
 
 def system_ping(_: dict) -> dict:
@@ -827,6 +828,21 @@ def library_backfill_icons(p: dict) -> dict:
     return icons_mod.backfill_icons(Path(p["workspace"]))
 
 
+def drop_scan_paths(p: dict) -> dict:
+    """Drag-drop import: walk dropped paths, group by stem, return manifest."""
+    return drop_import.scan_paths(p["paths"])
+
+
+def drop_commit_group(p: dict) -> dict:
+    """Drag-drop import: copy a scanned group into the target library."""
+    return drop_import.commit_group(
+        workspace=Path(p["workspace"]),
+        group=p["group"],
+        target_lib=p["target_lib"],
+        edits=p.get("edits") or {},
+    )
+
+
 REGISTRY = {
     "system.ping": system_ping,
     "system.version": system_version,
@@ -893,4 +909,6 @@ REGISTRY = {
     "parts.get_icon": parts_get_icon,
     "library.get_component_icon": library_get_component_icon,
     "library.backfill_icons": library_backfill_icons,
+    "drop.scan_paths": drop_scan_paths,
+    "drop.commit_group": drop_commit_group,
 }
