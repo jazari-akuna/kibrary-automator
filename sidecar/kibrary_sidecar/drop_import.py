@@ -20,6 +20,7 @@ original drop folder is left untouched.
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from pathlib import Path
 from typing import Iterable
@@ -203,6 +204,187 @@ def _stage_group_for_commit(staging_root: Path, group: dict) -> tuple[Path, str]
     return part_dir, synthetic_lcsc
 
 
+def _step_bbox_via_ocp(step_path: Path) -> tuple[float, float, float, float, float, float] | None:
+    """Read the STEP file via OpenCascade (cadquery-ocp) and return its
+    axis-aligned bounding box ``(xmin, ymin, zmin, xmax, ymax, zmax)`` in
+    millimetres. Returns ``None`` if OCP isn't available or the file is
+    empty/unreadable.
+
+    OCP is an optional dependency (~165MB on disk) — we import lazily so
+    sidecar startup is unaffected and so the production .deb (which may
+    not bundle OCP for size reasons) still loads drop_import without
+    erroring.
+    """
+    try:
+        from OCP.STEPControl import STEPControl_Reader  # type: ignore
+        from OCP.IFSelect import IFSelect_RetDone  # type: ignore
+        from OCP.Bnd import Bnd_Box  # type: ignore
+        from OCP.BRepBndLib import BRepBndLib  # type: ignore
+    except Exception as exc:  # noqa: BLE001 — OCP missing is a fallback path
+        log.debug("OCP not importable, skipping STEP bbox parse: %s", exc)
+        return _step_bbox_via_regex(step_path)
+
+    try:
+        reader = STEPControl_Reader()
+        status = reader.ReadFile(str(step_path))
+        if status != IFSelect_RetDone:
+            log.warning("OCP cannot read STEP %s (status=%s)", step_path, status)
+            return None
+        n_roots = reader.TransferRoots()
+        if n_roots == 0:
+            log.warning("OCP transferred 0 roots from %s — empty STEP", step_path)
+            return None
+        shape = reader.OneShape()
+        if shape is None or shape.IsNull():
+            log.warning("OCP got null shape from %s", step_path)
+            return None
+        bbox = Bnd_Box()
+        BRepBndLib.Add_s(shape, bbox)
+        if bbox.IsVoid():
+            log.warning("OCP got void bbox from %s — no solids", step_path)
+            return None
+        return bbox.Get()  # (xmin, ymin, zmin, xmax, ymax, zmax) in mm
+    except Exception as exc:  # noqa: BLE001
+        log.warning("OCP failed to bbox %s: %s", step_path, exc)
+        return None
+
+
+# Match `CARTESIAN_POINT('label?', (x, y, z))` — STEP files are ASCII and
+# coordinate triples appear as bare floats. Robust enough for non-assembly
+# STEP files; used only as a fallback when OCP isn't available.
+_CART_POINT_RE = re.compile(
+    r"CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*([^)]+?)\s*\)\s*\)",
+    re.IGNORECASE,
+)
+
+
+def _step_bbox_via_regex(step_path: Path) -> tuple[float, float, float, float, float, float] | None:
+    """Lightweight STEP bbox without OCP — scans CARTESIAN_POINT entries.
+
+    Limitations:
+      - Doesn't apply assembly-level transformations, so for multi-instance
+        STEP files (kicad-cli output, large connector models with
+        MAPPED_ITEM) this gives the union of *raw* coordinates which can
+        be wrong.
+      - Doesn't honour LENGTH_UNIT (assumes mm). Fine for single-part STEPs
+        from SnapEDA/3D-content-central; wrong for METRE-unit assemblies.
+
+    For Bug 1 (centring chip body on pads) the cases that matter are
+    SnapEDA-style single-part STEPs, so this fallback is "good enough"
+    when OCP isn't available. When in doubt the caller falls back to (0,0,0).
+    """
+    try:
+        data = step_path.read_text(errors="ignore")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("regex STEP parse: cannot read %s: %s", step_path, exc)
+        return None
+    xs: list[float] = []
+    ys: list[float] = []
+    zs: list[float] = []
+    for match in _CART_POINT_RE.finditer(data):
+        parts = [p.strip() for p in match.group(1).split(",")]
+        if len(parts) != 3:
+            continue
+        try:
+            x = float(parts[0])
+            y = float(parts[1])
+            z = float(parts[2])
+        except ValueError:
+            continue
+        xs.append(x)
+        ys.append(y)
+        zs.append(z)
+    if not xs:
+        return None
+    return (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
+
+
+def _footprint_pad_bbox(footprint_path: Path) -> tuple[float, float, float, float] | None:
+    """Compute the (xmin, ymin, xmax, ymax) bbox of pad positions in mm.
+
+    Reads the .kicad_mod via kiutils. Pads without ``at`` are skipped.
+    Returns ``None`` if the footprint has no pads with positions.
+    """
+    try:
+        fp = Footprint().from_file(str(footprint_path))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Cannot parse footprint %s for pad bbox: %s", footprint_path, exc)
+        return None
+
+    xs: list[float] = []
+    ys: list[float] = []
+    for pad in fp.pads:
+        pos = getattr(pad, "position", None)
+        if pos is None:
+            continue
+        x = getattr(pos, "X", None)
+        y = getattr(pos, "Y", None)
+        if x is None or y is None:
+            continue
+        xs.append(float(x))
+        ys.append(float(y))
+    if not xs:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def compute_step_pad_offset(
+    step_path: str | Path,
+    footprint_path: str | Path,
+) -> tuple[float, float, float]:
+    """Return the (x, y, z) offset (in mm) that places the STEP body's
+    geometric centre over the centre of the footprint's pad bbox.
+
+    Workflow:
+      1. Read pad positions from the .kicad_mod → pad bbox centre.
+      2. Read STEP solid bbox → STEP centre.
+      3. offset = pad_centre - step_centre  (X, Y only; Z is left at 0
+         because the user expects the body to sit ON the board surface,
+         not below it; they can adjust Z manually via the positioner UI).
+
+    Falls back to ``(0.0, 0.0, 0.0)`` and emits a warning when:
+      - the footprint has no pads with positions
+      - the STEP file is .wrl (not parseable for solid bbox)
+      - OCP can't read the STEP and the regex fallback finds no points
+    """
+    step_p = Path(step_path)
+    fp_p = Path(footprint_path)
+
+    if step_p.suffix.lower() == ".wrl":
+        log.info("WRL files have no parseable bbox; using offset (0,0,0) for %s", step_p.name)
+        return (0.0, 0.0, 0.0)
+
+    pad_bb = _footprint_pad_bbox(fp_p)
+    if pad_bb is None:
+        log.warning(
+            "Cannot derive pad bbox for %s — falling back to offset (0,0,0)",
+            fp_p.name,
+        )
+        return (0.0, 0.0, 0.0)
+
+    step_bb = _step_bbox_via_ocp(step_p)
+    if step_bb is None:
+        log.warning(
+            "Cannot derive STEP bbox for %s — falling back to offset (0,0,0)",
+            step_p.name,
+        )
+        return (0.0, 0.0, 0.0)
+
+    pad_cx = (pad_bb[0] + pad_bb[2]) / 2.0
+    pad_cy = (pad_bb[1] + pad_bb[3]) / 2.0
+    step_cx = (step_bb[0] + step_bb[3]) / 2.0
+    step_cy = (step_bb[1] + step_bb[4]) / 2.0
+
+    # KiCad's footprint Y axis points DOWN (PCB convention) but the (model)
+    # offset's Y axis points the same way as KiCad's 3D viewer (which uses
+    # +Y up). KiCad applies the offset by NEGATING the Y component before
+    # translating the STEP. To make the body land at pad_centre we must
+    # therefore set offset.y = pad_cy - step_cy (no extra sign flip — the
+    # user can correct via the positioner UI if a particular STEP uses an
+    # inverted convention).
+    return (pad_cx - step_cx, pad_cy - step_cy, 0.0)
+
+
 def _ensure_model_blocks(
     lib_dir: Path,
     target_lib: str,
@@ -238,18 +420,31 @@ def _ensure_model_blocks(
         )
         return
 
-    target_paths = [
-        f"{_KSL_ROOT}/{target_lib}/{target_lib}.3dshapes/{Path(src).name}"
-        for src in model_paths
-    ]
+    # Compute a sane default offset per dropped model so the STEP body's
+    # bbox centre lands over the pad bbox centre (Bug 1: "the footprint is
+    # on one side, the step in the middle"). Using the SOURCE path on the
+    # filesystem because the .step is already copied into .3dshapes/ but
+    # the source file is still readable. Both work; source is simpler.
+    target_paths_with_offsets: list[tuple[str, tuple[float, float, float]]] = []
+    for src in model_paths:
+        target = f"{_KSL_ROOT}/{target_lib}/{target_lib}.3dshapes/{Path(src).name}"
+        offset = compute_step_pad_offset(src, footprint_path)
+        target_paths_with_offsets.append((target, offset))
+
+    target_paths = [t for t, _ in target_paths_with_offsets]
 
     try:
         fp = Footprint().from_file(str(mod_path))
         existing_paths = {m.path for m in fp.models}
         added = False
-        for p in target_paths:
-            if p not in existing_paths:
-                fp.models.append(Model(path=p))
+        for tp, off in target_paths_with_offsets:
+            if tp not in existing_paths:
+                model = Model(path=tp)
+                # Model.pos has fields X/Y/Z in kiutils
+                model.pos.X = off[0]
+                model.pos.Y = off[1]
+                model.pos.Z = off[2]
+                fp.models.append(model)
                 added = True
         if added:
             fp.to_file(str(mod_path))
@@ -260,24 +455,29 @@ def _ensure_model_blocks(
             mod_path,
             exc,
         )
-        _regex_append_models(mod_path, target_paths)
+        _regex_append_models(mod_path, target_paths_with_offsets)
 
 
-def _regex_append_models(mod_path: Path, target_paths: list[str]) -> None:
+def _regex_append_models(
+    mod_path: Path,
+    target_paths_with_offsets: list[tuple[str, tuple[float, float, float]]],
+) -> None:
     """Text-fallback when kiutils can't parse the .kicad_mod.
 
     Reads the file, checks which target paths are already mentioned (by
-    substring match), appends a default-parameter (model ...) block for
-    each missing one just before the footprint's closing paren.
+    substring match), appends a (model ...) block (with the precomputed
+    body-on-pads offset) for each missing one just before the footprint's
+    closing paren.
     """
     content = mod_path.read_text()
     appended_any = False
-    for tp in target_paths:
+    for tp, off in target_paths_with_offsets:
         if tp in content:
             continue
+        ox, oy, oz = off
         block = (
             f"\n  (model {tp}\n"
-            f"    (offset (xyz 0 0 0))\n"
+            f"    (offset (xyz {ox} {oy} {oz}))\n"
             f"    (scale (xyz 1 1 1))\n"
             f"    (rotate (xyz 0 0 0))\n"
             f"  )"

@@ -35,6 +35,7 @@ from pathlib import Path
 from kibrary_sidecar.render_3d import (
     _patch_model_transform,
     _sanitise_footprint,
+    _sanitise_footprint_with_warnings,
     _splice_into_template,
     footprint_has_model_block,
 )
@@ -51,6 +52,24 @@ from kibrary_sidecar.svg_render import _system_env
 _KICAD_CLI_SILENT_DROP_RE = re.compile(
     r"Could not add 3D model.*?File not found:\s*(\S+)",
     flags=re.DOTALL,
+)
+
+# Wave 3-C: OCCT's GLB writer (``RWGltf_CafWriter``) silently skips any
+# node whose faces lack pre-computed triangulation. cadquery-style
+# ``Assembly.save(exportType="STEP")`` produces 2-level assembly STEPs
+# where the leaf shapes are tagged but never tessellated — kicad-cli
+# happily emits a GLB containing only the auto-generated PCB substrate
+# and prints a stderr line per dropped node:
+#
+#     RWGltf_CafWriter skipped node 'housing_PCB_BODY_part' without triangulation data
+#
+# We capture the node name so the JSON-RPC response can surface a
+# structured ``{"kind": "tessellation_failed", "node_name": ...}`` warning
+# to the frontend instead of letting the user see a board-only render
+# with no diagnostic. Quotes around the name are optional (OCCT versions
+# vary), and we tolerate a missing name (anonymous node).
+_KICAD_CLI_TESSELLATION_FAILED_RE = re.compile(
+    r"RWGltf_CafWriter skipped node\s+'?([^']*?)'?\s+without triangulation data"
 )
 
 log = logging.getLogger(__name__)
@@ -201,11 +220,18 @@ def render_footprint_3d_glb_with_top_layers(
     """Render the GLB **and** a flat front-layers SVG of the same spliced
     board, both off the same temp .kicad_pcb file.
 
-    Returns a dict with keys ``glb_bytes`` (binary glTF) and
-    ``top_layers_svg`` (UTF-8 string). The SVG's ``viewBox`` covers the
-    spliced board's full edge-cuts extents in millimetres — caller (the
-    viewer) maps that to the substrate's XZ extents and overlays the
-    rasterised result as a decal.
+    Returns a dict with keys ``glb_bytes`` (binary glTF), ``top_layers_svg``
+    (UTF-8 string) and ``warnings`` (list of structured dicts). The SVG's
+    ``viewBox`` covers the spliced board's full edge-cuts extents in
+    millimetres — caller (the viewer) maps that to the substrate's XZ
+    extents and overlays the rasterised result as a decal.
+
+    The ``warnings`` list propagates any structured diagnostics from the
+    sanitiser — currently each ``(model …)`` block whose .step file
+    couldn't be located on disk shows up as
+    ``{"kind": "model_not_found", ...}``. The JSON-RPC method forwards
+    this to the frontend so the user sees "3D model file not found" in
+    the viewer instead of a silently board-only render.
 
     Failure semantics mirror :func:`render_footprint_3d_glb` for the GLB
     half. If the SVG export fails we still return the GLB (with an empty
@@ -221,7 +247,7 @@ def render_footprint_3d_glb_with_top_layers(
 
     with tempfile.TemporaryDirectory() as tmp_dir_str:
         tmp_dir = Path(tmp_dir_str)
-        sanitised = _sanitise_footprint(
+        sanitised, warnings = _sanitise_footprint_with_warnings(
             footprint_file,
             lib_dir,
             override_offset=offset,
@@ -257,6 +283,23 @@ def render_footprint_3d_glb_with_top_layers(
                 f"Full stderr: {(glb_proc.stderr or '').strip()}"
             )
 
+        # Wave 3-C: OCCT's RWGltf_CafWriter "skipped node … without
+        # triangulation data" warning means the GLB is missing a node the
+        # source STEP had — typically a cadquery-style assembly leaf. We
+        # don't raise (the GLB still contains the board + any nodes that
+        # *did* tessellate), but we surface every dropped node as a
+        # structured warning so the frontend can tell the user the chip
+        # body wasn't rendered. The model-not-found warnings from the
+        # sanitiser are appended to the same list.
+        for match in _KICAD_CLI_TESSELLATION_FAILED_RE.finditer(
+            glb_proc.stderr or ""
+        ):
+            node_name = match.group(1) or ""
+            warnings.append({
+                "kind": "tessellation_failed",
+                "node_name": node_name,
+            })
+
         glb_bytes = out_glb.read_bytes()
 
         # SVG export is best-effort: if kicad-cli rejects the layer list
@@ -286,7 +329,11 @@ def render_footprint_3d_glb_with_top_layers(
                 (svg_proc.stderr or svg_proc.stdout or "").strip(),
             )
 
-        return {"glb_bytes": glb_bytes, "top_layers_svg": svg_text}
+        return {
+            "glb_bytes": glb_bytes,
+            "top_layers_svg": svg_text,
+            "warnings": warnings,
+        }
 
 
 # Re-export the helpers we delegate to so call sites that want to patch

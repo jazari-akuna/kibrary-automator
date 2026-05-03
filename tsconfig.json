@@ -8,6 +8,7 @@
     "jsxImportSource": "solid-js",
     "isolatedModules": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
@@ -16,5 +17,5 @@
     "baseUrl": ".",
     "paths": { "~/*": ["src/*"] }
   },
-  "include": ["src/**/*", "playwright/**/*"]
+  "include": ["src/**/*", "playwright/**/*", "e2e/**/*"]
 }

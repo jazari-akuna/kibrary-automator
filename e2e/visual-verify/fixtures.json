@@ -1,0 +1,51 @@
+{
+  "app": "/usr/bin/kibrary",
+  "workspace": "/tmp/visual-verify-workspace",
+  "fixtures": [
+    {
+      "name": "u_fl_hirose",
+      "lib": "UFL_KSL",
+      "footprint": "U.FL_Hirose_U.FL-R-SMT-1_Vertical",
+      "action": "Click jog-z-plus1 (+1mm Z) and assert chip moves up while substrate stays put",
+      "expectedSubstrateName": "preview_PCB",
+      "jogButtonSelector": "[data-testid=\"jog-z-plus1\"]",
+      "assertOverrides": {
+        "substrateMaxDelta": 0.0001,
+        "chipYDeltaRange": [0.0005, 0.002],
+        "chipYDeltaMinCount": 1,
+        "maxAddedMeshes": 0,
+        "maxRemovedMeshes": 0
+      }
+    },
+    {
+      "name": "usb_c_hro",
+      "lib": "USBC_KSL",
+      "footprint": "USB_C_Receptacle_HRO_TYPE-C-31-M-12",
+      "action": "Click jog-z-plus1 (+1mm Z) and assert chip moves up while substrate stays put",
+      "expectedSubstrateName": "preview_PCB",
+      "jogButtonSelector": "[data-testid=\"jog-z-plus1\"]",
+      "assertOverrides": {
+        "substrateMaxDelta": 0.0001,
+        "chipYDeltaRange": [0.0005, 0.002],
+        "chipYDeltaMinCount": 1,
+        "maxAddedMeshes": 0,
+        "maxRemovedMeshes": 0
+      }
+    },
+    {
+      "name": "synthetic_pcb_named",
+      "lib": "SyntheticPCB_KSL",
+      "footprint": "synthetic_pcb_named",
+      "action": "Click jog-z-plus1 (+1mm Z) and assert chip moves up while substrate stays put",
+      "expectedSubstrateName": "preview_PCB",
+      "jogButtonSelector": "[data-testid=\"jog-z-plus1\"]",
+      "assertOverrides": {
+        "substrateMaxDelta": 0.0001,
+        "chipYDeltaRange": [0.0005, 0.002],
+        "chipYDeltaMinCount": 1,
+        "maxAddedMeshes": 0,
+        "maxRemovedMeshes": 0
+      }
+    }
+  ]
+}

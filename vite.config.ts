@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite';
 import solid from 'vite-plugin-solid';
 import { fileURLToPath } from 'node:url';
@@ -37,5 +38,12 @@ export default defineConfig({
     alias: {
       '~': fileURLToPath(new URL('./src', import.meta.url)),
     },
+  },
+  test: {
+    // Default Node environment — keeps unit tests fast and avoids
+    // pulling jsdom for purely-reactive Solid logic. Specs that need
+    // a DOM should opt in per-file via `// @vitest-environment jsdom`.
+    environment: 'node',
+    include: ['src/**/*.test.{ts,tsx}'],
   },
 });

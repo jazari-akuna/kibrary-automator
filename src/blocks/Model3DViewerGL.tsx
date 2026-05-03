@@ -39,9 +39,30 @@ interface Props {
   /** Bumped on positioner Save — triggers a fresh GLB fetch (the saved
    *  values are now the new baseline; the live delta resets to identity). */
   savedRev: number;
-  /** Surfaced on WebGL2 init / GLB fetch failure so the parent can fall
-   *  back to the PNG viewer. */
-  onWebGLError?: (reason: string) => void;
+  /**
+   * Surfaced on viewer failure so the parent can decide what to do.
+   *
+   *  - kind: 'webgl_unavailable' — WebGL2 itself is missing or the renderer
+   *    cannot be constructed. The GPU/browser cannot render any GLB, so the
+   *    parent should permanently fall back to the PNG viewer.
+   *
+   *  - kind: 'asset_load_failed' — the WebGL pipeline is fine but THIS
+   *    asset (component) failed to fetch / parse. Per-footprint, transient.
+   *    The parent should NOT flip the global renderer; the inline error UI
+   *    inside the GL viewer surfaces the problem for this asset only and
+   *    the next footprint preview retries with WebGL.
+   */
+  onWebGLError?: (
+    reason: string,
+    kind: 'webgl_unavailable' | 'asset_load_failed',
+  ) => void;
+  /**
+   * alpha.5-axes-shrink: opt-in ±X / ±Y / ±Z axis indicators. Default
+   * false because the cones + sprite labels visually dominated the
+   * canvas (vision-agent flagged them as covering the chip). The
+   * Model3DPositioner UI can later surface a checkbox to flip this on.
+   */
+  showAxisIndicators?: boolean;
 }
 
 // Light test harness: expose the active scene + a counter of in-flight
@@ -76,11 +97,53 @@ declare global {
      * `preview_PCB` exactly; the smoke probe asserts this match.
      */
     __model3dGLSubstrateName?: string;
+    /**
+     * Wave 3-B: surfaces the names of the top-level chip ancestors
+     * picked by the new whole-scene classifier. Lets the visual-verify
+     * harness assert that real chip body Groups (e.g. `UFL_Hirose_*`)
+     * are the ones being translated, NOT the substrate's `preview_PCB_*`
+     * siblings. Empty string is allowed (Three.js Object3D.name defaults
+     * to '' on anonymous Groups exported by OCCT).
+     */
+    __model3dGLChipMeshNames?: string[];
+    /**
+     * Wave 3-B: substrate's local-space bbox at load time (pre-recenter).
+     * Lets the harness correlate "is this mesh classified as chip?" with
+     * "where does it sit relative to the board top?" without re-deriving
+     * the bbox from world-space snapshots.
+     */
+    __model3dGLSubstrateBbox?: {
+      minX: number; minY: number; minZ: number;
+      maxX: number; maxY: number; maxZ: number;
+    };
+    /**
+     * Wave 4-C: classifier debug aid. Surfaces the wrapper layer the
+     * walk-up loop terminates at, the substrate's parent Group (which
+     * must NEVER be classified as a chip), and the candidate ancestor
+     * names before/after dedup. If the harness sees substrate moving,
+     * this tells us in one snapshot whether the wrapper detection or
+     * the candidate filtering is at fault.
+     */
+    __model3dGLClassifierDebug?: {
+      sceneWrapperName: string;
+      sceneWrapperIsLoadedRoot: boolean;
+      substrateContainerName: string;
+      candidateNamesBeforeDedup: string[];
+      candidateNamesAfterDedup: string[];
+    };
   }
 }
 
 export default function Model3DViewerGL(props: Props) {
+  // webglError = WebGL2/init failure → renders the full-panel fallback
+  //   placeholder (parent will swap us out for the PNG viewer once it
+  //   processes onWebGLError(... 'webgl_unavailable')).
+  // assetError = per-asset GLB fetch/parse failure → renders an inline
+  //   error overlay over the canvas. The WebGL pipeline is fine; the
+  //   next footprint preview retries with WebGL. The parent does NOT
+  //   fall back permanently for this kind.
   const [webglError, setWebglError] = createSignal<string | null>(null);
+  const [assetError, setAssetError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(true);
 
   let containerEl: HTMLDivElement | undefined;
@@ -133,7 +196,7 @@ export default function Model3DViewerGL(props: Props) {
     const probe = canvasEl.getContext('webgl2');
     if (!probe) {
       setWebglError('WebGL2 not available');
-      props.onWebGLError?.('WebGL2 not available');
+      props.onWebGLError?.('WebGL2 not available', 'webgl_unavailable');
       return false;
     }
 
@@ -143,7 +206,10 @@ export default function Model3DViewerGL(props: Props) {
         antialias: true,
         alpha: true,
       });
-      renderer.setPixelRatio(window.devicePixelRatio);
+      // alpha.5-visual-parity: cap pixel ratio at 2 — on a 4K HiDPI monitor
+      // dpr can be 3, tripling fragment cost while running at 320px height
+      // for zero visible benefit. 2 is the standard three.js practice.
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       // glTF PBR pipeline expects linear-space input → sRGB output, with
       // a filmic tone map. Without these two lines metals look black and
       // dielectrics look washed-out / muddy.
@@ -154,11 +220,19 @@ export default function Model3DViewerGL(props: Props) {
       // as washed-out (the soldermask green came through almost cyan).
       // Drop the exposure first since it's the cheapest knob; lights
       // dialed back below in lock-step.
-      renderer.toneMappingExposure = 0.7;
+      // alpha.5-visual-parity: 0.7 → 0.95. The 0.7 was tuned with
+      // envMapIntensity=0.5 stacking; once envMap goes back up to 0.85
+      // the global exposure can come up too. 0.95 (just under 1.0) keeps
+      // ACES highlight rolloff without the muddy midtones.
+      renderer.toneMappingExposure = 0.95;
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       setWebglError(reason);
-      props.onWebGLError?.(reason);
+      // WebGLRenderer constructor failure = the browser/GPU cannot create
+      // a WebGL2 context (driver, blacklist, OOM at init). Permanent
+      // fallback is appropriate — every subsequent GLB load would trip
+      // the same wall.
+      props.onWebGLError?.(reason, 'webgl_unavailable');
       return false;
     }
 
@@ -224,12 +298,18 @@ export default function Model3DViewerGL(props: Props) {
     // the directionals just sharpen the shape on the chip body. With the
     // alpha.30 values the substrate's soldermask green saturated at the
     // top-front corner — looked plasticky and washed out.
-    scene.add(new THREE.AmbientLight(0xffffff, 0.15));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    keyLight.position.set(5, 8, 5);
+    // alpha.5-visual-parity: rebalance — opaque substrate + 0.85 envMap
+    // means we can lift ambient (0.15→0.25) and ease the key down
+    // (0.8→0.55) so the side-rake highlight doesn't blow out the
+    // top-front-right of the chip. Key position pulled more overhead
+    // (5,8,5 → 3,10,3) for less side rake. Fill nudged 0.4→0.35 to keep
+    // the relative key/fill ratio.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.55);
+    keyLight.position.set(3, 10, 3);
     keyLight.castShadow = false;
     scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.35);
     fillLight.position.set(-5, 8, -5);
     fillLight.castShadow = false;
     scene.add(fillLight);
@@ -277,8 +357,22 @@ export default function Model3DViewerGL(props: Props) {
     // Without this the sidecar throws `Path(None)` → TypeError → silent fail.
     if (!props.libDir || !props.componentName) return;
     setLoading(true);
+    // Clear any prior per-asset error — the user navigated to a new
+    // footprint (or hit Save), so the inline "GLB load failed" message
+    // from the previous component should not stick.
+    setAssetError(null);
     const myId = ++loadId;
     window.__model3dGLLoadCount = (window.__model3dGLLoadCount || 0) + 1;
+    // 3d-fix-journal Wave-2 follow-up: zero out per-load probe state so
+    // the visual-verify harness (and any future polling consumer) can
+    // distinguish "this load has finished" from "previous load's leftover
+    // values are still here." Without this reset a wait that polled
+    // chipNodeCount > 0 + substrateName would pass instantly on the
+    // previous fixture's globals while the new GLB is still mid-fetch
+    // — exactly what produced empty BEFORE snapshots for fixtures 2+.
+    window.__model3dGLChipNodeCount = 0;
+    window.__model3dGLSubstrateName = '';
+    window.__model3dGLLastError = undefined;
 
     try {
       const r = await invoke<{
@@ -359,31 +453,57 @@ export default function Model3DViewerGL(props: Props) {
                 std.needsUpdate = true;
               }
 
+              // alpha.5-visual-parity: smarter metalness demote. The
+              // alpha.4 blanket "metalness>0.9 → 0.1" rule correctly fixes
+              // OCCT's "unknown shading" default (metalness=1,
+              // baseColor≈(0.5,0.5,0.5), no metalnessMap) but also
+              // flattens legitimately-metallic parts (USB shells, gold
+              // pads, mounting hardware). Detect the OCCT grey-default
+              // case specifically: r,g,b all ≈ 0.5 (within 0.05). Any
+              // other base color → assume the metalness was set
+              // intentionally and preserve it.
               if (std.metalness !== undefined && std.metalness > 0.9 && !std.metalnessMap) {
-                std.metalness = 0.1;
-                std.roughness = Math.max(std.roughness ?? 0.5, 0.6);
-                std.needsUpdate = true;
+                const c = std.color;
+                const isOcctGrey =
+                  !!c
+                  && Math.abs(c.r - c.g) < 0.05
+                  && Math.abs(c.g - c.b) < 0.05
+                  && c.r > 0.4 && c.r < 0.6;
+                if (isOcctGrey) {
+                  std.metalness = 0.1;
+                  std.roughness = Math.max(std.roughness ?? 0.5, 0.6);
+                  std.needsUpdate = true;
+                }
+                // else: keep — likely intentional (USB shell, gold finger, etc.)
               }
 
               // alpha.34: damp the IBL contribution per-material. Default
               // envMapIntensity is 1.0 — combined with the tone-mapped
               // RoomEnvironment that's where the "washed out" came from.
-              // 0.5 keeps reflections subtle without going matte.
+              // alpha.5-visual-parity: 0.5 → 0.85. The 0.5 was correct
+              // when the substrate was also 0.8-opacity (double-darkening);
+              // once the board is opaque the 0.5 reads as "dead matte
+              // plastic." 0.85 keeps highlights from blowing out while
+              // letting the IBL actually contribute.
               if (std.envMapIntensity !== undefined) {
-                std.envMapIntensity = 0.5;
+                std.envMapIntensity = 0.85;
                 std.needsUpdate = true;
               }
 
-              // alpha.36: substrate goes to 80 % opacity so user can
-              // see chip leads / pads sitting just beneath it. Applied
-              // AFTER the alpha.31 force-opaque pass so it overrides.
-              // depthWrite stays true: keeps the chip visible behind
-              // the substrate from below-angle views.
+              // alpha.5-visual-parity: replace alpha.36's 80%-transparent
+              // substrate with an opaque saturated KiCad-green override.
+              // The PNG fallback shows a deep `#1f4234` opaque board; the
+              // 0.8 transparency made the WebGL viewer's substrate read
+              // as a pale plastic toy with edges bleeding through itself.
+              // OCCT-emitted soldermask is too desaturated even when
+              // opaque, so clamp the color to kicad-cli's default green
+              // (RGB 0.05/0.20/0.10) and a matte-but-not-flat finish.
               if (isSubstrate) {
-                std.transparent = true;
-                std.opacity = 0.8;
-                std.depthWrite = true;
-                std.alphaTest = 0;
+                std.color.setRGB(0.05, 0.20, 0.10);
+                std.roughness = 0.55;
+                std.metalness = 0;
+                std.transparent = false;
+                std.opacity = 1;
                 std.needsUpdate = true;
               }
             }
@@ -405,6 +525,176 @@ export default function Model3DViewerGL(props: Props) {
           }
           window.__model3dGLSubstrateName = substrateMesh?.name ?? '';
 
+          // Wave 3-B: whole-scene chip classifier. The previous "siblings
+          // of substrate" logic broke for connector footprints whose GLB
+          // hierarchy is:
+          //   loadedRoot → Scene wrapper → [
+          //     preview_PCB,           ← the substrate (kept still)
+          //     preview_PCB_1..N,      ← silk/pads/mask layers (also still)
+          //     <chip Group>           ← contains the real chip sub-meshes
+          //   ]
+          // The substrate's "siblings" then included preview_PCB_1..N
+          // (translated as if they were chip parts → user saw "the PCB
+          // is stretching") AND skipped the actual chip Group's deeper
+          // sub-meshes. Net effect: substrate stays still (good), other
+          // PCB layers translate (BAD), real chip body stays still (BAD).
+          //
+          // New algorithm (Wave 4-C revision):
+          //   1. Treat anything named /^preview_PCB(_|$)/i as substrate-
+          //      related — never translate.
+          //   2. For every other mesh, check whether it sits ABOVE the
+          //      substrate top (bbox.max.y > substrate.bbox.max.y - 0.5mm
+          //      tolerance). Anything below is bottom-side artwork or a
+          //      buried artefact — skip.
+          //   3. For each surviving "above the board" mesh, walk UP the
+          //      tree until we hit the direct child of the SCENE WRAPPER
+          //      (loadedRoot.children[0] for kicad-cli output, or
+          //      loadedRoot itself for flatter hierarchies). That
+          //      ancestor is one chip body — translate it as a unit so
+          //      an OCCT-exploded assembly with N sub-meshes still moves
+          //      rigidly. Walking to substrateMesh.parent (Wave 3-B's
+          //      target) overshoots past the chip's own Group because
+          //      the substrate's parent is a SIBLING Group, not the
+          //      shared wrapper.
+          //   4. Reject ancestor candidates that are the substrate's
+          //      own parent Group, the wrapper, or loadedRoot — those
+          //      contain the board.
+          //   5. Deduplicate: many sub-meshes share the same top-level
+          //      ancestor.
+          chipNodes = [];
+          // Wave 4-C: Wave 3-B assumed that walking up from a chip mesh
+          // until ancestor.parent === substrateMesh.parent would land on
+          // a sibling Group that contained only chip geometry. For
+          // kicad-cli's actual GLB hierarchy that's wrong: the substrate
+          // and the chip live under separate sibling Groups inside an
+          // outer "Scene wrapper" (Node 0 in the bug journal). The
+          // substrate's parent is itself just one of those sibling
+          // Groups (Node 2 — `=>[0:1:1:3]`). Walking up from a chip
+          // mesh therefore overshoots past the chip's own Group, all
+          // the way to loadedRoot, and the defensive `break` adds
+          // loadedRoot to the candidate set. applyLiveDelta then
+          // translates loadedRoot, dragging the substrate along.
+          //
+          // Fix: terminate the walk one level shallower. The "scene
+          // wrapper" is the level at which top-level scene objects
+          // live. For kicad-cli output that's `loadedRoot.children[0]`
+          // (the unnamed wrapper); for flatter hierarchies it's
+          // `loadedRoot` itself. We stop when ancestor.parent IS the
+          // sceneWrapper — so ancestor is a direct child of the
+          // wrapper (the chip's own top-level Group). Then we explicitly
+          // skip the substrate's parent Group (a SIBLING under the
+          // wrapper, not a chip) and skip the wrapper / loadedRoot
+          // themselves (translating those would move everything).
+          const substrateContainer: THREE.Object3D =
+            substrateMesh?.parent ?? loadedRoot;
+          const sceneWrapper: THREE.Object3D =
+            loadedRoot.children.length === 1 &&
+            loadedRoot.children[0] &&
+            !(loadedRoot.children[0] as THREE.Mesh).isMesh
+              ? loadedRoot.children[0]
+              : loadedRoot;
+
+          // substrateBboxLocal was captured pre-recenter; substrate top
+          // in local space is its max.y. Tolerance: 0.5 mm (=5e-4 m)
+          // catches OCCT-rounded sub-meshes that touch the substrate top
+          // but extend slightly below the nominal top plane.
+          const substrateTopY = substrateBboxLocal
+            ? substrateBboxLocal.max.y
+            : -Infinity;
+          const Y_TOL = 5e-4; // metres — kicad-cli emits in metres
+          const PCB_NAME_RE = /^preview_PCB(_|$)/i;
+          const AXIS_NAME_RE = /^axis_/i;
+
+          const candidates = new Set<THREE.Object3D>();
+          const candidatesBeforeDedup: string[] = [];
+          loadedRoot.traverse((obj) => {
+            const mesh = obj as THREE.Mesh;
+            if (!mesh.isMesh) return;
+            // (1) Substrate-related by name → skip.
+            if (PCB_NAME_RE.test(mesh.name)) return;
+            // Skip our own decal/axis helpers — they're added later but
+            // belt-and-braces in case classifier ever runs after.
+            if (mesh.name === 'preview_PCB_top_decal') return;
+            if (AXIS_NAME_RE.test(mesh.name)) return;
+            if (mesh.name.toLowerCase().includes('decal')) return;
+            let p: THREE.Object3D | null = mesh.parent;
+            while (p) {
+              if (p.name === 'axis_indicators') return;
+              p = p.parent;
+            }
+            // (2) bbox-Y filter. Compute in local-loadedRoot space (same
+            // frame substrateBboxLocal lives in — both pre-recenter).
+            const b = new THREE.Box3().setFromObject(mesh);
+            if (b.isEmpty()) return;
+            // Below the board top minus tolerance → bottom-side stuff.
+            if (b.max.y < substrateTopY - Y_TOL) return;
+            // (3) Walk up to the ancestor that's a direct child of the
+            // sceneWrapper. The loop terminates when ancestor.parent
+            // IS the wrapper — so ancestor is the chip's top-level
+            // Group inside the wrapper.
+            let ancestor: THREE.Object3D = mesh;
+            while (ancestor.parent && ancestor.parent !== sceneWrapper) {
+              ancestor = ancestor.parent;
+            }
+            // (4) Filter the suspects.
+            // - substrateContainer is the substrate's parent Group, a
+            //   sibling of the chip Group under the wrapper. NEVER a
+            //   chip — translating it drags the board.
+            // - loadedRoot / sceneWrapper themselves: walk hit the top
+            //   without finding a wrapper-level child (e.g. the mesh
+            //   IS a direct child of loadedRoot in a flat hierarchy
+            //   where sceneWrapper === loadedRoot). Translating either
+            //   would move the entire scene.
+            // - substrateMesh itself: the mesh-level name check above
+            //   should already have filtered it, but cheap to guard.
+            if (ancestor === substrateContainer) return;
+            if (ancestor === loadedRoot) return;
+            if (ancestor === sceneWrapper) return;
+            if (ancestor === substrateMesh) return;
+            candidatesBeforeDedup.push(ancestor.name || '(unnamed)');
+            candidates.add(ancestor);
+          });
+
+          // (5) Deduplicate and freeze base matrices.
+          for (const node of candidates) {
+            chipNodes.push({ node, baseMatrix: node.matrix.clone() });
+          }
+          window.__model3dGLChipNodeCount = chipNodes.length;
+          window.__model3dGLChipMeshNames = chipNodes.map(
+            (c) => c.node.name || '(unnamed)',
+          );
+          window.__model3dGLClassifierDebug = {
+            sceneWrapperName: sceneWrapper.name || '(unnamed)',
+            sceneWrapperIsLoadedRoot: sceneWrapper === loadedRoot,
+            substrateContainerName: substrateContainer.name || '(unnamed)',
+            candidateNamesBeforeDedup: candidatesBeforeDedup,
+            candidateNamesAfterDedup: chipNodes.map(
+              (c) => c.node.name || '(unnamed)',
+            ),
+          };
+          // (6) Defensive: if the classifier picks up nothing, log a
+          // warning. Don't fall back to translating loadedRoot — better
+          // to translate nothing than translate the wrong thing (which
+          // is exactly the Wave 3-B bug we're fixing).
+          if (chipNodes.length === 0) {
+            console.warn(
+              '[3D viewer GL] classifier found no chip groups — applyLiveDelta will be a no-op',
+            );
+            window.__model3dGLLastError = 'classifier found no chip groups';
+          }
+          if (substrateBboxLocal) {
+            window.__model3dGLSubstrateBbox = {
+              minX: substrateBboxLocal.min.x,
+              minY: substrateBboxLocal.min.y,
+              minZ: substrateBboxLocal.min.z,
+              maxX: substrateBboxLocal.max.x,
+              maxY: substrateBboxLocal.max.y,
+              maxZ: substrateBboxLocal.max.z,
+            };
+          } else {
+            window.__model3dGLSubstrateBbox = undefined;
+          }
+
           // Recenter so the substrate TOP sits at world Y=0. kicad-cli's
           // GLB has the substrate at Y=[0, ~1.5mm] with the chip extending
           // UP from there — the user reads the visible side wall as
@@ -413,36 +703,19 @@ export default function Model3DViewerGL(props: Props) {
           // the substrate top height. The chip body then extends upward
           // from Y=0 and the substrate hangs below, matching the look of
           // a physical board on a workbench.
+          //
+          // Wave 3-B: deferred until AFTER the chip classifier so the
+          // bbox-Y comparison is in the same (pre-recenter) frame as
+          // substrateBboxLocal. The classifier captures node baseMatrix
+          // values that don't include this loadedRoot.position shift —
+          // applyLiveDelta operates on those base matrices and the
+          // recenter propagates through the parent transform, so per-
+          // node deltas don't need to know about the recenter.
           if (substrateBboxLocal && isFinite(substrateBboxLocal.max.y) && substrateBboxLocal.max.y !== 0) {
             loadedRoot.position.y -= substrateBboxLocal.max.y;
             loadedRoot.updateMatrix();
             loadedRoot.updateMatrixWorld(true);
           }
-
-          // alpha.3-bugfix: identify the chip node(s) — siblings of the
-          // substrate within their actual container, NOT children of
-          // loadedRoot. The alpha.35-36 logic assumed loadedRoot.children
-          // was [substrate, chip1, chip2, …], but kicad-cli's GLB output
-          // is loadedRoot → Scene → [substrate, chip1, chip2, …] (one
-          // wrapper between the loader-root and the meshes). Walking up
-          // from the substrate to a "top-level ancestor under loadedRoot"
-          // returned that single Scene wrapper, the for-loop then saw
-          // only one child and skipped it, chipNodes stayed empty, and
-          // applyLiveDelta silently bailed → user-reported "position
-          // controls do nothing." The fix: iterate the substrate's
-          // ACTUAL parent's children, not loadedRoot's.
-          //
-          // This works for both shapes (substrate-as-direct-child and
-          // substrate-inside-Scene-wrapper) because substrate.parent
-          // is whichever container actually holds the siblings.
-          chipNodes = [];
-          const substrateContainer: THREE.Object3D | null =
-            substrateMesh?.parent ?? loadedRoot;
-          for (const child of substrateContainer.children) {
-            if (child === substrateMesh) continue;
-            chipNodes.push({ node: child, baseMatrix: child.matrix.clone() });
-          }
-          window.__model3dGLChipNodeCount = chipNodes.length;
 
           scene.add(loadedRoot);
 
@@ -451,14 +724,17 @@ export default function Model3DViewerGL(props: Props) {
           // has no copper layer; without this the user sees an empty
           // green PCB with the chip body floating on top.
           if (substrateBboxLocal && r.top_layers_svg_data_url) {
-            void attachTopLayerDecal(loadedRoot, substrateBboxLocal, r.top_layers_svg_data_url);
+            void attachTopLayerDecal(loadedRoot, substrateBboxLocal, r.top_layers_svg_data_url, renderer);
           }
 
           // alpha.34: ±X / ±Y / ±Z axis indicators. Anchored under
           // loadedRoot so they move with positioner deltas — gives the
           // user a fixed reference frame even mid-orbit. Sized to
           // substrate diagonal × 1.4 so labels sit clear of the board.
-          if (substrateBboxLocal) {
+          // alpha.5-axes-shrink: default-off (vision-agent flagged the
+          // cones + labels as dominating the canvas). Caller opts in
+          // via showAxisIndicators=true.
+          if (substrateBboxLocal && props.showAxisIndicators) {
             attachAxisIndicators(loadedRoot, substrateBboxLocal);
           }
 
@@ -471,9 +747,13 @@ export default function Model3DViewerGL(props: Props) {
         },
         (err) => {
           if (myId !== loadId) return;
+          const parseReason = err instanceof Error ? err.message : String(err);
           console.warn('[3D viewer GL] GLTFLoader.parse failed:', err);
-          window.__model3dGLLastError = `GLTFLoader.parse: ${err instanceof Error ? err.message : String(err)}`;
-          setWebglError('GLB parse failed');
+          window.__model3dGLLastError = `GLTFLoader.parse: ${parseReason}`;
+          // Per-asset failure — show inline, do NOT permanently fall back.
+          // The next footprint may parse cleanly with the same WebGL ctx.
+          setAssetError(`GLB parse failed: ${parseReason}`);
+          props.onWebGLError?.(parseReason, 'asset_load_failed');
           setLoading(false);
         },
       );
@@ -482,8 +762,14 @@ export default function Model3DViewerGL(props: Props) {
       const reason = e instanceof Error ? e.message : String(e);
       console.warn('[3D viewer GL] GLB fetch failed:', e);
       window.__model3dGLLastError = `GLB fetch: ${reason}`;
-      setWebglError(reason);
-      props.onWebGLError?.(reason);
+      // Per-asset failure (sidecar render_3d_glb_angled threw, e.g. STEP
+      // file missing on disk). The WebGL context is fine — surface inline
+      // for THIS footprint and stay on the GL viewer for the next one.
+      // Bug 4 fix: previously this called onWebGLError with no kind, the
+      // parent flipped useGL=false permanently, and one missing IPEX STEP
+      // dragged the entire session onto the slow PNG renderer.
+      setAssetError(reason);
+      props.onWebGLError?.(reason, 'asset_load_failed');
       setLoading(false);
     }
   }
@@ -652,11 +938,89 @@ export default function Model3DViewerGL(props: Props) {
   }
 
   // ---------------------------------------------------------------
+  // Wave 8-B test hook: zoom the camera onto the chip body for the
+  // visual-verify harness. The default frameCameraTo zoom keeps the
+  // whole substrate visible so app users see context, but at the
+  // 530×320 cropped viewer size the chip body is only ~30 px wide —
+  // sub-pixel changes (a 1mm Z lift) can't be evidenced. This hook
+  // collapses the camera distance toward the chip union bbox without
+  // touching the production framing path.
+  //
+  //   window.__kibraryTest.zoomToChip(factor=4)
+  //
+  //  - reads `chipNodes` (already populated by the GLB classifier)
+  //  - computes union bbox of all chip Groups
+  //  - sets controls.target to that bbox center
+  //  - moves camera to (target + (camera - target) / factor), keeping
+  //    the existing orbit angle but shrinking the distance
+  //  - updates near/far so the tighter framing doesn't clip the chip
+  // ---------------------------------------------------------------
+  function zoomToChip(factor = 4): boolean {
+    if (!camera || !controls) return false;
+    if (!chipNodes.length) return false;
+    const f = Number.isFinite(factor) && factor > 0 ? factor : 4;
+
+    const union = new THREE.Box3();
+    let any = false;
+    for (const { node } of chipNodes) {
+      const b = new THREE.Box3().setFromObject(node);
+      if (b.isEmpty()) continue;
+      union.union(b);
+      any = true;
+    }
+    if (!any || union.isEmpty()) return false;
+
+    const center = new THREE.Vector3();
+    union.getCenter(center);
+    const size = new THREE.Vector3();
+    union.getSize(size);
+    const chipDim = Math.max(size.x, size.y, size.z);
+
+    // Pull the camera toward the chip while preserving its current
+    // orbit direction. (camera - oldTarget) is the orbit ray; we
+    // shrink it by `factor` and re-anchor at the new chip-centric
+    // target.
+    const oldTarget = controls.target.clone();
+    const ray = new THREE.Vector3().subVectors(camera.position, oldTarget);
+    ray.divideScalar(f);
+
+    // Floor the distance so a sub-mm chip doesn't pull the camera
+    // inside the geometry. ~3× the chip's max dim keeps margin.
+    const minDist = Math.max(chipDim * 3, 1e-4);
+    if (ray.length() < minDist) {
+      ray.setLength(minDist);
+    }
+
+    camera.position.copy(center).add(ray);
+
+    // Tighten near plane proportional to the new framing so the chip
+    // body never clips when the user wheel-zooms further in.
+    const minFeature = Math.max(
+      Math.min(size.x || chipDim, size.y || chipDim, size.z || chipDim),
+      1e-5,
+    );
+    camera.near = Math.max(minFeature / 100, 1e-6);
+    camera.updateProjectionMatrix();
+
+    controls.target.copy(center);
+    controls.update();
+    return true;
+  }
+
+  // ---------------------------------------------------------------
   // Lifecycle wiring.
   // ---------------------------------------------------------------
 
   onMount(() => {
     if (!initWebGL()) return; // error already surfaced
+    // Install the harness-only zoom hook on the existing __kibraryTest
+    // bag (already populated by workspace.ts / lcscIndex.ts / etc.).
+    // Closes over the component-scoped `chipNodes` / `camera` /
+    // `controls` so it always sees the live values at call time.
+    const w = window as unknown as { __kibraryTest?: Record<string, unknown> };
+    w.__kibraryTest = w.__kibraryTest ?? {};
+    (w.__kibraryTest as Record<string, unknown>).zoomToChip = (factor?: number) =>
+      zoomToChip(typeof factor === 'number' ? factor : 4);
     void loadGLB();
   });
 
@@ -704,6 +1068,12 @@ export default function Model3DViewerGL(props: Props) {
     if (window.__model3dGLScene === scene) {
       window.__model3dGLScene = undefined;
     }
+    // Drop the Wave 8-B harness hook so it doesn't keep the closure
+    // (and the disposed renderer) alive after unmount.
+    const w = window as unknown as { __kibraryTest?: Record<string, unknown> };
+    if (w.__kibraryTest && 'zoomToChip' in w.__kibraryTest) {
+      delete (w.__kibraryTest as Record<string, unknown>).zoomToChip;
+    }
     renderer = null;
     scene = null;
     camera = null;
@@ -739,6 +1109,23 @@ export default function Model3DViewerGL(props: Props) {
             class="absolute inset-0 flex items-center justify-center text-xs text-zinc-500 dark:text-zinc-400 bg-zinc-200/40 dark:bg-zinc-800/40 pointer-events-none"
           >
             Loading 3D model…
+          </div>
+        </Show>
+        {/*
+          Per-asset load-failure overlay. Stays inside the GL viewer (we
+          do NOT fall back to the PNG renderer for this) so the user can
+          see exactly which footprint failed without losing the session's
+          interactive renderer for the next preview.
+        */}
+        <Show when={!loading() && assetError()}>
+          <div
+            data-testid="3d-viewer-gl-asset-error"
+            class="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-amber-700 dark:text-amber-300 bg-zinc-100/85 dark:bg-zinc-900/85"
+          >
+            <div class="space-y-1">
+              <p class="font-medium">3D model failed to load for this footprint</p>
+              <p class="font-mono text-[11px] opacity-80 break-words">{assetError()}</p>
+            </div>
           </div>
         </Show>
       </div>
@@ -826,6 +1213,7 @@ async function attachTopLayerDecal(
   rootGroup: THREE.Object3D,
   substrateBboxLocal: THREE.Box3,
   svgDataUrl: string,
+  renderer: THREE.WebGLRenderer | null,
 ): Promise<void> {
   // Parse the SVG's viewBox so the decal is sized to the actual board
   // extents kicad-cli plotted (typically very close to the substrate's
@@ -849,9 +1237,11 @@ async function attachTopLayerDecal(
 
   // Rasterise the SVG via an Image → CanvasTexture round-trip. SVGs in
   // <img> are decoded by the browser without needing three's SVGLoader.
-  // 1024x1024 is enough for visibly crisp pads on the typical 320px
-  // viewer; we letterbox to preserve aspect on non-square boards.
-  const TARGET = 1024;
+  // alpha.5-visual-parity: TARGET 1024 → 2048. The pad+silk decal is the
+  // load-bearing detail; at 1024 the silkscreen "REF**" pixelates on a
+  // 320 px viewer when zoomed in. 2048 quadruples texture memory (~16
+  // MB) — acceptable for one-shot per load (we dispose on swap).
+  const TARGET = 2048;
   const aspect = vbW_mm / vbH_mm;
   const canvasW = aspect >= 1 ? TARGET : Math.round(TARGET * aspect);
   const canvasH = aspect >= 1 ? Math.round(TARGET / aspect) : TARGET;
@@ -879,6 +1269,12 @@ async function attachTopLayerDecal(
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  // alpha.5-visual-parity: max anisotropy sharpens the decal at grazing
+  // angles (the isometric default view is exactly that). Falls back to
+  // the texture's default (1) if the renderer isn't available.
+  if (renderer) {
+    texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  }
   texture.needsUpdate = true;
 
   // Decal plane: kicad-cli's SVG uses Y-down (screen coords). Three.js
@@ -890,10 +1286,28 @@ async function attachTopLayerDecal(
   // is implicit (substrate is already in metres, viewBox is in mm so we
   // divide by 1000).
   const planeGeom = new THREE.PlaneGeometry(vbW_mm / 1000, vbH_mm / 1000);
+  // alpha.5-decal-fix: full "decal on opaque mesh" three.js recipe.
+  // Wave 2-B made the substrate fully opaque (depthWrite=true, opacity=1)
+  // — pre-alpha.5 the substrate was 80 % transparent so depth-buffer
+  // contention with the decal didn't matter. Now it does, and the
+  // decal disappears under the substrate's depth writes unless we:
+  //   (1) lift the plane geometrically above substrate.max.y by 50 µm
+  //       (visually invisible, beats sub-mm depth precision wobble),
+  //   (2) bias the polygons toward the camera in NDC via polygonOffset
+  //       (negative factor/units = closer to camera in OpenGL),
+  //   (3) skip writing the decal's depth so transparent regions don't
+  //       mask the substrate behind them, and
+  //   (4) discard sub-threshold alpha via alphaTest so the SVG's
+  //       transparent background never paints over the green PCB,
+  //   (5) `toneMapped: false` so the SVG sRGB colors render at
+  //       authoring intent (kicad-cli emits saturated silkscreen
+  //       white / pad copper that ACES would otherwise desaturate).
   const planeMat = new THREE.MeshBasicMaterial({
     map: texture,
     transparent: true,
     depthWrite: false,
+    alphaTest: 0.01,
+    toneMapped: false,
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
@@ -901,7 +1315,17 @@ async function attachTopLayerDecal(
   const decal = new THREE.Mesh(planeGeom, planeMat);
   decal.name = 'preview_PCB_top_decal';
   decal.rotation.x = -Math.PI / 2; // lie flat on XZ, normal +Y
-  decal.position.set(cx, topY + 1e-5, cz); // 10µm above substrate top
+  // alpha.5-decal-fix: 10 µm → 50 µm. With opaque substrate the
+  // 10 µm lift was within depth-buffer precision noise on some GPUs
+  // (the visual harness still passes but the user reports the decal
+  // looks washed out / partially missing on their hardware). 50 µm
+  // is still well below human-visible separation but solidly outside
+  // the 24-bit depth wobble for a 0.5 m-far ortho-ish camera.
+  decal.position.set(cx, topY + 5e-5, cz);
+  // alpha.5-decal-fix: render decal AFTER the substrate so depth-test
+  // wins are sticky on transparent boundaries (renderOrder>0 also keeps
+  // it visually layered above any equally-positioned chip primitive).
+  decal.renderOrder = 1;
   // Stretch to actually cover the substrate XZ extents (board outline
   // could differ from plot viewBox by a few mm — we trust the substrate
   // mesh as the "truth" for positioning, and scale the SVG texture to
@@ -928,7 +1352,11 @@ function attachAxisIndicators(rootGroup: THREE.Object3D, substrateBboxLocal: THR
   const padZ = halfZ * 0.4;
   // alpha.35: vertical stand-off in metres. The user explicitly asked
   // for "10 cm above and below" so they don't occlude the chip view.
-  const Z_STANDOFF = 0.10;
+  // alpha.5-axes-shrink: 0.10 → 0.04 m. The 10 cm offset still towered
+  // over a 0603 chip (~0.8 mm tall) and made the +Z / -Z cones the
+  // dominant on-canvas element. 4 cm keeps the directional cue
+  // legible without dwarfing the subject.
+  const Z_STANDOFF = 0.04;
 
   const arrows = new THREE.Group();
   arrows.name = 'axis_indicators';
@@ -1011,7 +1439,10 @@ function makeAxisLabelSprite(text: string, color: number): THREE.Sprite {
   // alpha.35: sprite world size dropped from 0.006 → 0.004 so the labels
   // don't dominate the canvas at typical viewer dimensions (alpha.34's
   // labels were nearly half the chip's apparent size).
-  sprite.scale.set(0.004, 0.004, 1);
+  // alpha.5-axes-shrink: 0.004 → 0.0025 — vision-agent confirmed the
+  // labels still read as oversized on a 0603 chip. Smaller font keeps
+  // them visible without competing with the substrate / decal.
+  sprite.scale.set(0.0025, 0.0025, 1);
   return sprite;
 }
 

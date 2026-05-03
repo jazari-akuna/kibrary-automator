@@ -174,6 +174,30 @@ def _sanitise_footprint(
 ) -> str:
     """Read the .kicad_mod and return a string ready to splice into a board.
 
+    Thin wrapper over :func:`_sanitise_footprint_with_warnings` for callers
+    that don't care about diagnostic warnings (e.g. the PNG path, which
+    has no structured-error channel back to the frontend).
+    """
+    text, _warnings = _sanitise_footprint_with_warnings(
+        footprint_file,
+        lib_dir,
+        override_offset=override_offset,
+        override_rotation=override_rotation,
+        override_scale=override_scale,
+    )
+    return text
+
+
+def _sanitise_footprint_with_warnings(
+    footprint_file: Path,
+    lib_dir: Path,
+    *,
+    override_offset: tuple[float, float, float] | None = None,
+    override_rotation: tuple[float, float, float] | None = None,
+    override_scale: tuple[float, float, float] | None = None,
+) -> tuple[str, list[dict]]:
+    """Read the .kicad_mod and return ``(text, warnings)``.
+
     * Legacy layer aliases (bare and quoted) → canonical name.
     * ``(model …)`` paths → absolute filesystem paths (``${KSL_ROOT}``
       expanded, ``./foo.step`` resolved against ``lib_dir/*.3dshapes``).
@@ -181,6 +205,15 @@ def _sanitise_footprint(
       provided, the first ``(model …)`` block's transform sub-S-exprs are
       rewritten in-memory. Used by the live-preview renderer so the user
       can drag values around without writing to disk on every tick.
+
+    Each warning is a dict describing a (model …) resolution event the
+    user might want to see — currently:
+
+    * ``{"kind": "model_not_found", "token": <raw>, "expanded": <str>,
+       "basename": <str>, "sibling_match": <str|None>, "lib_dir": <str>}``
+      — the (model …) block was stripped because the .step couldn't be
+      located. ``sibling_match`` is set when the same basename exists in
+      a sibling library's ``.3dshapes/`` (likely mis-targeted commit).
     """
     text = footprint_file.read_text(encoding="utf-8")
     for alias, canonical in _LAYER_ALIASES.items():
@@ -194,7 +227,7 @@ def _sanitise_footprint(
             f'(layer "{canonical}")',
             text,
         )
-    text = _rewrite_or_strip_model_blocks(text, lib_dir)
+    text, warnings = _rewrite_or_strip_model_blocks_with_warnings(text, lib_dir)
     if (
         override_offset is not None
         and override_rotation is not None
@@ -203,24 +236,42 @@ def _sanitise_footprint(
         text = _patch_model_transform(
             text, override_offset, override_rotation, override_scale
         )
-    return text
+    return text, warnings
 
 
 def _rewrite_or_strip_model_blocks(text: str, lib_dir: Path) -> str:
+    """Backward-compatible wrapper that drops the warnings list.
+
+    Prefer :func:`_rewrite_or_strip_model_blocks_with_warnings` in new
+    code — the structured warnings let the JSON-RPC layer surface a
+    "model file not found" diagnostic to the frontend instead of
+    silently emitting a board-only GLB.
+    """
+    new_text, _ = _rewrite_or_strip_model_blocks_with_warnings(text, lib_dir)
+    return new_text
+
+
+def _rewrite_or_strip_model_blocks_with_warnings(
+    text: str, lib_dir: Path
+) -> tuple[str, list[dict]]:
     """Rewrite each ``(model …)`` path to absolute, OR strip the whole
     block when the resolved path doesn't exist on disk.
+
+    Returns ``(new_text, warnings)`` where each warning is a structured
+    dict the call site (and ultimately the JSON-RPC response) can use to
+    tell the user why their 3D body is missing.
 
     Stripping is the safe choice: ``kicad-cli pcb export glb`` silently
     drops a missing-file 3D model and emits a board-plane-only GLB with
     exit 0 (see :func:`_resolve_model_path` docstring). By removing the
-    block here we give kicad-cli nothing to fail on, AND the call site
-    can decide independently whether to warn the user about the missing
-    .step.
+    block here we give kicad-cli nothing to fail on; the warnings list
+    is how the user finds out.
 
     Uses a paren-depth scanner because nested S-exprs (``(offset …)``,
     ``(scale …)``, ``(rotate …)``) can't be balanced with a flat regex.
     """
     out_parts: list[str] = []
+    warnings: list[dict] = []
     i = 0
     while i < len(text):
         match = _MODEL_PATH_RE.search(text, i)
@@ -255,13 +306,27 @@ def _rewrite_or_strip_model_blocks(text: str, lib_dir: Path) -> str:
             i = len(text)
             break
 
-        resolved = _resolve_model_path(match.group(2), lib_dir)
+        token = match.group(2)
+        resolved = _resolve_model_path(token, lib_dir)
         if resolved is None:
+            raw_token = token.strip().strip('"').strip("'")
+            expanded = _expand_model_env_vars(raw_token, lib_dir)
+            basename = Path(expanded).name
+            sibling_match = _find_basename_in_sibling_libs(lib_dir, basename)
+            warnings.append({
+                "kind": "model_not_found",
+                "token": token,
+                "expanded": expanded,
+                "basename": basename,
+                "sibling_match": sibling_match,
+                "lib_dir": str(lib_dir),
+            })
             log.warning(
                 "render_3d: stripping (model …) block — file not found "
-                "on disk for token %r (lib_dir=%s). kicad-cli would "
-                "silently drop this model and produce an empty-board GLB.",
-                match.group(2), lib_dir,
+                "on disk for token %r (lib_dir=%s, expanded=%s, "
+                "sibling_match=%s). kicad-cli would silently drop this "
+                "model and produce an empty-board GLB.",
+                token, lib_dir, expanded, sibling_match,
             )
             # Skip the entire block. Also swallow the trailing newline +
             # leading whitespace if present so we don't leave a blank line.
@@ -276,14 +341,43 @@ def _rewrite_or_strip_model_blocks(text: str, lib_dir: Path) -> str:
         block = text[block_start:end]
         prefix_in_block = match.group(1)  # "(model "
         new_block = block.replace(
-            prefix_in_block + match.group(2),
+            prefix_in_block + token,
             prefix_in_block + '"' + resolved + '"',
             1,
         )
         out_parts.append(new_block)
         i = end
 
-    return "".join(out_parts)
+    return "".join(out_parts), warnings
+
+
+def _find_basename_in_sibling_libs(lib_dir: Path, basename: str) -> str | None:
+    """Search every sibling library's ``.3dshapes/`` for *basename*.
+
+    Helps diagnose the common drag-and-drop misfire where the .step
+    landed in another library's ``.3dshapes/`` (e.g. user picked the
+    wrong target lib at commit time, or a previous commit synced the
+    file under the wrong KSL_ROOT subdir). Returns the absolute path of
+    the first match, or ``None`` if no sibling has it.
+
+    The "workspace" we walk is ``lib_dir.parent`` — i.e. KSL_ROOT under
+    the standard committed-library convention. Skips ``lib_dir`` itself
+    (the caller already searched there).
+    """
+    try:
+        ws_root = lib_dir.parent
+        if not ws_root.is_dir():
+            return None
+        for sibling in sorted(ws_root.iterdir()):
+            if not sibling.is_dir() or sibling == lib_dir:
+                continue
+            for shapes_dir in sibling.glob("*.3dshapes"):
+                cand = shapes_dir / basename
+                if cand.is_file():
+                    return str(cand)
+    except OSError:
+        return None
+    return None
 
 
 def footprint_has_model_block(footprint_file: Path) -> bool:

@@ -551,3 +551,218 @@ def test_unprefixed_footprint_without_matching_file_left_alone(tmp_path: Path) -
     contents = sym_file.read_text()
     assert '"see_datasheet_p3"' in contents, "must not corrupt orphan-style refs"
     assert '"Foo_KSL:see_datasheet_p3"' not in contents
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 — auto-centring the STEP body on the footprint's pad bbox
+# (Wave 4 / 3d-fix-journal). _ensure_model_blocks must compute a sane default
+# (offset …) so the chip body lands over the pads instead of (0,0,0) which
+# leaves SnapEDA STEPs visibly off to one side.
+# ---------------------------------------------------------------------------
+
+# Real STEP shipped with the e2e fixtures; bbox via OCP is roughly
+# x[-1.55,1.55] y[-1.50,1.50] z[0,1.25] → centre ≈ (0, 0, 0.625).
+_UFL_STEP = (
+    Path(__file__).parent.parent.parent
+    / "e2e" / "fixtures" / "u_fl_hirose"
+    / "U.FL_Hirose_U.FL-R-SMT-1_Vertical.step"
+)
+
+
+def test_dropped_step_offset_centers_body_on_pads(tmp_path: Path) -> None:
+    """When a STEP is dropped onto a footprint, the auto-generated
+    (model …) block must include an (offset (xyz …)) that translates the
+    STEP body's bbox centre onto the centre of the footprint's pad bbox.
+
+    Synthetic footprint: pads at (3, 4) and (7, 4) → pad bbox centre (5, 4).
+    Real STEP fixture: U.FL body centred at (0, 0, ~0.625).
+    Expected offset = pad_centre - step_centre ≈ (5, 4, 0).
+    """
+    if not _UFL_STEP.is_file():
+        pytest.skip(f"e2e fixture missing: {_UFL_STEP}")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    sym = src_dir / "X.kicad_sym"
+    sym.write_bytes(FIXTURE_SYM.read_bytes())
+    fp = src_dir / "X.kicad_mod"
+    fp.write_text(
+        '(footprint "X" (layer F.Cu)\n'
+        '  (pad 1 smd rect (at 3 4) (size 1 1) (layers F.Cu F.Mask F.Paste))\n'
+        '  (pad 2 smd rect (at 7 4) (size 1 1) (layers F.Cu F.Mask F.Paste))\n'
+        ')\n'
+    )
+    step = src_dir / "X.step"
+    step.write_bytes(_UFL_STEP.read_bytes())
+
+    group = {
+        "name": "X",
+        "symbol_path": str(sym),
+        "footprint_path": str(fp),
+        "model_paths": [str(step)],
+        "source_dir": str(src_dir),
+    }
+
+    commit_group(workspace=workspace, group=group, target_lib="Foo_KSL")
+    committed = workspace / "Foo_KSL" / "Foo_KSL.pretty" / "X.kicad_mod"
+    assert committed.is_file()
+
+    from kiutils.footprint import Footprint as _Fp
+    parsed = _Fp().from_file(str(committed))
+    assert len(parsed.models) == 1, f"expected exactly one model block, got {len(parsed.models)}"
+    m = parsed.models[0]
+    assert m.pos is not None, "model block missing offset"
+    # U.FL body centre ≈ (0, 0, 0.625); pad centre = (5, 4)
+    # Expected: offset.x ≈ 5, offset.y ≈ 4, offset.z ≈ 0
+    assert abs(m.pos.X - 5.0) < 0.05, f"expected offset.X≈5, got {m.pos.X}"
+    assert abs(m.pos.Y - 4.0) < 0.05, f"expected offset.Y≈4, got {m.pos.Y}"
+    assert abs(m.pos.Z) < 0.05, f"expected offset.Z=0, got {m.pos.Z}"
+
+
+def test_dropped_step_offset_falls_back_when_step_unreadable(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An invalid/unreadable STEP must NOT crash the commit — the (model …)
+    block is still added but with offset (0,0,0) and a warning logged."""
+    import logging
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    sym = src_dir / "X.kicad_sym"
+    sym.write_bytes(FIXTURE_SYM.read_bytes())
+    fp = src_dir / "X.kicad_mod"
+    fp.write_text(
+        '(footprint "X" (layer F.Cu)\n'
+        '  (pad 1 smd rect (at 0 0) (size 1 1) (layers F.Cu F.Mask F.Paste))\n'
+        ')\n'
+    )
+    # Write garbage that is NOT a STEP file — OCP will reject, regex finds no
+    # CARTESIAN_POINT entries → bbox returns None → fall through to (0,0,0).
+    step = src_dir / "broken.step"
+    step.write_text("not a real step file")
+
+    group = {
+        "name": "X",
+        "symbol_path": str(sym),
+        "footprint_path": str(fp),
+        "model_paths": [str(step)],
+        "source_dir": str(src_dir),
+    }
+
+    with caplog.at_level(logging.WARNING, logger="kibrary_sidecar.drop_import"):
+        commit_group(workspace=workspace, group=group, target_lib="Foo_KSL")
+
+    committed = workspace / "Foo_KSL" / "Foo_KSL.pretty" / "X.kicad_mod"
+    body = committed.read_text()
+    assert "(model" in body
+    # Either the offset is absent (kiutils default) or all-zero — verify
+    # the .step did NOT get a non-zero translation.
+    from kiutils.footprint import Footprint as _Fp
+    parsed = _Fp().from_file(str(committed))
+    assert len(parsed.models) == 1
+    m = parsed.models[0]
+    assert (m.pos is None) or (
+        abs(m.pos.X) < 1e-9 and abs(m.pos.Y) < 1e-9 and abs(m.pos.Z) < 1e-9
+    ), f"unreadable STEP must yield offset (0,0,0); got {m.pos}"
+    # And a warning must be logged
+    assert any(
+        "fall" in rec.message.lower() or "cannot" in rec.message.lower()
+        for rec in caplog.records
+    ), f"expected a warning log; got: {[r.message for r in caplog.records]}"
+
+
+def test_dropped_step_offset_skips_when_existing_offset_present(tmp_path: Path) -> None:
+    """If the .kicad_mod already has a (model …) block for the same path
+    with its own (offset …), _ensure_model_blocks must NOT overwrite it.
+    The user has manually positioned the body; we respect that."""
+    if not _UFL_STEP.is_file():
+        pytest.skip(f"e2e fixture missing: {_UFL_STEP}")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    sym = src_dir / "X.kicad_sym"
+    sym.write_bytes(FIXTURE_SYM.read_bytes())
+    fp = src_dir / "X.kicad_mod"
+    # Pre-existing model block with a custom offset (1,2,3); same target
+    # path the auto-generator would synthesise.
+    fp.write_text(
+        '(footprint "X" (layer F.Cu)\n'
+        '  (pad 1 smd rect (at 0 0) (size 1 1) (layers F.Cu F.Mask F.Paste))\n'
+        '  (model "${KSL_ROOT}/Foo_KSL/Foo_KSL.3dshapes/X.step"\n'
+        '    (offset (xyz 1 2 3))\n'
+        '    (scale (xyz 1 1 1))\n'
+        '    (rotate (xyz 0 0 0))\n'
+        '  )\n'
+        ')\n'
+    )
+    step = src_dir / "X.step"
+    step.write_bytes(_UFL_STEP.read_bytes())
+
+    group = {
+        "name": "X",
+        "symbol_path": str(sym),
+        "footprint_path": str(fp),
+        "model_paths": [str(step)],
+        "source_dir": str(src_dir),
+    }
+
+    commit_group(workspace=workspace, group=group, target_lib="Foo_KSL")
+    committed = workspace / "Foo_KSL" / "Foo_KSL.pretty" / "X.kicad_mod"
+
+    from kiutils.footprint import Footprint as _Fp
+    parsed = _Fp().from_file(str(committed))
+    assert len(parsed.models) == 1, "must not duplicate the model block"
+    m = parsed.models[0]
+    assert abs(m.pos.X - 1.0) < 1e-9, f"offset.X must be preserved at 1; got {m.pos.X}"
+    assert abs(m.pos.Y - 2.0) < 1e-9, f"offset.Y must be preserved at 2; got {m.pos.Y}"
+    assert abs(m.pos.Z - 3.0) < 1e-9, f"offset.Z must be preserved at 3; got {m.pos.Z}"
+
+
+def test_dropped_wrl_uses_zero_offset(tmp_path: Path) -> None:
+    """WRL files are not parseable for solid bbox — auto-offset must
+    short-circuit to (0,0,0) without attempting STEP parsing."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    sym = src_dir / "X.kicad_sym"
+    sym.write_bytes(FIXTURE_SYM.read_bytes())
+    fp = src_dir / "X.kicad_mod"
+    fp.write_text(
+        '(footprint "X" (layer F.Cu)\n'
+        '  (pad 1 smd rect (at 5 5) (size 1 1) (layers F.Cu F.Mask F.Paste))\n'
+        ')\n'
+    )
+    wrl = src_dir / "X.wrl"
+    wrl.write_text("#VRML V2.0 utf8\n# any content; we don't parse this\n")
+
+    group = {
+        "name": "X",
+        "symbol_path": str(sym),
+        "footprint_path": str(fp),
+        "model_paths": [str(wrl)],
+        "source_dir": str(src_dir),
+    }
+
+    commit_group(workspace=workspace, group=group, target_lib="Foo_KSL")
+    committed = workspace / "Foo_KSL" / "Foo_KSL.pretty" / "X.kicad_mod"
+
+    from kiutils.footprint import Footprint as _Fp
+    parsed = _Fp().from_file(str(committed))
+    assert len(parsed.models) == 1
+    m = parsed.models[0]
+    # Even though pads are at (5,5), WRL gets offset (0,0,0) — the user can
+    # adjust manually via the positioner.
+    assert (m.pos is None) or (
+        abs(m.pos.X) < 1e-9 and abs(m.pos.Y) < 1e-9 and abs(m.pos.Z) < 1e-9
+    ), f"WRL must yield offset (0,0,0); got {m.pos}"

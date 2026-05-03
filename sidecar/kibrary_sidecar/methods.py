@@ -701,11 +701,17 @@ def library_render_3d_glb_angled(p: dict) -> dict:
     # (viewer falls back to no decal).
     svg_text = bundle.get("top_layers_svg") or ""
     svg_b64 = base64.b64encode(svg_text.encode("utf-8")).decode("ascii") if svg_text else ""
+    # Bug-3 fix: surface structured "model file not found" diagnostics
+    # from the sanitiser so the frontend can tell the user "3D body
+    # missing because <path>" instead of silently rendering a board-only
+    # GLB. Always present (empty list when there's nothing to report).
+    warnings = bundle.get("warnings") or []
     return {
         "glb_data_url": f"data:model/gltf-binary;base64,{glb_b64}",
         "top_layers_svg_data_url": (
             f"data:image/svg+xml;base64,{svg_b64}" if svg_b64 else ""
         ),
+        "warnings": warnings,
     }
 
 

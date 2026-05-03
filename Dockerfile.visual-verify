@@ -1,0 +1,122 @@
+#
+# Dockerfile.visual-verify — CI image for the 3D viewer visual-verify
+# harness. Mirrors Dockerfile.smoke-ui's bootstrap (Xvfb + tauri-driver +
+# WebKitWebDriver + the bundled .deb), then ships the e2e/ tree and runs
+# every fixture in fixtures.json.
+#
+# Build:
+#   mkdir -p .smoke-build
+#   cp src-tauri/target/release/bundle/deb/Kibrary_<VER>_amd64.deb .smoke-build/kibrary.deb
+#   docker build -f Dockerfile.visual-verify -t kibrary-visual-verify .
+#
+# Run:
+#   docker run --rm --network host -v /tmp/visual-verify-out:/out kibrary-visual-verify
+#
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Base + kicad-cli (matches smoke-ui).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl python3 software-properties-common \
+        libwebkit2gtk-4.1-0 libayatana-appindicator3-1 librsvg2-2 file \
+    && add-apt-repository --yes ppa:kicad/kicad-9.0-releases \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends kicad \
+    && rm -rf /var/lib/apt/lists/*
+
+# Display + WebDriver + build-essential (cargo install tauri-driver).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        xvfb dbus-x11 webkit2gtk-driver libgles2 libegl1 libgl1-mesa-dri \
+        build-essential pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node 22 (host of the harness).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust + tauri-driver, then strip toolchain caches.
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal \
+    && cargo install tauri-driver --locked \
+    && rm -rf /root/.cargo/registry /root/.cargo/git /root/.rustup
+
+# Install the bundled .deb.
+COPY .smoke-build/kibrary.deb /tmp/kibrary.deb
+RUN apt-get update \
+    && (dpkg -i /tmp/kibrary.deb || apt-get install -f -y) \
+    && rm /tmp/kibrary.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+# Harness sources. We need both the lib (webdriver helpers) and the
+# visual-verify dir (runner, snapshot, assert, report, fixtures.json).
+WORKDIR /e2e
+COPY e2e/lib ./lib
+COPY e2e/visual-verify ./visual-verify
+
+# Output volume — every fixture's artefacts land in /out/<fixture>/.
+VOLUME /out
+
+# Entry: same Xvfb + tauri-driver dance as smoke-ui.sh, but invokes
+# the visual-verify runner instead of the download-all spec.
+COPY scripts/visual-verify.sh /usr/local/bin/visual-verify.sh
+
+# In-container the runner needs to find fixtures.json beside itself;
+# scripts/visual-verify.sh assumes a repo layout. Override by writing a
+# dedicated entrypoint that points the runner at /e2e/visual-verify/
+# directly with /out/visual-verify as the artefact dir.
+RUN cat > /usr/local/bin/visual-verify-docker.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+OUT=/out/visual-verify
+mkdir -p "$OUT"
+
+[ -x /usr/bin/kibrary ] || { echo "❌ /usr/bin/kibrary missing"; exit 1; }
+command -v WebKitWebDriver >/dev/null || { echo "❌ WebKitWebDriver missing"; exit 1; }
+[ -x "$HOME/.cargo/bin/tauri-driver" ] || { echo "❌ tauri-driver missing"; exit 1; }
+
+Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+XVFB_PID=$!
+sleep 1
+export DISPLAY=:99
+
+$HOME/.cargo/bin/tauri-driver \
+    --port 4444 --native-port 4445 --native-host 127.0.0.1 \
+    >/tmp/tauri-driver.log 2>&1 &
+TD_PID=$!
+sleep 2
+
+cleanup() {
+    kill $TD_PID 2>/dev/null || true
+    kill $XVFB_PID 2>/dev/null || true
+    pkill -f WebKitWebDriver 2>/dev/null || true
+    pkill -f /usr/bin/kibrary 2>/dev/null || true
+}
+trap cleanup EXIT
+
+if ! curl -s --max-time 2 http://127.0.0.1:4444/status >/dev/null; then
+    echo "❌ tauri-driver not listening on 4444 — log:"
+    cat /tmp/tauri-driver.log
+    exit 1
+fi
+
+cd /e2e
+RC=0
+VISUAL_VERIFY_OUT="$OUT" node --experimental-strip-types \
+    visual-verify/runner.ts \
+    --fixtures /e2e/visual-verify/fixtures.json \
+    --out "$OUT" "$@" || RC=$?
+
+if [ "$RC" -eq 0 ]; then
+    echo "==> ALL VISUAL-VERIFY FIXTURES PASSED"
+    exit 0
+else
+    echo "❌ VISUAL-VERIFY FAILED (exit $RC)"
+    echo "--- tauri-driver log ---"
+    tail -40 /tmp/tauri-driver.log
+    exit 1
+fi
+EOF
+RUN chmod +x /usr/local/bin/visual-verify-docker.sh
+
+CMD ["/usr/local/bin/visual-verify-docker.sh"]

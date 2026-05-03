@@ -171,6 +171,7 @@ export default function Model3DPositioner(props: Props) {
       {renderRow('Scale', '', '0.01', scale, (v) => setScale(v), 'scale')}
       <div class="flex items-center gap-2 pt-1">
         <button
+          data-testid="positioner-reset"
           onClick={handleReset}
           disabled={busy()}
           class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 transition-colors disabled:opacity-50"
@@ -178,6 +179,7 @@ export default function Model3DPositioner(props: Props) {
           Reset
         </button>
         <button
+          data-testid="positioner-save"
           onClick={handleSave}
           disabled={busy()}
           class="text-xs px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:opacity-50"

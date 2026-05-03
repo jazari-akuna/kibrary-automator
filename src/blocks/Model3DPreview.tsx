@@ -251,9 +251,25 @@ export default function Model3DPreview(props: Props) {
                   rotation={liveRotation()}
                   scale={liveScale()}
                   savedRev={savedRev()}
-                  onWebGLError={(reason) => {
-                    console.warn('[3D viewer] WebGL2 unavailable; falling back to PNG renderer:', reason);
-                    setUseGL(false);
+                  // alpha.5-axes-shrink: ±X / ±Y / ±Z indicators default
+                  // OFF (vision-agent flagged them as dominating the
+                  // canvas). Future positioner-toolbar checkbox can flip
+                  // this to true; for now the chip body owns the frame.
+                  showAxisIndicators={false}
+                  onWebGLError={(reason, kind) => {
+                    // Only PERMANENT renderer fallback when the GPU /
+                    // browser cannot create a WebGL2 context at all.
+                    // Per-asset failures (missing STEP, malformed GLB,
+                    // sidecar threw on this one component) are surfaced
+                    // inline by the GL viewer — do NOT flip useGL,
+                    // otherwise one missing 3D model permanently downgrades
+                    // the whole session to the slow PNG renderer (Bug 4).
+                    if (kind === 'webgl_unavailable') {
+                      console.warn('[3D viewer] WebGL2 unavailable; falling back to PNG renderer:', reason);
+                      setUseGL(false);
+                    } else {
+                      console.warn('[3D viewer] asset load failed for', props.componentName, '— staying on GL:', reason);
+                    }
                   }}
                 />
               </Show>

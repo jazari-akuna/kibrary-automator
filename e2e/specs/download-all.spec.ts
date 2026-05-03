@@ -11,8 +11,23 @@
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join } from 'node:path';
+import {
+  jpost,
+  jget,
+  jdel,
+  execScript,
+  execAsync,
+  findElement,
+  findElements,
+  elText,
+  elAttr,
+  elClick,
+  elClear,
+  elType,
+  screenshot as wdScreenshot,
+  waitFor,
+} from '../lib/webdriver.ts';
 
-const DRIVER  = 'http://127.0.0.1:4444';
 const APP     = '/usr/bin/kibrary';
 const WORKSPACE = '/tmp/e2e-workspace';
 const STAGING = `${WORKSPACE}/.kibrary/staging`;
@@ -23,112 +38,11 @@ function log(msg: string) {
   console.log(`[smoke-ui] ${msg}`);
 }
 
-async function jpost(path: string, body: any): Promise<any> {
-  const res = await fetch(`${DRIVER}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`POST ${path} → ${res.status}: ${text}`);
-  return JSON.parse(text);
-}
-
-async function jget(path: string): Promise<any> {
-  const res = await fetch(`${DRIVER}${path}`);
-  const text = await res.text();
-  if (!res.ok) throw new Error(`GET ${path} → ${res.status}: ${text}`);
-  return JSON.parse(text);
-}
-
-async function jdel(path: string): Promise<any> {
-  const res = await fetch(`${DRIVER}${path}`, { method: 'DELETE' });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`DELETE ${path} → ${res.status}: ${text}`);
-  return JSON.parse(text);
-}
-
-async function execScript(sid: string, script: string, args: any[] = []): Promise<any> {
-  const r = await jpost(`/session/${sid}/execute/sync`, { script, args });
-  return r.value;
-}
-
-// /execute/async waits for arguments[arguments.length - 1](result). Required
-// for any script whose payload depends on a Promise resolving — using sync
-// silently discards the callback and the spec sees `undefined`.
-async function execAsync(sid: string, script: string, args: any[] = []): Promise<any> {
-  const r = await jpost(`/session/${sid}/execute/async`, { script, args });
-  return r.value;
-}
-
-async function findElement(sid: string, selector: string): Promise<string | null> {
-  try {
-    const r = await jpost(`/session/${sid}/element`, {
-      using: 'css selector',
-      value: selector,
-    });
-    // W3C: { value: { 'element-6066-11e4-a52e-4f735466cecf': '...' } }
-    const v = r.value;
-    return v[Object.keys(v)[0]];
-  } catch {
-    return null;
-  }
-}
-
-async function findElements(sid: string, selector: string): Promise<string[]> {
-  const r = await jpost(`/session/${sid}/elements`, {
-    using: 'css selector',
-    value: selector,
-  });
-  return (r.value as any[]).map((v) => v[Object.keys(v)[0]]);
-}
-
-async function elText(sid: string, eid: string): Promise<string> {
-  const r = await jget(`/session/${sid}/element/${eid}/text`);
-  return r.value as string;
-}
-
-async function elAttr(sid: string, eid: string, name: string): Promise<string | null> {
-  const r = await jget(`/session/${sid}/element/${eid}/attribute/${name}`);
-  return r.value as string | null;
-}
-
-async function elClick(sid: string, eid: string): Promise<void> {
-  await jpost(`/session/${sid}/element/${eid}/click`, {});
-}
-
-async function elClear(sid: string, eid: string): Promise<void> {
-  await jpost(`/session/${sid}/element/${eid}/clear`, {});
-}
-
-async function elType(sid: string, eid: string, text: string): Promise<void> {
-  await jpost(`/session/${sid}/element/${eid}/value`, { text });
-}
-
+// Local screenshot wrapper preserves the existing call-site signature
+// (no third arg) while routing through the shared helper. Logs use the
+// 'smoke-ui' prefix to match historical behavior.
 async function screenshot(sid: string, dest: string): Promise<void> {
-  try {
-    const r = await jget(`/session/${sid}/screenshot`);
-    const png = Buffer.from(r.value as string, 'base64');
-    writeFileSync(dest, png);
-    log(`screenshot saved → ${dest}`);
-  } catch (e) {
-    log(`screenshot failed (non-fatal): ${(e as Error).message}`);
-  }
-}
-
-async function waitFor<T>(
-  fn: () => Promise<T | null | undefined | false>,
-  timeoutMs: number,
-  intervalMs: number,
-  label: string,
-): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const v = await fn();
-    if (v) return v as T;
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  throw new Error(`waitFor timeout: ${label} (after ${timeoutMs}ms)`);
+  await wdScreenshot(sid, dest, 'smoke-ui');
 }
 
 async function main() {
