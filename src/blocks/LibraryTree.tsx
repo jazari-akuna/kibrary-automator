@@ -40,6 +40,16 @@ export default function LibraryTree() {
   // Track which libraries are expanded (collapsed by default)
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
 
+  // Search filter
+  const [search, setSearch] = createSignal('');
+
+  const filteredLibs = () => {
+    const all = libs()?.libraries ?? [];
+    const q = search().trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((l) => l.name.toLowerCase().includes(q));
+  };
+
   const toggleExpand = (name: string) => {
     setExpanded((prev) => {
       const next = new Set<string>(prev);
@@ -75,10 +85,30 @@ export default function LibraryTree() {
           }
         >
           <span class="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            Libraries ({libs()?.libraries.length ?? 0})
+            Libraries ({filteredLibs().length}
+            <Show when={search().trim()}>
+              <span class="text-zinc-500 dark:text-zinc-400">/{libs()?.libraries.length ?? 0}</span>
+            </Show>
+            )
           </span>
         </Show>
       </div>
+
+      {/* Search bar */}
+      <Show when={currentWorkspace() && !libs.loading && !libs.error && libs()}>
+        <div class="px-3 py-2 border-b border-zinc-300 dark:border-zinc-700 flex-shrink-0">
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-zinc-400 dark:text-zinc-500 flex-shrink-0">Search:</span>
+            <input
+              type="text"
+              value={search()}
+              onInput={(e) => setSearch(e.currentTarget.value)}
+              placeholder="Filter libraries…"
+              class="flex-1 min-w-0 bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500 placeholder-zinc-400 dark:placeholder-zinc-600"
+            />
+          </div>
+        </div>
+      </Show>
 
       {/* No workspace */}
       <Show when={!currentWorkspace()}>
@@ -104,7 +134,12 @@ export default function LibraryTree() {
       {/* Library list */}
       <Show when={currentWorkspace() && !libs.loading && !libs.error && libs()}>
         <div class="flex-1 overflow-y-auto py-1">
-          <For each={libs()!.libraries}>
+          <Show when={filteredLibs().length === 0 && search().trim()}>
+            <div class="px-3 py-4 text-center">
+              <span class="text-xs text-zinc-400 dark:text-zinc-500">No libraries match "{search()}"</span>
+            </div>
+          </Show>
+          <For each={filteredLibs()}>
             {(lib) => {
               const isExpanded = () => expanded().has(lib.name);
               const isSelected = () => selectedLib() === lib.name;

@@ -542,3 +542,81 @@ def test_render_glb_real_kicad_cli_handles_missing_3d_model(tmp_path: Path):
         f"degraded GLB should have exactly 1 mesh (the PCB plane), "
         f"got {mesh_count}"
     )
+
+
+# ---------------------------------------------------------------------------
+# alpha.33: render_footprint_3d_glb_with_top_layers — orchestrates BOTH
+# kicad-cli pcb export glb AND kicad-cli pcb export svg off the same
+# spliced board. Verify (a) both subprocess calls fire, (b) the SVG one
+# requests the canonical front-layer set, (c) the function tolerates an
+# SVG-half failure without breaking the GLB-half.
+# ---------------------------------------------------------------------------
+
+def _kicad_cli_glb_and_svg_mock(captured: dict, *, svg_returncode: int = 0,
+                                svg_text: str = '<svg viewBox="0 0 40 40"/>') -> callable:
+    """Mock subprocess.run for the alpha.33 dual-spawn function."""
+    def _run(cmd, capture_output=True, text=True, env=None):  # noqa: ARG001
+        captured.setdefault("calls", []).append(list(cmd))
+        # Locate -o argument and the input file
+        out_idx = cmd.index("-o") + 1
+        out_path = Path(cmd[out_idx])
+        if cmd[3] == "glb":
+            out_path.write_bytes(_GLB_MAGIC + b"\x00" * 64)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        elif cmd[3] == "svg":
+            if svg_returncode == 0:
+                out_path.write_text(svg_text, encoding="utf-8")
+            return subprocess.CompletedProcess(
+                cmd, svg_returncode,
+                stdout="", stderr="" if svg_returncode == 0 else "svg-fail",
+            )
+        raise RuntimeError(f"unexpected subprocess call: {cmd}")
+    return _run
+
+
+def test_with_top_layers_invokes_both_glb_and_svg(tmp_path: Path):
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path)
+    captured: dict = {}
+    with patch(
+        "kibrary_sidecar.render_3d_glb.subprocess.run",
+        side_effect=_kicad_cli_glb_and_svg_mock(captured),
+    ):
+        result = render_3d_glb.render_footprint_3d_glb_with_top_layers(lib_dir, mod)
+
+    calls = captured["calls"]
+    # Must invoke kicad-cli twice: once for GLB, once for SVG.
+    glb_calls = [c for c in calls if c[3] == "glb"]
+    svg_calls = [c for c in calls if c[3] == "svg"]
+    assert len(glb_calls) == 1, f"expected one glb call, got {glb_calls}"
+    assert len(svg_calls) == 1, f"expected one svg call, got {svg_calls}"
+
+    # SVG call requests the front-layer set (copper + paste + mask + silk + edge cuts).
+    svg_cmd = svg_calls[0]
+    assert "--layers" in svg_cmd
+    layers_arg = svg_cmd[svg_cmd.index("--layers") + 1]
+    for required in ("F.Cu", "F.Paste", "F.Mask", "F.SilkS", "Edge.Cuts"):
+        assert required in layers_arg, f"SVG layer list missing {required}: {layers_arg}"
+    assert "--mode-single" in svg_cmd
+    assert "--fit-page-to-board" in svg_cmd
+
+    # Result has both halves populated.
+    assert isinstance(result, dict)
+    assert result["glb_bytes"].startswith(b"glTF")
+    assert "viewBox" in result["top_layers_svg"]
+
+
+def test_with_top_layers_tolerates_svg_failure(tmp_path: Path):
+    """If the SVG export fails, the GLB half should still ship — the
+    decal degrades to "no copper" rather than aborting the whole render."""
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path)
+    captured: dict = {}
+    with patch(
+        "kibrary_sidecar.render_3d_glb.subprocess.run",
+        side_effect=_kicad_cli_glb_and_svg_mock(captured, svg_returncode=2),
+    ):
+        result = render_3d_glb.render_footprint_3d_glb_with_top_layers(lib_dir, mod)
+
+    # GLB still produced.
+    assert result["glb_bytes"].startswith(b"glTF")
+    # SVG empty when export failed.
+    assert result["top_layers_svg"] == ""

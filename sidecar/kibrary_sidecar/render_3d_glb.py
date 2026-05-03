@@ -1,5 +1,6 @@
 """render_3d_glb.py — Render a single KiCad footprint as a binary glTF (GLB)
-via ``kicad-cli pcb export glb``.
+via ``kicad-cli pcb export glb``, plus a flat top-layers SVG decal for the
+substrate top face (``kicad-cli pcb export svg``).
 
 This is the server side of the alpha.28 30fps 3D viewer rewrite. The
 existing PNG path (:mod:`render_3d`) shells out to ``kicad-cli pcb render``
@@ -178,10 +179,121 @@ def render_footprint_3d_glb(
         return out_glb.read_bytes()
 
 
+# alpha.33: kicad-cli's ``pcb export glb`` emits the extruded board
+# substrate + the embedded STEP body, but NOT the copper / soldermask /
+# silkscreen layers. Without them the user sees an empty green PCB with
+# the chip body floating on top — no pads, no traces, no reference text.
+# We separately export the front layers as a small (sub-100 KB typically)
+# SVG and the viewer paints it onto a thin overlay plane just above the
+# substrate top. The SVG path is deterministic + ~280 ms, well under the
+# kicad-cli pcb export glb spawn cost; both run inside the same temp dir.
+_TOP_LAYERS_SVG_LAYERS = "F.Cu,F.Paste,F.Mask,F.SilkS,Edge.Cuts"
+
+
+def render_footprint_3d_glb_with_top_layers(
+    lib_dir: Path,
+    footprint_file: Path,
+    *,
+    offset: tuple[float, float, float] | None = None,
+    rotation: tuple[float, float, float] | None = None,
+    scale: tuple[float, float, float] | None = None,
+) -> dict:
+    """Render the GLB **and** a flat front-layers SVG of the same spliced
+    board, both off the same temp .kicad_pcb file.
+
+    Returns a dict with keys ``glb_bytes`` (binary glTF) and
+    ``top_layers_svg`` (UTF-8 string). The SVG's ``viewBox`` covers the
+    spliced board's full edge-cuts extents in millimetres — caller (the
+    viewer) maps that to the substrate's XZ extents and overlays the
+    rasterised result as a decal.
+
+    Failure semantics mirror :func:`render_footprint_3d_glb` for the GLB
+    half. If the SVG export fails we still return the GLB (with an empty
+    string for ``top_layers_svg``) — a missing decal degrades to the
+    alpha.32 "no copper" view rather than aborting the render.
+    """
+    if not footprint_file.is_file():
+        raise FileNotFoundError(
+            f"render_footprint_3d_glb_with_top_layers: footprint file not found: {footprint_file}"
+        )
+
+    expected_3d_model = footprint_has_model_block(footprint_file)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
+        sanitised = _sanitise_footprint(
+            footprint_file,
+            lib_dir,
+            override_offset=offset,
+            override_rotation=rotation,
+            override_scale=scale,
+        )
+        board_path = tmp_dir / "preview.kicad_pcb"
+        board_path.write_text(_splice_into_template(sanitised), encoding="utf-8")
+
+        out_glb = tmp_dir / "preview.glb"
+        out_svg = tmp_dir / "preview.svg"
+        fp_name = footprint_file.stem
+
+        glb_proc = subprocess.run(
+            ["kicad-cli", "pcb", "export", "glb", "-o", str(out_glb), str(board_path)],
+            capture_output=True, text=True, env=_system_env(),
+        )
+        if glb_proc.returncode != 0:
+            err = (glb_proc.stderr or glb_proc.stdout or "").strip()
+            raise RuntimeError(
+                f"kicad-cli pcb export glb failed (exit {glb_proc.returncode}) "
+                f"for footprint {fp_name!r}: {err}"
+            )
+        if not out_glb.is_file():
+            raise FileNotFoundError(
+                f"kicad-cli produced no GLB at {out_glb} for footprint {fp_name!r}"
+            )
+        silent_drop = _KICAD_CLI_SILENT_DROP_RE.search(glb_proc.stderr or "")
+        if expected_3d_model and silent_drop is not None:
+            raise RuntimeError(
+                f"kicad-cli silently dropped 3D model for footprint "
+                f"{fp_name!r}: file not found: {silent_drop.group(1)}. "
+                f"Full stderr: {(glb_proc.stderr or '').strip()}"
+            )
+
+        glb_bytes = out_glb.read_bytes()
+
+        # SVG export is best-effort: if kicad-cli rejects the layer list
+        # or the spliced board for some reason, surface the failure as a
+        # warning + empty string rather than aborting the entire render.
+        # The viewer falls back to "no decal" gracefully.
+        svg_text = ""
+        svg_proc = subprocess.run(
+            [
+                "kicad-cli", "pcb", "export", "svg",
+                "--layers", _TOP_LAYERS_SVG_LAYERS,
+                "--mode-single",
+                "--fit-page-to-board",
+                "--exclude-drawing-sheet",
+                "-o", str(out_svg),
+                str(board_path),
+            ],
+            capture_output=True, text=True, env=_system_env(),
+        )
+        if svg_proc.returncode == 0 and out_svg.is_file():
+            svg_text = out_svg.read_text(encoding="utf-8")
+        else:
+            log.warning(
+                "kicad-cli pcb export svg failed (exit %d) for footprint %r — "
+                "decal will be missing. stderr: %s",
+                svg_proc.returncode, fp_name,
+                (svg_proc.stderr or svg_proc.stdout or "").strip(),
+            )
+
+        return {"glb_bytes": glb_bytes, "top_layers_svg": svg_text}
+
+
 # Re-export the helpers we delegate to so call sites that want to patch
 # the transform path directly (e.g. tests) can do so via a single module.
 __all__ = [
     "render_footprint_3d_glb",
+    "render_footprint_3d_glb_with_top_layers",
     "_sanitise_footprint",
     "_splice_into_template",
     "_patch_model_transform",

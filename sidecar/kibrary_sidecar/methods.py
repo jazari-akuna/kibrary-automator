@@ -686,15 +686,26 @@ def library_render_3d_glb_angled(p: dict) -> dict:
         raise FileNotFoundError(
             f"No .kicad_mod for symbol {component_name!r} in {lib_dir}"
         )
-    glb_bytes = render_3d_glb.render_footprint_3d_glb(
+    bundle = render_3d_glb.render_footprint_3d_glb_with_top_layers(
         lib_dir=lib_dir,
         footprint_file=fp_path,
         offset=tuple(p["offset"]) if "offset" in p else None,
         rotation=tuple(p["rotation"]) if "rotation" in p else None,
         scale=tuple(p["scale"]) if "scale" in p else None,
     )
-    b64 = base64.b64encode(glb_bytes).decode("ascii")
-    return {"glb_data_url": f"data:model/gltf-binary;base64,{b64}"}
+    glb_b64 = base64.b64encode(bundle["glb_bytes"]).decode("ascii")
+    # alpha.33: SVG decal of the front layers — kicad-cli pcb export glb
+    # doesn't include copper/pads/silkscreen, so the viewer paints this
+    # SVG on top of the substrate. Empty string when SVG export failed
+    # (viewer falls back to no decal).
+    svg_text = bundle.get("top_layers_svg") or ""
+    svg_b64 = base64.b64encode(svg_text.encode("utf-8")).decode("ascii") if svg_text else ""
+    return {
+        "glb_data_url": f"data:model/gltf-binary;base64,{glb_b64}",
+        "top_layers_svg_data_url": (
+            f"data:image/svg+xml;base64,{svg_b64}" if svg_b64 else ""
+        ),
+    }
 
 
 def library_set_3d_offset(p: dict) -> dict:

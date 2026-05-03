@@ -257,7 +257,9 @@ export default function Model3DPreview(props: Props) {
                   }}
                 />
               </Show>
-              <div class="flex items-start justify-center gap-3 pt-2">
+              {/* alpha.34: vertical-center the Z column against the SVG
+                  jog dial (was top-aligned and visually drifted). */}
+              <div class="flex items-center justify-center gap-3 pt-2">
                 <Model3DJogDial
                   onJog={(axis, amount) => setJogDelta({ axis, amount })}
                   onReset={() => {

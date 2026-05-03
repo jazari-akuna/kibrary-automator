@@ -75,9 +75,16 @@ export default function Model3DViewerGL(props: Props) {
   // each successful load. We hold a reference so we can dispose its
   // geometries / materials before swapping.
   let loadedRoot: THREE.Object3D | null = null;
-  // Snapshot of the original local matrix at load time so we can express
-  // each frame as `original × delta` cleanly (instead of accumulating).
-  let loadedRootBaseMatrix: THREE.Matrix4 | null = null;
+  // alpha.35: applyLiveDelta() targets the CHIP node(s), not loadedRoot.
+  // kicad-cli's GLB has loadedRoot containing the substrate AND each
+  // chip node as siblings. Moving loadedRoot would drag the substrate
+  // and the alpha.33 SVG decal and the alpha.34 axis indicators along
+  // with it — that is "controls move everything" the user reported.
+  // A single .kicad_mod can have multiple (model …) blocks (the test
+  // fixture exercises that), so we apply the delta to all of them.
+  // Each entry pairs a node with the matrix it had at load time so
+  // (live - saved) is a clean "original × delta" instead of a drift.
+  let chipNodes: { node: THREE.Object3D; baseMatrix: THREE.Matrix4 }[] = [];
   // The (offset/rotation/scale) values that were SAVED at the time of
   // the most recent successful GLB load. The live delta we apply on
   // every transform tick is `(live - saved)` — kicad-cli bakes the
@@ -120,7 +127,12 @@ export default function Model3DViewerGL(props: Props) {
       // dielectrics look washed-out / muddy.
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.0;
+      // alpha.34: alpha.30's 1.0 exposure + key 1.5 + fill 0.8 + ambient
+      // 0.3 stacked the IBL irradiance with three direct lights and read
+      // as washed-out (the soldermask green came through almost cyan).
+      // Drop the exposure first since it's the cheapest knob; lights
+      // dialed back below in lock-step.
+      renderer.toneMappingExposure = 0.7;
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       setWebglError(reason);
@@ -166,17 +178,36 @@ export default function Model3DViewerGL(props: Props) {
     // Speed defaults are tuned for the typical kicad-cli output (mm units,
     // boards within a few-cm bounding box).
 
+    // alpha.36: capture wheel events on the canvas so the page doesn't
+    // scroll when the cursor is over the 3D viewport. OrbitControls
+    // attaches its own wheel handler but doesn't preventDefault by
+    // default — we add an explicit listener with `passive: false` so
+    // page scroll is suppressed as soon as the wheel fires. The user
+    // wanted "click into the viewport then wheel zooms" behaviour;
+    // making the canvas *always* swallow wheel achieves that without
+    // needing to track click state.
+    canvasEl.addEventListener('wheel', (e) => { e.preventDefault(); }, { passive: false });
+    // Tabindex makes the canvas keyboard-focusable; combined with the
+    // wheel-capture above this gives a clean "click in, scroll, zoom"
+    // affordance. Browsers don't auto-focus <canvas> on click without it.
+    canvasEl.tabIndex = 0;
+    canvasEl.addEventListener('mousedown', () => canvasEl?.focus());
+
     // Lighting — IBL provides the diffuse ambient now, so we drop the
     // AmbientLight to a low fill and lean on a key/fill directional pair
     // for shape definition. Key from top-front-right, fill from
     // top-back-left at ~half strength so the shadow side reads as
     // "lit by sky" instead of pitch-black.
-    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.5);
+    // alpha.34: rebalance the trio. IBL still does most of the lifting;
+    // the directionals just sharpen the shape on the chip body. With the
+    // alpha.30 values the substrate's soldermask green saturated at the
+    // top-front corner — looked plasticky and washed out.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.15));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.8);
     keyLight.position.set(5, 8, 5);
     keyLight.castShadow = false;
     scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
     fillLight.position.set(-5, 8, -5);
     fillLight.castShadow = false;
     scene.add(fillLight);
@@ -228,7 +259,10 @@ export default function Model3DViewerGL(props: Props) {
     window.__model3dGLLoadCount = (window.__model3dGLLoadCount || 0) + 1;
 
     try {
-      const r = await invoke<{ glb_data_url: string }>('sidecar_call', {
+      const r = await invoke<{
+        glb_data_url: string;
+        top_layers_svg_data_url?: string;
+      }>('sidecar_call', {
         method: 'library.render_3d_glb_angled',
         params: {
           lib_dir: props.libDir,
@@ -262,7 +296,6 @@ export default function Model3DViewerGL(props: Props) {
           }
 
           loadedRoot = gltf.scene;
-          loadedRootBaseMatrix = loadedRoot.matrix.clone();
 
           // alpha.31 material fix-up — kicad-cli's GLB output uses two
           // PBR encodings that GLTFLoader handles per-spec but render
@@ -288,6 +321,11 @@ export default function Model3DViewerGL(props: Props) {
             const mesh = obj as THREE.Mesh;
             if (!(mesh as THREE.Mesh).isMesh || !mesh.material) return;
             const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            // alpha.36: detect substrate by mesh name so we can apply a
+            // separate opacity treatment (chip body stays opaque, board
+            // becomes 80 % transparent so internal structure / pads
+            // beneath the chip are partially visible).
+            const isSubstrate = mesh.name === 'preview_PCB' || /pcb/i.test(mesh.name);
             for (const m of mats) {
               const std = m as THREE.MeshStandardMaterial;
 
@@ -304,10 +342,96 @@ export default function Model3DViewerGL(props: Props) {
                 std.roughness = Math.max(std.roughness ?? 0.5, 0.6);
                 std.needsUpdate = true;
               }
+
+              // alpha.34: damp the IBL contribution per-material. Default
+              // envMapIntensity is 1.0 — combined with the tone-mapped
+              // RoomEnvironment that's where the "washed out" came from.
+              // 0.5 keeps reflections subtle without going matte.
+              if (std.envMapIntensity !== undefined) {
+                std.envMapIntensity = 0.5;
+                std.needsUpdate = true;
+              }
+
+              // alpha.36: substrate goes to 80 % opacity so user can
+              // see chip leads / pads sitting just beneath it. Applied
+              // AFTER the alpha.31 force-opaque pass so it overrides.
+              // depthWrite stays true: keeps the chip visible behind
+              // the substrate from below-angle views.
+              if (isSubstrate) {
+                std.transparent = true;
+                std.opacity = 0.8;
+                std.depthWrite = true;
+                std.alphaTest = 0;
+                std.needsUpdate = true;
+              }
             }
           });
 
+          // alpha.33: capture substrate bbox BEFORE we apply the recenter
+          // shift, in loadedRoot-local space (loadedRoot.matrix is still
+          // identity at this point — GLTFLoader doesn't pre-transform the
+          // root). We use this bbox for two things in lock-step:
+          //   (a) the recenter shift (loadedRoot.position.y -= topY)
+          //   (b) the SVG decal anchor (attached as loadedRoot child so
+          //       it inherits the recenter — local coords = pre-shift
+          //       world coords because loadedRoot was identity).
+          const substrateMesh = findSubstrateMesh(loadedRoot);
+          let substrateBboxLocal: THREE.Box3 | null = null;
+          if (substrateMesh) {
+            loadedRoot.updateMatrixWorld(true);
+            substrateBboxLocal = new THREE.Box3().setFromObject(substrateMesh);
+          }
+
+          // Recenter so the substrate TOP sits at world Y=0. kicad-cli's
+          // GLB has the substrate at Y=[0, ~1.5mm] with the chip extending
+          // UP from there — the user reads the visible side wall as
+          // "thickness going up." Standard CAD convention is "model rests
+          // on a virtual table at Y=0," so we shift everything down by
+          // the substrate top height. The chip body then extends upward
+          // from Y=0 and the substrate hangs below, matching the look of
+          // a physical board on a workbench.
+          if (substrateBboxLocal && isFinite(substrateBboxLocal.max.y) && substrateBboxLocal.max.y !== 0) {
+            loadedRoot.position.y -= substrateBboxLocal.max.y;
+            loadedRoot.updateMatrix();
+            loadedRoot.updateMatrixWorld(true);
+          }
+
+          // alpha.35: identify the chip node(s) — direct loadedRoot
+          // children that are NOT the substrate-containing branch.
+          // applyLiveDelta targets these so substrate + decal + axes
+          // stay anchored while the user nudges the chip.
+          //
+          // alpha.36 robustness: substrate could sit deeper than one
+          // level (kicad-cli has rearranged the GLB shape between
+          // releases), so walk up from the substrate mesh until we hit
+          // loadedRoot's DIRECT child — that's the branch to skip. Any
+          // other top-level child is treated as a chip-bearing node.
+          chipNodes = [];
+          const substrateTopLevel = substrateMesh
+            ? findTopLevelAncestor(substrateMesh, loadedRoot)
+            : null;
+          for (const child of loadedRoot.children) {
+            if (child === substrateTopLevel) continue;
+            chipNodes.push({ node: child, baseMatrix: child.matrix.clone() });
+          }
+
           scene.add(loadedRoot);
+
+          // alpha.33: paint the front-layers SVG decal (pads / copper /
+          // silkscreen) onto the substrate top. kicad-cli pcb export glb
+          // has no copper layer; without this the user sees an empty
+          // green PCB with the chip body floating on top.
+          if (substrateBboxLocal && r.top_layers_svg_data_url) {
+            void attachTopLayerDecal(loadedRoot, substrateBboxLocal, r.top_layers_svg_data_url);
+          }
+
+          // alpha.34: ±X / ±Y / ±Z axis indicators. Anchored under
+          // loadedRoot so they move with positioner deltas — gives the
+          // user a fixed reference frame even mid-orbit. Sized to
+          // substrate diagonal × 1.4 so labels sit clear of the board.
+          if (substrateBboxLocal) {
+            attachAxisIndicators(loadedRoot, substrateBboxLocal);
+          }
 
           // Apply any pending live delta (props may have changed since
           // we kicked the fetch off; even a no-op call gets the
@@ -345,35 +469,59 @@ export default function Model3DViewerGL(props: Props) {
   // ---------------------------------------------------------------
 
   function applyLiveDelta() {
-    if (!loadedRoot || !loadedRootBaseMatrix) return;
+    if (!chipNodes.length) return;
 
-    // Delta = (live - saved). offset is mm (kicad-cli's GLB unit is mm).
-    // rotation is degrees XYZ in KiCad's intrinsic order — three.js
-    // Euler defaults to 'XYZ' which matches.
-    const dx = props.offset[0] - lastSavedOffset[0];
-    const dy = props.offset[1] - lastSavedOffset[1];
-    const dz = props.offset[2] - lastSavedOffset[2];
-    const drx = (props.rotation[0] - lastSavedRotation[0]) * Math.PI / 180;
-    const dry = (props.rotation[1] - lastSavedRotation[1]) * Math.PI / 180;
-    const drz = (props.rotation[2] - lastSavedRotation[2]) * Math.PI / 180;
-    // Scale delta is a multiplier (live/saved). Guard against zero saved
-    // scale (impossible in practice but cheap).
-    const sx = lastSavedScale[0] !== 0 ? props.scale[0] / lastSavedScale[0] : 1;
-    const sy = lastSavedScale[1] !== 0 ? props.scale[1] / lastSavedScale[1] : 1;
-    const sz = lastSavedScale[2] !== 0 ? props.scale[2] / lastSavedScale[2] : 1;
+    // alpha.34: positioner emits MILLIMETRES; kicad-cli's GLB unit is
+    // METRES. /1000 keeps a 1 mm slider tick from becoming a 1 m fly-away.
+    //
+    // alpha.35: positioner emits values in KICAD PCB SPACE — +X right,
+    // +Y "back" along the layout sheet, +Z up out of the board. Three.js
+    // GLB output from kicad-cli is Y-UP (+Y = world up = KiCad +Z, +Z
+    // world = depth ≈ KiCad +Y, +X world = KiCad +X). So we swap the
+    // two non-X components when feeding into the matrix. Without the
+    // swap, dragging "+Z" (up) made the chip slide sideways in world
+    // depth — the user's "controls are mixed" report. Same swap applies
+    // to rotation (axis remap follows the basis change).
+    const dxKicad = (props.offset[0] - lastSavedOffset[0]) / 1000;
+    const dyKicad = (props.offset[1] - lastSavedOffset[1]) / 1000;
+    const dzKicad = (props.offset[2] - lastSavedOffset[2]) / 1000;
+    const dxWorld = dxKicad;
+    const dyWorld = dzKicad;       // KiCad +Z (up) → world +Y
+    const dzWorld = dyKicad;       // KiCad +Y (back) → world +Z
+
+    const drxKicad = (props.rotation[0] - lastSavedRotation[0]) * Math.PI / 180;
+    const dryKicad = (props.rotation[1] - lastSavedRotation[1]) * Math.PI / 180;
+    const drzKicad = (props.rotation[2] - lastSavedRotation[2]) * Math.PI / 180;
+    const drxWorld = drxKicad;
+    const dryWorld = drzKicad;
+    const drzWorld = dryKicad;
+
+    // Scale delta is a multiplier (live/saved). Scale axes follow the
+    // same KiCad → world swap so a "scale Z" slider stretches the chip
+    // in its tall axis even though kicad-cli's GLB calls that world Y.
+    const sxK = lastSavedScale[0] !== 0 ? props.scale[0] / lastSavedScale[0] : 1;
+    const syK = lastSavedScale[1] !== 0 ? props.scale[1] / lastSavedScale[1] : 1;
+    const szK = lastSavedScale[2] !== 0 ? props.scale[2] / lastSavedScale[2] : 1;
+    const sxW = sxK;
+    const syW = szK;
+    const szW = syK;
 
     const delta = new THREE.Matrix4().compose(
-      new THREE.Vector3(dx, dy, dz),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(drx, dry, drz, 'XYZ')),
-      new THREE.Vector3(sx, sy, sz),
+      new THREE.Vector3(dxWorld, dyWorld, dzWorld),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(drxWorld, dryWorld, drzWorld, 'XYZ')),
+      new THREE.Vector3(sxW, syW, szW),
     );
 
-    const m = loadedRootBaseMatrix.clone().multiply(delta);
-    // Decompose back into pos/quat/scale so three.js auto-update keeps
-    // working as the user drags OrbitControls.
-    loadedRoot.matrix.copy(m);
-    loadedRoot.matrixAutoUpdate = false;
-    loadedRoot.matrixWorldNeedsUpdate = true;
+    // Apply to every chip node (a single .kicad_mod can have multiple
+    // (model …) blocks — secondary models like a mounting post should
+    // move in lock-step). Substrate / decal / axis indicators are
+    // siblings, not children, so they stay anchored.
+    for (const { node, baseMatrix } of chipNodes) {
+      const m = baseMatrix.clone().multiply(delta);
+      node.matrix.copy(m);
+      node.matrixAutoUpdate = false;
+      node.matrixWorldNeedsUpdate = true;
+    }
   }
 
   // ---------------------------------------------------------------
@@ -394,7 +542,19 @@ export default function Model3DViewerGL(props: Props) {
     const meshes: THREE.Mesh[] = [];
     obj.traverse((o) => {
       const m = o as THREE.Mesh;
-      if (m.isMesh) meshes.push(m);
+      if (!m.isMesh) return;
+      // alpha.34: skip axis indicator helpers (ArrowHelper sub-meshes
+      // and the SVG decal). Their bbox would corrupt the
+      // smallest-mesh = component heuristic — a 3 mm arrow cone is
+      // smaller than any chip body and would yank the camera onto
+      // itself, hiding the actual part.
+      if (m.name === 'preview_PCB_top_decal') return;
+      let p: THREE.Object3D | null = m.parent;
+      while (p) {
+        if (p.name === 'axis_indicators') return;
+        p = p.parent;
+      }
+      meshes.push(m);
     });
     if (!meshes.length) return;
 
@@ -568,6 +728,248 @@ function decodeDataUrl(url: string): ArrayBuffer {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out.buffer;
+}
+
+// alpha.36: walk up from `node` until reaching the direct child of
+// `root`. Used to identify which loadedRoot child contains the substrate
+// mesh — any other top-level child is then treated as a chip-bearing
+// node by applyLiveDelta. Defensive against future kicad-cli renames /
+// hierarchy changes (we already saw the GLB structure shift between
+// releases).
+function findTopLevelAncestor(node: THREE.Object3D, root: THREE.Object3D): THREE.Object3D {
+  let cur: THREE.Object3D = node;
+  while (cur.parent && cur.parent !== root) {
+    cur = cur.parent;
+  }
+  return cur;
+}
+
+// alpha.33: kicad-cli's GLB names the extruded board mesh "preview_PCB".
+// We need to identify it post-load so we can (a) compute its top-Y for
+// the world-recenter shift and (b) anchor the SVG decal plane on top.
+// Falls back to the largest-bbox mesh if the name doesn't match — defends
+// against future kicad-cli renames.
+function findSubstrateMesh(root: THREE.Object3D): THREE.Mesh | null {
+  let named: THREE.Mesh | null = null;
+  let largest: THREE.Mesh | null = null;
+  let largestVolume = 0;
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    if (m.name === 'preview_PCB' || /pcb/i.test(m.name)) named = m;
+    const b = new THREE.Box3().setFromObject(m);
+    if (b.isEmpty()) return;
+    const s = new THREE.Vector3();
+    b.getSize(s);
+    const vol = s.x * s.y * s.z;
+    if (vol > largestVolume) {
+      largestVolume = vol;
+      largest = m;
+    }
+  });
+  return named || largest;
+}
+
+// alpha.33: rasterise the front-layers SVG and attach it as a thin decal
+// plane sitting just above the substrate's top face. We don't modify the
+// substrate's own geometry/material — the decal is a separate plane the
+// scene-graph hangs off the same parent so it inherits the recenter.
+//
+// Why a separate plane: the substrate has 6 primitives sharing one
+// material (top + bottom + 4 sides). Painting a texture on the shared
+// material would smear the SVG onto the side walls too. A plane decal
+// is one quad with a clean UV mapping and no surprise side-effects.
+async function attachTopLayerDecal(
+  rootGroup: THREE.Object3D,
+  substrateBboxLocal: THREE.Box3,
+  svgDataUrl: string,
+): Promise<void> {
+  // Parse the SVG's viewBox so the decal is sized to the actual board
+  // extents kicad-cli plotted (typically very close to the substrate's
+  // XZ bbox but not identical — KiCad pads the page slightly).
+  const svgText = await fetch(svgDataUrl).then((r) => r.text()).catch(() => '');
+  const vbMatch = svgText.match(/viewBox="([\d.\-eE]+)\s+([\d.\-eE]+)\s+([\d.\-eE]+)\s+([\d.\-eE]+)"/);
+  if (!vbMatch) return;
+  const vbW_mm = parseFloat(vbMatch[3]);
+  const vbH_mm = parseFloat(vbMatch[4]);
+  if (!isFinite(vbW_mm) || !isFinite(vbH_mm) || vbW_mm <= 0 || vbH_mm <= 0) return;
+
+  // Substrate bbox is captured PRE-RECENTER in loadedRoot-local space.
+  // Decal is parented under loadedRoot, so its local position equals
+  // those pre-recenter coords and the recenter shift propagates through
+  // the scene-graph automatically.
+  const sx = substrateBboxLocal.max.x - substrateBboxLocal.min.x;
+  const sz = substrateBboxLocal.max.z - substrateBboxLocal.min.z;
+  const cx = (substrateBboxLocal.min.x + substrateBboxLocal.max.x) / 2;
+  const cz = (substrateBboxLocal.min.z + substrateBboxLocal.max.z) / 2;
+  const topY = substrateBboxLocal.max.y;
+
+  // Rasterise the SVG via an Image → CanvasTexture round-trip. SVGs in
+  // <img> are decoded by the browser without needing three's SVGLoader.
+  // 1024x1024 is enough for visibly crisp pads on the typical 320px
+  // viewer; we letterbox to preserve aspect on non-square boards.
+  const TARGET = 1024;
+  const aspect = vbW_mm / vbH_mm;
+  const canvasW = aspect >= 1 ? TARGET : Math.round(TARGET * aspect);
+  const canvasH = aspect >= 1 ? Math.round(TARGET / aspect) : TARGET;
+
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('SVG decal image failed to load'));
+    img.src = svgDataUrl;
+  }).catch((e) => {
+    console.warn('[3D viewer GL] decal rasterise failed:', e);
+  });
+  if (!img.complete || img.naturalWidth === 0) return;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  // Transparent base so the substrate green shows between pads (the SVG
+  // itself has no background fill — only stroked / filled paths).
+  ctx.clearRect(0, 0, canvasW, canvasH);
+  ctx.drawImage(img, 0, 0, canvasW, canvasH);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+
+  // Decal plane: kicad-cli's SVG uses Y-down (screen coords). Three.js
+  // PlaneGeometry has the texture's V-axis pointing up, so we flip the
+  // plane around X by rotating it -90° to lie flat on XZ AND apply the
+  // negative-Z scale so the texture's screen-Y maps to world-Z without
+  // mirroring the pads (LGA pin numbering would otherwise be reversed).
+  // Width/height match the SVG viewBox extent in mm → metres conversion
+  // is implicit (substrate is already in metres, viewBox is in mm so we
+  // divide by 1000).
+  const planeGeom = new THREE.PlaneGeometry(vbW_mm / 1000, vbH_mm / 1000);
+  const planeMat = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const decal = new THREE.Mesh(planeGeom, planeMat);
+  decal.name = 'preview_PCB_top_decal';
+  decal.rotation.x = -Math.PI / 2; // lie flat on XZ, normal +Y
+  decal.position.set(cx, topY + 1e-5, cz); // 10µm above substrate top
+  // Stretch to actually cover the substrate XZ extents (board outline
+  // could differ from plot viewBox by a few mm — we trust the substrate
+  // mesh as the "truth" for positioning, and scale the SVG texture to
+  // fill it). The plane's local X = world X, local Y = world -Z post-rot.
+  if (sx > 0 && sz > 0) {
+    decal.scale.set(sx / (vbW_mm / 1000), 1, sz / (vbH_mm / 1000));
+  }
+
+  // Parent under loadedRoot so the recenter shift moves the decal too.
+  rootGroup.add(decal);
+}
+
+// alpha.34: attach axis indicators around the PCB so the user has a
+// fixed reference frame mid-orbit. alpha.35: labels in KICAD convention
+// (+X right, +Y back, +Z up out of board) — three.js's world Y is what
+// kicad calls Z, so the +Z / -Z labels go on world ±Y. Vertical axes
+// stand off 10 cm above and below the substrate so they never sit in
+// front of the chip body. Horizontal axes (+X / -X / +Y / -Y) hug the
+// substrate edge.
+function attachAxisIndicators(rootGroup: THREE.Object3D, substrateBboxLocal: THREE.Box3): void {
+  const halfX = (substrateBboxLocal.max.x - substrateBboxLocal.min.x) / 2;
+  const halfZ = (substrateBboxLocal.max.z - substrateBboxLocal.min.z) / 2;
+  const padX = halfX * 0.4;
+  const padZ = halfZ * 0.4;
+  // alpha.35: vertical stand-off in metres. The user explicitly asked
+  // for "10 cm above and below" so they don't occlude the chip view.
+  const Z_STANDOFF = 0.10;
+
+  const arrows = new THREE.Group();
+  arrows.name = 'axis_indicators';
+
+  type Spec = {
+    label: string;          // KiCad-convention axis name shown to the user
+    dir: THREE.Vector3;     // arrow direction in WORLD space
+    tip: THREE.Vector3;     // label position in WORLD space (substrate-local)
+    yLift: number;          // 0 = on substrate plane; small lift to avoid z-fight
+    color: number;
+  };
+  const specs: Spec[] = [
+    // KiCad +X / -X — same axis as world X. Hug the board edge.
+    { label: '+X', dir: new THREE.Vector3(1, 0, 0),  tip: new THREE.Vector3(halfX + padX, 0, 0),  yLift: 0.0005, color: 0xe04a4a },
+    { label: '-X', dir: new THREE.Vector3(-1, 0, 0), tip: new THREE.Vector3(-halfX - padX, 0, 0), yLift: 0.0005, color: 0xe04a4a },
+    // KiCad +Y / -Y — kicad-cli rotates layout-Y onto world Z. Hug the
+    // board edge along world Z.
+    { label: '+Y', dir: new THREE.Vector3(0, 0, 1),  tip: new THREE.Vector3(0, 0, halfZ + padZ),  yLift: 0.0005, color: 0x4ae04a },
+    { label: '-Y', dir: new THREE.Vector3(0, 0, -1), tip: new THREE.Vector3(0, 0, -halfZ - padZ), yLift: 0.0005, color: 0x4ae04a },
+    // KiCad +Z / -Z — vertical (out of board). 10 cm above/below so
+    // they don't fight the chip body for screen space. Arrow base sits
+    // on the substrate plane (y=0 post-recenter); tip + label at ±10cm.
+    { label: '+Z', dir: new THREE.Vector3(0, 1, 0),  tip: new THREE.Vector3(0, Z_STANDOFF, 0),  yLift: 0,        color: 0x4a8de0 },
+    { label: '-Z', dir: new THREE.Vector3(0, -1, 0), tip: new THREE.Vector3(0, -Z_STANDOFF, 0), yLift: 0,        color: 0x4a8de0 },
+  ];
+
+  for (const s of specs) {
+    // alpha.36: drop the ArrowHelper line + cone combo and use just a
+    // cone tip. The shafts (especially the 10 cm vertical ±Z lines)
+    // dragged thin colored streaks across the canvas and obstructed
+    // the chip body. A standalone cone at the tip keeps the directional
+    // cue without the visual noise. The label sprite sits just past
+    // the cone tip along the same axis.
+    const headLen = Math.max(s.tip.length() * 0.10, 0.002);
+    const headRad = headLen * 0.45;
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(headRad, headLen, 16),
+      new THREE.MeshBasicMaterial({ color: s.color, depthWrite: false, transparent: true, opacity: 0.95 }),
+    );
+    // ConeGeometry's local +Y is its long axis. Orient toward s.dir.
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), s.dir.clone().normalize());
+    // Position cone so its base sits at the tip point (label will sit just past).
+    const tipBase = s.tip.clone().add(s.dir.clone().normalize().multiplyScalar(-headLen / 2));
+    cone.position.set(tipBase.x, tipBase.y + s.yLift, tipBase.z);
+    arrows.add(cone);
+
+    const label = makeAxisLabelSprite(s.label, s.color);
+    const labelPos = s.tip.clone().add(s.dir.clone().normalize().multiplyScalar(headLen * 0.4));
+    label.position.set(labelPos.x, labelPos.y + s.yLift + 0.0008, labelPos.z);
+    arrows.add(label);
+  }
+
+  rootGroup.add(arrows);
+}
+
+// Build a small sprite-mapped text label. CanvasTexture + SpriteMaterial
+// gives us a billboard label that always faces the camera with no extra
+// font dependency.
+function makeAxisLabelSprite(text: string, color: number): THREE.Sprite {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, 128, 128);
+  ctx.font = 'bold 80px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#' + color.toString(16).padStart(6, '0');
+  // Subtle outline so labels read against both light and dark backgrounds.
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.strokeText(text, 64, 64);
+  ctx.fillText(text, 64, 64);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  // alpha.35: sprite world size dropped from 0.006 → 0.004 so the labels
+  // don't dominate the canvas at typical viewer dimensions (alpha.34's
+  // labels were nearly half the chip's apparent size).
+  sprite.scale.set(0.004, 0.004, 1);
+  return sprite;
 }
 
 function disposeObject(root: THREE.Object3D) {
