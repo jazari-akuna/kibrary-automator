@@ -1691,6 +1691,29 @@ async function main() {
         );
       }
 
+      // (G7d) alpha.4 substrate-name — pre-fix bug had findSubstrateMesh
+      //       loop with no `break`, so the LAST mesh matching /pcb/i won.
+      //       For connector footprints with chip meshes named like
+      //       "*_PCB_*", the chip body got picked as the substrate and
+      //       the real substrate (preview_PCB) ended up in chipNodes —
+      //       user reported "PCB moves down, part stays." The fix is
+      //       exact-match `preview_PCB` first, else largest-XY-area.
+      //       For the smoke fixture (kicad-cli R0603 export) the
+      //       canonical substrate name is exactly `preview_PCB`.
+      const substrateName = await execAsync(sid, `
+        var done = arguments[arguments.length - 1];
+        done({ name: window.__model3dGLSubstrateName });
+      `);
+      log(`  alpha.4 substrate-name: ${JSON.stringify(substrateName)}`);
+      if (substrateName?.name !== 'preview_PCB') {
+        throw new Error(
+          `alpha.4 substrate-name mismatch: got '${substrateName?.name}', expected 'preview_PCB'. ` +
+          `findSubstrateMesh likely picked a chip-body mesh (last-wins /pcb/i bug back). ` +
+          `Real substrate would now be in chipNodes and the user-reported ` +
+          `"PCB moves down, part stays" regression is back.`
+        );
+      }
+
       // (G8) alpha.34 slider-units — assert that a 1 mm offset slider
       //      tick translates to a ~1e-3 m world translation, NOT a 1 m
       //      shift. The bug: positioner emits mm but the viewer used to

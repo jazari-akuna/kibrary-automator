@@ -348,6 +348,181 @@ def test_unprefixed_footprint_value_gets_target_lib_prefix(tmp_path: Path) -> No
     assert '"Connector_KSL:IPEX_20952-024E-02"' in contents
 
 
+def test_dropped_step_gets_model_block_in_kicad_mod(tmp_path: Path) -> None:
+    """alpha.4-bugfix: dropping symbol + footprint (no model block) + STEP
+    must add a (model ...) block to the committed .kicad_mod referencing
+    ${KSL_ROOT}/<lib>/<lib>.3dshapes/<step-basename>.
+
+    Reproduces the SnapEDA I-PEX 20525-210E-02 workflow the user reported:
+    third-party footprint with no embedded 3D refs, separate STEP file,
+    after drag-drop commit the in-app 3D viewer must show the chip body.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    src_dir = tmp_path / "snapeda"
+    src_dir.mkdir()
+    sym = src_dir / "20525-210E-02.kicad_sym"
+    sym.write_bytes(FIXTURE_SYM.read_bytes())
+    fp = src_dir / "I-PEX_20525-210E-02.kicad_mod"
+    # Footprint with NO (model ...) block (the SnapEDA pattern).
+    fp.write_text(
+        '(footprint "I-PEX_20525-210E-02" (layer F.Cu)\n'
+        '  (descr "")\n'
+        '  (attr smd)\n'
+        '  (pad 1 smd rect (at 0 0) (size 1 1) (layers F.Cu F.Mask F.Paste))\n'
+        ')\n'
+    )
+    step = src_dir / "I-PEX_20525-210E-02.step"
+    step.write_bytes(b"ISO-10303-21;\nHEADER;\n")  # minimal STEP-ish
+
+    group = {
+        "name": "I-PEX_20525-210E-02",
+        "symbol_path": str(sym),
+        "footprint_path": str(fp),
+        "model_paths": [str(step)],
+        "source_dir": str(src_dir),
+    }
+
+    commit_group(workspace=workspace, group=group, target_lib="Connector_KSL")
+
+    committed_fp = workspace / "Connector_KSL" / "Connector_KSL.pretty" / "I-PEX_20525-210E-02.kicad_mod"
+    assert committed_fp.is_file()
+    body = committed_fp.read_text()
+    assert "(model" in body, "(model …) block was NOT added to .kicad_mod"
+    assert "${KSL_ROOT}/Connector_KSL/Connector_KSL.3dshapes/I-PEX_20525-210E-02.step" in body, (
+        f"(model …) block has wrong path. File contents:\n{body}"
+    )
+
+    # And the .step file itself must have landed in .3dshapes/
+    committed_step = workspace / "Connector_KSL" / "Connector_KSL.3dshapes" / "I-PEX_20525-210E-02.step"
+    assert committed_step.is_file()
+
+
+def test_ipex_snapeda_folder_mismatched_stems(tmp_path: Path) -> None:
+    """Real I-PEX 20952-024E-02 SnapEDA folder structure:
+        ├── 20952-024E-02.kicad_sym          (symbol entry: 20952-024E-02)
+        ├── 20952-024E-02.step               (3d basename matches sym)
+        ├── how-to-import.htm                (junk → unmatched)
+        └── IPEX_20952-024E-02.kicad_mod     (footprint name: IPEX_20952-024E-02)
+
+    The symbol's Footprint property reads `IPEX_20952-024E-02` (un-prefixed,
+    no `:` separator); the .kicad_mod has NO (model …) block at all. After
+    drop-commit:
+        - all four files belong to ONE component (folder-mode grouping)
+        - .htm lands in unmatched
+        - .kicad_mod is in Connector_KSL.pretty/ with name preserved
+        - .step is in Connector_KSL.3dshapes/ with name preserved
+        - .kicad_mod gains a (model …) block pointing at the .step
+        - symbol's Footprint property auto-rewrites to Connector_KSL:IPEX_…
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    folder = tmp_path / "IPEX_20952-024E-02"
+    folder.mkdir()
+
+    sym = folder / "20952-024E-02.kicad_sym"
+    sym.write_text(
+        '(kicad_symbol_lib (version 20211014) (generator None)\n'
+        '  (symbol "20952-024E-02" (in_bom yes) (on_board yes)\n'
+        '    (property "Reference" "J" (id 0) (at 0 0 0))\n'
+        '    (property "Value" "20952-024E-02" (id 1) (at 0 0 0))\n'
+        '    (property "Footprint" "IPEX_20952-024E-02" (id 2) (at 0 0 0))\n'
+        '    (property "Datasheet" "" (id 3) (at 0 0 0))\n'
+        '  )\n'
+        ')\n'
+    )
+    fp = folder / "IPEX_20952-024E-02.kicad_mod"
+    fp.write_text(
+        '(footprint "IPEX_20952-024E-02" (layer F.Cu)\n'
+        '  (descr "")\n'
+        '  (attr smd)\n'
+        '  (pad 1 smd rect (at 0 0) (size 1 1) (layers F.Cu F.Mask F.Paste))\n'
+        ')\n'
+    )
+    step = folder / "20952-024E-02.step"
+    step.write_bytes(b"ISO-10303-21;\nHEADER;\n")
+    junk = folder / "how-to-import.htm"
+    junk.write_text("<html>readme</html>")
+
+    # 1. scan_paths against the folder
+    scan = scan_paths([str(folder)])
+    assert len(scan["folders"]) == 1
+    grp = scan["folders"][0]
+    assert grp["name"] == "IPEX_20952-024E-02"
+    assert Path(grp["symbol_path"]).name == "20952-024E-02.kicad_sym"
+    assert Path(grp["footprint_path"]).name == "IPEX_20952-024E-02.kicad_mod"
+    assert len(grp["model_paths"]) == 1
+    assert Path(grp["model_paths"][0]).name == "20952-024E-02.step"
+    assert scan["unmatched"] == [str(junk)]
+    assert scan["loose_files"] == []
+
+    # 2. commit_group into Connector_KSL (creates new lib)
+    result = commit_group(workspace=workspace, group=grp, target_lib="Connector_KSL")
+
+    lib_dir = workspace / "Connector_KSL"
+    pretty = lib_dir / "Connector_KSL.pretty"
+    shapes = lib_dir / "Connector_KSL.3dshapes"
+
+    # Files preserved with original basenames
+    assert (pretty / "IPEX_20952-024E-02.kicad_mod").is_file()
+    assert (shapes / "20952-024E-02.step").is_file()
+
+    # Footprint now has (model …) block pointing at the .step via KSL_ROOT
+    fp_body = (pretty / "IPEX_20952-024E-02.kicad_mod").read_text()
+    assert "${KSL_ROOT}/Connector_KSL/Connector_KSL.3dshapes/20952-024E-02.step" in fp_body, (
+        f"(model …) block missing or wrong path. Body:\n{fp_body}"
+    )
+
+    # Symbol's un-prefixed Footprint property auto-prefixed with target lib
+    sym_body = (lib_dir / "Connector_KSL.kicad_sym").read_text()
+    assert '"Connector_KSL:IPEX_20952-024E-02"' in sym_body, (
+        f"Footprint property not rewritten. Symbol body:\n{sym_body}"
+    )
+
+    # Symbol entry name preserved
+    assert result["component_name"] == "20952-024E-02"
+
+
+def test_dropped_step_with_existing_model_block_not_duplicated(tmp_path: Path) -> None:
+    """If the .kicad_mod already has a (model …) block whose path matches
+    what we'd synthesize, don't duplicate it (idempotent re-commits)."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    sym = src_dir / "X.kicad_sym"
+    sym.write_bytes(FIXTURE_SYM.read_bytes())
+    fp = src_dir / "X.kicad_mod"
+    fp.write_text(
+        '(footprint "X" (layer F.Cu)\n'
+        '  (model ${KSL_ROOT}/Foo_KSL/Foo_KSL.3dshapes/X.step\n'
+        '    (offset (xyz 0 0 0))\n'
+        '    (scale (xyz 1 1 1))\n'
+        '    (rotate (xyz 0 0 0))\n'
+        '  )\n'
+        ')\n'
+    )
+    step = src_dir / "X.step"
+    step.write_bytes(b"ISO-10303-21;\n")
+
+    group = {
+        "name": "X",
+        "symbol_path": str(sym),
+        "footprint_path": str(fp),
+        "model_paths": [str(step)],
+        "source_dir": str(src_dir),
+    }
+
+    commit_group(workspace=workspace, group=group, target_lib="Foo_KSL")
+    committed_fp = workspace / "Foo_KSL" / "Foo_KSL.pretty" / "X.kicad_mod"
+    body = committed_fp.read_text()
+    # Exactly one (model …) block — no duplicate
+    assert body.count("(model ") == 1, f"(model …) duplicated. Contents:\n{body}"
+
+
 def test_unprefixed_footprint_without_matching_file_left_alone(tmp_path: Path) -> None:
     """Don't corrupt symbols whose Footprint property is a comment / external ref."""
     from kibrary_sidecar.library import _update_symbol_footprint_refs

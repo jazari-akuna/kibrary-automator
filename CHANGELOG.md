@@ -2,6 +2,16 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.3-alpha.4] — 2026-05-03
+
+### Fixed
+- **Dropped 3D file (`.step` / `.wrl`) was copied into `*.3dshapes/` but never linked to the footprint.** `library._update_footprint_3d_paths` only iterated EXISTING `(model …)` blocks inside the footprint and rewrote their paths — it had no machinery for *adding* a model block when the dropped footprint had none. So the user dropped sym + mod + step into a library, opened the footprint, and saw no 3D model attached. Fix: `drop_import._ensure_model_blocks()` runs as part of `commit_group`'s staging step. For each `model_paths` entry it parses the staged `.kicad_mod` via kiutils and appends a `Model` block pointing at `${KSL_ROOT}/<lib>/<lib>.3dshapes/<basename>`. If kiutils round-trip would mangle formatting (it sometimes will for hand-edited footprints), `_regex_append_models` falls back to a text-mode append before the closing paren, byte-stable for the rest of the file. Both paths skip footprints that already reference the same basename, so re-drops are idempotent.
+- **3D viewer: PCB substrate moved on slider tick, chip body stayed in place** — i.e. the inverse of what the user wanted. `findSubstrateMesh` matched every mesh whose name contained `/pcb/i` and kept overwriting its pick on each match, so for connector footprints (the I-PEX 20952-024E-02 case) where chip meshes are named like `*_PCB_*`, the LAST match (a chip body) was returned as the substrate. The real `preview_PCB` then ended up in `chipNodes` and got translated by `applyLiveDelta` while the chip stayed pinned. Fix: prefer exact-match `preview_PCB` (kicad-cli's canonical name); fall back to the largest-XY-area mesh, which is reliably the board (substrate is wide+flat, chip bodies are small in XY). XY-area not 3D-volume — chip bodies sometimes have a larger Z extent than the thin substrate.
+
+### Added
+- **Smoke probe `alpha.4 substrate-name`** — reads the new `window.__model3dGLSubstrateName` and asserts it equals `'preview_PCB'` for the smoke fixture (kicad-cli R0603 export). Catches `findSubstrateMesh` regressing back to last-wins `/pcb/i` selection. The previous `alpha.3 runtime-chipNodes` probe only verified the array was non-empty; it didn't verify the *correct* mesh was excluded from it.
+- **3 new sidecar pytest cases** in `test_drop_import.py`: dropped `.step` for a footprint with no model blocks gets one synthesised at `${KSL_ROOT}/<lib>/<lib>.3dshapes/<basename>`; dropped `.step` for a footprint that already references the same basename does NOT get a duplicate block; the I-PEX SnapEDA folder layout (sym + step + .htm + footprint with mismatched stems) commits as one component with all linkages right (.htm goes to unmatched, footprint name preserved, step linked, un-prefixed Footprint property auto-rewritten).
+
 ## [26.5.3-alpha.3] — 2026-05-03
 
 ### Fixed

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2.0",
   "productName": "Kibrary",
-  "version": "26.5.3-alpha.3",
+  "version": "26.5.3-alpha.4",
   "identifier": "io.raph.kibrary",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -11,16 +11,37 @@
   },
   "app": {
     "windows": [
-      { "title": "Kibrary", "width": 1280, "height": 800, "minWidth": 800, "minHeight": 600 }
+      {
+        "title": "Kibrary",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600
+      }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg", "deb", "rpm", "appimage", "nsis"],
-    "icon": ["icons/icon.png"],
-    "resources": ["resources/*.whl"],
-    "externalBin": ["../sidecar/dist/kibrary-sidecar"],
+    "targets": [
+      "app",
+      "dmg",
+      "deb",
+      "rpm",
+      "appimage",
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.png"
+    ],
+    "resources": [
+      "resources/*.whl"
+    ],
+    "externalBin": [
+      "../sidecar/dist/kibrary-sidecar"
+    ],
     "createUpdaterArtifacts": true,
     "macOS": {
       "minimumSystemVersion": "10.15",
@@ -32,11 +53,19 @@
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": "http://timestamp.comodoca.com",
-      "wix": { "language": "en-US" },
-      "nsis": { "languages": ["English"] }
+      "wix": {
+        "language": "en-US"
+      },
+      "nsis": {
+        "languages": [
+          "English"
+        ]
+      }
     },
     "linux": {
-      "appimage": { "bundleMediaFramework": false }
+      "appimage": {
+        "bundleMediaFramework": false
+      }
     }
   },
   "plugins": {
@@ -45,7 +74,9 @@
       "endpoints": [
         "https://github.com/jazari-akuna/kibrary-automator/releases/latest/download/latest.json"
       ],
-      "windows": { "installMode": "passive" }
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

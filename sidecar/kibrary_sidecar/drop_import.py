@@ -24,11 +24,14 @@ import shutil
 from pathlib import Path
 from typing import Iterable
 
+from kiutils.footprint import Footprint, Model
 from kiutils.symbol import SymbolLib
 
 from kibrary_sidecar import library
 
 log = logging.getLogger(__name__)
+
+_KSL_ROOT = "${KSL_ROOT}"
 
 # Recognised file extensions, lower-case. Anything else falls into `unmatched`.
 _SYMBOL_EXTS = {".kicad_sym"}
@@ -200,6 +203,96 @@ def _stage_group_for_commit(staging_root: Path, group: dict) -> tuple[Path, str]
     return part_dir, synthetic_lcsc
 
 
+def _ensure_model_blocks(
+    lib_dir: Path,
+    target_lib: str,
+    footprint_path: str,
+    model_paths: list[str],
+) -> None:
+    """Synthesize ``(model ...)`` blocks in the committed .kicad_mod for
+    each dropped 3D file that isn't already referenced.
+
+    The existing ``library._update_footprint_3d_paths()`` only iterates
+    EXISTING ``(model ...)`` blocks. For drag-drop, the dropped .kicad_mod
+    typically has no model blocks at all (the user is attaching a 3D file
+    that wasn't shipped with the original footprint, e.g. an IPEX
+    connector). Without this step, the .step file lands in ``.3dshapes/``
+    but the .kicad_mod doesn't reference it → KiCad's PCB editor + the
+    in-app 3D viewer both render the chip without its body.
+
+    Mirrors ``model3d_ops._update_kicad_mod()`` but iterates over the
+    *user-dropped* file basenames rather than synthesizing one per
+    component name.
+    """
+    if not model_paths or not footprint_path:
+        return
+
+    fp_basename = Path(footprint_path).stem
+    pretty_dir = lib_dir / f"{target_lib}.pretty"
+    mod_path = pretty_dir / f"{fp_basename}.kicad_mod"
+    if not mod_path.is_file():
+        log.warning(
+            "drop.commit_group: cannot find %s in %s — skipping (model ...) block sync",
+            mod_path.name,
+            pretty_dir,
+        )
+        return
+
+    target_paths = [
+        f"{_KSL_ROOT}/{target_lib}/{target_lib}.3dshapes/{Path(src).name}"
+        for src in model_paths
+    ]
+
+    try:
+        fp = Footprint().from_file(str(mod_path))
+        existing_paths = {m.path for m in fp.models}
+        added = False
+        for p in target_paths:
+            if p not in existing_paths:
+                fp.models.append(Model(path=p))
+                added = True
+        if added:
+            fp.to_file(str(mod_path))
+    except Exception as exc:  # noqa: BLE001 — diagnostic, fall through to regex
+        log.warning(
+            "drop.commit_group: kiutils failed to add (model ...) blocks to %s "
+            "(falling back to text-append): %s",
+            mod_path,
+            exc,
+        )
+        _regex_append_models(mod_path, target_paths)
+
+
+def _regex_append_models(mod_path: Path, target_paths: list[str]) -> None:
+    """Text-fallback when kiutils can't parse the .kicad_mod.
+
+    Reads the file, checks which target paths are already mentioned (by
+    substring match), appends a default-parameter (model ...) block for
+    each missing one just before the footprint's closing paren.
+    """
+    content = mod_path.read_text()
+    appended_any = False
+    for tp in target_paths:
+        if tp in content:
+            continue
+        block = (
+            f"\n  (model {tp}\n"
+            f"    (offset (xyz 0 0 0))\n"
+            f"    (scale (xyz 1 1 1))\n"
+            f"    (rotate (xyz 0 0 0))\n"
+            f"  )"
+        )
+        # Insert before the LAST top-level closing paren (the footprint's).
+        last_close = content.rstrip().rfind(")")
+        if last_close < 0:
+            log.warning("drop.commit_group: %s has no closing paren, skipping append", mod_path)
+            return
+        content = content[:last_close] + block + "\n" + content[last_close:]
+        appended_any = True
+    if appended_any:
+        mod_path.write_text(content)
+
+
 def _read_committed_component_name(lib_dir: Path, target_lib: str, fallback: str) -> str:
     """Best-effort lookup of the component name actually written to the lib."""
     sym_file = lib_dir / f"{target_lib}.kicad_sym"
@@ -258,6 +351,20 @@ def commit_group(
         # so re-commits start clean and we don't leak disk space.
         if part_dir.exists():
             shutil.rmtree(part_dir, ignore_errors=True)
+
+    # Synthesize (model …) blocks for any dropped 3D file the .kicad_mod
+    # doesn't already reference. library._update_footprint_3d_paths only
+    # rewrites EXISTING blocks; drag-drop typically attaches 3D files to
+    # footprints that have no model block at all (the user-reported
+    # IPEX_20952 case). Without this, the .step lands in .3dshapes/ but
+    # KiCad's PCB editor + the in-app viewer both render an empty footprint.
+    if group.get("model_paths") and group.get("footprint_path"):
+        _ensure_model_blocks(
+            lib_dir=lib_dir,
+            target_lib=target_lib,
+            footprint_path=group["footprint_path"],
+            model_paths=group["model_paths"],
+        )
 
     component_name = _read_committed_component_name(lib_dir, target_lib, group["name"])
 

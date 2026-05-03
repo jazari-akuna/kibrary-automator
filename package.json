@@ -1,7 +1,7 @@
 {
   "name": "kibrary",
   "private": true,
-  "version": "26.5.3-alpha.3",
+  "version": "26.5.3-alpha.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -29,7 +29,7 @@
     "three": "^0.184.0"
   },
   "bundledAssets": {
-    "kicanvas": "https://kicanvas.org/kicanvas/kicanvas.js (bundled in public/kicanvas.js — not on npm)"
+    "kicanvas": "https://kicanvas.org/kicanvas/kicanvas.js (bundled in public/kicanvas.js \u2014 not on npm)"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",

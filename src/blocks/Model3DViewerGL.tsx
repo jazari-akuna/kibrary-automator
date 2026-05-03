@@ -66,6 +66,16 @@ declare global {
      * them.
      */
     __model3dGLChipNodeCount?: number;
+    /**
+     * alpha.4-bugfix: surfaces the name of the mesh chosen as the
+     * substrate. The pre-fix bug had findSubstrateMesh's loop with no
+     * `break` — every mesh name matching /pcb/i overwrote the previous
+     * pick, so connector meshes named "*_PCB_*" won and the real
+     * substrate ended up in chipNodes (user reported "PCB moves down,
+     * part stays"). For kicad-cli output the canonical name is
+     * `preview_PCB` exactly; the smoke probe asserts this match.
+     */
+    __model3dGLSubstrateName?: string;
   }
 }
 
@@ -393,6 +403,7 @@ export default function Model3DViewerGL(props: Props) {
             loadedRoot.updateMatrixWorld(true);
             substrateBboxLocal = new THREE.Box3().setFromObject(substrateMesh);
           }
+          window.__model3dGLSubstrateName = substrateMesh?.name ?? '';
 
           // Recenter so the substrate TOP sits at world Y=0. kicad-cli's
           // GLB has the substrate at Y=[0, ~1.5mm] with the chip extending
@@ -765,27 +776,41 @@ function findTopLevelAncestor(node: THREE.Object3D, root: THREE.Object3D): THREE
 // alpha.33: kicad-cli's GLB names the extruded board mesh "preview_PCB".
 // We need to identify it post-load so we can (a) compute its top-Y for
 // the world-recenter shift and (b) anchor the SVG decal plane on top.
-// Falls back to the largest-bbox mesh if the name doesn't match — defends
-// against future kicad-cli renames.
+//
+// alpha.4-bugfix: previous implementation matched ALL meshes whose name
+// contained /pcb/i and kept overwriting `named` on each match — so for
+// connector footprints with chip meshes named like "J1_PCB_Edge" or
+// "Connector_PCB_Pad", the LAST matching mesh (a chip body) won. The
+// real substrate then ended up in chipNodes and got translated by
+// applyLiveDelta — user reported this as "PCB moves down, part stays."
+//
+// New strategy:
+//   1. Exact-match `preview_PCB` first — kicad-cli's canonical name.
+//   2. If no exact match, fall back to the LARGEST-XY-area mesh, which
+//      is reliably the board (substrate is wide+flat, chip bodies are
+//      small). XY-area not 3D-volume — chip body STEPs sometimes have
+//      a larger Z extent than the thin substrate.
 function findSubstrateMesh(root: THREE.Object3D): THREE.Mesh | null {
-  let named: THREE.Mesh | null = null;
-  let largest: THREE.Mesh | null = null;
-  let largestVolume = 0;
+  let exactMatch: THREE.Mesh | null = null;
+  let largestXY: THREE.Mesh | null = null;
+  let largestArea = 0;
   root.traverse((o) => {
     const m = o as THREE.Mesh;
     if (!m.isMesh) return;
-    if (m.name === 'preview_PCB' || /pcb/i.test(m.name)) named = m;
+    if (m.name === 'preview_PCB' && exactMatch === null) {
+      exactMatch = m;
+    }
     const b = new THREE.Box3().setFromObject(m);
     if (b.isEmpty()) return;
     const s = new THREE.Vector3();
     b.getSize(s);
-    const vol = s.x * s.y * s.z;
-    if (vol > largestVolume) {
-      largestVolume = vol;
-      largest = m;
+    const area = s.x * s.z; // X-by-Z is the board face in three.js Y-up world
+    if (area > largestArea) {
+      largestArea = area;
+      largestXY = m;
     }
   });
-  return named || largest;
+  return exactMatch || largestXY;
 }
 
 // alpha.33: rasterise the front-layers SVG and attach it as a thin decal
