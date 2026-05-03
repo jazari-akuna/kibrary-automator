@@ -1334,12 +1334,15 @@ async function main() {
         );
       }
 
-      // (G4) alpha.31 material-fixup — verify the post-load traversal
-      //      patched away kicad-cli's two bogus PBR encodings:
+      // (G4) alpha.31 / alpha.5-visual-parity material-fixup — verify the
+      //      post-load traversal patched kicad-cli's two bogus PBR encodings:
       //        * near-opaque (≥ 0.7) materials must NOT be transparent
       //          (board substrate + soldermask false-positives).
-      //        * fully metallic materials with no metalnessMap must NOT
-      //          remain at metalness > 0.9 (OCCT default → chrome IC body).
+      //        * fully metallic materials with no metalnessMap AND a GREY
+      //          baseColor must NOT remain at metalness > 0.9 (OCCT default
+      //          for "unknown shading" → chrome IC body). Non-grey metallic
+      //          materials are intentionally preserved — alpha.5's grey-
+      //          detect heuristic keeps gold pads / USB shells reflective.
       //      If a future change drops the traversal, the bogus counters
       //      become non-zero and smoke fails.
       const materialsFixed = await execAsync(sid, `
@@ -1365,7 +1368,16 @@ async function main() {
           mats.forEach(function(m){
             total++;
             if (m.transparent && m.opacity >= 0.7) leftoverTransparent++;
-            if (m.metalness !== undefined && m.metalness > 0.9 && !m.metalnessMap) bogusMetal++;
+            // alpha.5: only count GREY OCCT-default materials as "bogus".
+            // Non-grey metallic materials are intentionally preserved.
+            if (m.metalness !== undefined && m.metalness > 0.9 && !m.metalnessMap) {
+              var c = m.color;
+              var isGrey = c
+                && Math.abs(c.r - c.g) < 0.05
+                && Math.abs(c.g - c.b) < 0.05
+                && c.r > 0.4 && c.r < 0.6;
+              if (isGrey) bogusMetal++;
+            }
           });
         });
         done({ok: bogusMetal === 0 && leftoverTransparent === 0,
