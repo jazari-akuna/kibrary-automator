@@ -17,14 +17,9 @@
 import { createSignal, onMount, onCleanup, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { addGroups, type DroppedGroup } from '~/state/dropImport';
+import { applyScanResult, type ScanResult } from '~/state/dropImport';
 import { setRoom } from '~/state/room';
 import { currentWorkspace } from '~/state/workspace';
-
-interface ScanResult {
-  groups: DroppedGroup[];
-  unmatched: string[];
-}
 
 export default function DropZoneOverlay() {
   const [hovering, setHovering] = createSignal(false);
@@ -71,12 +66,13 @@ export default function DropZoneOverlay() {
         method: 'drop.scan_paths',
         params: { paths },
       });
-      if (result.groups.length > 0) {
-        addGroups(result.groups);
+      const hasContent = result.folders.length > 0 || result.loose_files.length > 0;
+      if (hasContent) {
+        applyScanResult(result);
         setRoom('add');
       }
       setLastUnmatched(result.unmatched);
-      if (result.groups.length === 0 && result.unmatched.length > 0) {
+      if (!hasContent && result.unmatched.length > 0) {
         setLastError(`No KiCad files found in ${result.unmatched.length} dropped item(s)`);
       }
     } catch (e) {

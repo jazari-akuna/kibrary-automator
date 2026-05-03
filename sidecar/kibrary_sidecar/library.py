@@ -121,39 +121,48 @@ def _create_new(
 ) -> None:
     lib_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- move symbol ---
+    # alpha.3-bugfix: every staged component below is now optional. The
+    # LCSC pipeline always produces a complete trio (sym + pretty + maybe
+    # 3D), but the drag-drop pipeline routes through here for partial
+    # drops too — a footprint-only drop, for example, must land its
+    # .kicad_mod even when there's no .kicad_sym to move first. Crashing
+    # on a missing component would silently corrupt the lib AND swallow
+    # the user's footprint.
     src_sym = staging_part / f"{lcsc}.kicad_sym"
-    dst_sym = lib_dir / f"{target_lib}.kicad_sym"
-    shutil.move(str(src_sym), dst_sym)
+    dst_sym = lib_dir / f"{target_lib}.kicad_sym" if src_sym.is_file() else None
+    if dst_sym is not None:
+        shutil.move(str(src_sym), dst_sym)
 
-    # --- move .pretty footprint dir ---
     src_pretty = staging_part / f"{lcsc}.pretty"
-    dst_pretty = lib_dir / f"{target_lib}.pretty"
-    shutil.move(str(src_pretty), dst_pretty)
+    dst_pretty = lib_dir / f"{target_lib}.pretty" if src_pretty.is_dir() else None
+    if dst_pretty is not None:
+        shutil.move(str(src_pretty), dst_pretty)
 
-    # --- move .3dshapes dir (optional) ---
     src_3d = staging_part / f"{lcsc}.3dshapes"
     dst_3d = lib_dir / f"{target_lib}.3dshapes" if src_3d.is_dir() else None
-    if src_3d.is_dir():
+    if dst_3d is not None:
         shutil.move(str(src_3d), dst_3d)
 
-    # --- apply edits ---
-    if edits:
+    # --- apply edits (only if we have a symbol to edit) ---
+    if edits and dst_sym is not None:
         write_properties(dst_sym, edits)
 
     # --- update symbol's Footprint property (e.g. ".:C_0402" → "Resistors_KSL:C_0402") ---
-    _update_symbol_footprint_refs(dst_sym, target_lib)
+    if dst_sym is not None:
+        _update_symbol_footprint_refs(dst_sym, target_lib)
 
     # --- update 3D model paths in .kicad_mod files ---
-    if dst_3d is not None:
+    if dst_3d is not None and dst_pretty is not None:
         _update_footprint_3d_paths(dst_pretty, target_lib, target_lib + ".3dshapes")
 
-    # --- render / copy icon ---
-    try:
-        component_name = SymbolLib().from_file(str(dst_sym)).symbols[0].entryName
-    except Exception:
-        component_name = lcsc
-    _copy_or_render_icon(staging_part, lcsc, lib_dir, target_lib, dst_pretty, component_name)
+    # --- render / copy icon (best-effort; no-op without a symbol) ---
+    component_name = lcsc
+    if dst_sym is not None:
+        try:
+            component_name = SymbolLib().from_file(str(dst_sym)).symbols[0].entryName
+        except Exception:
+            component_name = lcsc
+        _copy_or_render_icon(staging_part, lcsc, lib_dir, target_lib, dst_pretty, component_name)
 
     # --- generate metadata.json (PCM format) ---
     _write_metadata(lib_dir, target_lib, has_3d=dst_3d is not None)
@@ -177,44 +186,51 @@ def _merge_into(
     dst_sym = lib_dir / f"{target_lib}.kicad_sym"
     dst_pretty = lib_dir / f"{target_lib}.pretty"
 
-    # --- merge symbol via kiutils ---
+    # alpha.3-bugfix: each staged component below is independently
+    # optional — see the matching note in _create_new. The original
+    # version unconditionally read `<staging>/<lcsc>.kicad_sym` even on
+    # footprint-only drops, exploding inside kiutils and swallowing the
+    # whole commit (the user's .kicad_mod never made it into .pretty/).
     src_sym = staging_part / f"{lcsc}.kicad_sym"
-    existing_lib = SymbolLib().from_file(str(dst_sym))
-    new_lib = SymbolLib().from_file(str(src_sym))
-    for sym in new_lib.symbols:
-        existing_lib.symbols.append(sym)
-    existing_lib.to_file(str(dst_sym))
+    if src_sym.is_file():
+        existing_lib = SymbolLib().from_file(str(dst_sym))
+        new_lib = SymbolLib().from_file(str(src_sym))
+        for sym in new_lib.symbols:
+            existing_lib.symbols.append(sym)
+        existing_lib.to_file(str(dst_sym))
 
-    # --- copy .kicad_mod files into existing .pretty dir ---
     src_pretty = staging_part / f"{lcsc}.pretty"
-    dst_pretty.mkdir(exist_ok=True)
-    for mod_file in src_pretty.glob("*.kicad_mod"):
-        shutil.copy2(str(mod_file), dst_pretty / mod_file.name)
+    if src_pretty.is_dir():
+        dst_pretty.mkdir(exist_ok=True)
+        for mod_file in src_pretty.glob("*.kicad_mod"):
+            shutil.copy2(str(mod_file), dst_pretty / mod_file.name)
 
-    # --- copy 3D models if staging has them ---
     src_3d = staging_part / f"{lcsc}.3dshapes"
     if src_3d.is_dir():
         dst_3d = lib_dir / f"{target_lib}.3dshapes"
         dst_3d.mkdir(exist_ok=True)
         for model_file in src_3d.iterdir():
             shutil.copy2(str(model_file), dst_3d / model_file.name)
-        _update_footprint_3d_paths(dst_pretty, target_lib, target_lib + ".3dshapes")
+        if dst_pretty.is_dir():
+            _update_footprint_3d_paths(dst_pretty, target_lib, target_lib + ".3dshapes")
 
     # --- apply edits to the (now merged) sym file ---
-    if edits:
+    if edits and dst_sym.is_file():
         write_properties(dst_sym, edits)
 
     # --- update footprint refs ---
-    _update_symbol_footprint_refs(dst_sym, target_lib)
+    if dst_sym.is_file():
+        _update_symbol_footprint_refs(dst_sym, target_lib)
 
-    # --- render / copy icon ---
-    try:
-        # The newly merged symbol is the last one in the file
-        merged_lib = SymbolLib().from_file(str(dst_sym))
-        component_name = merged_lib.symbols[-1].entryName
-    except Exception:
-        component_name = lcsc
-    _copy_or_render_icon(staging_part, lcsc, lib_dir, target_lib, dst_pretty, component_name)
+    # --- render / copy icon (only if we have a sym to read names from) ---
+    if dst_sym.is_file():
+        try:
+            # The newly merged symbol is the last one in the file
+            merged_lib = SymbolLib().from_file(str(dst_sym))
+            component_name = merged_lib.symbols[-1].entryName
+        except Exception:
+            component_name = lcsc
+        _copy_or_render_icon(staging_part, lcsc, lib_dir, target_lib, dst_pretty, component_name)
 
     # NOTE: repository.json is NOT re-appended on merge.
 
@@ -228,13 +244,27 @@ def _update_symbol_footprint_refs(sym_path: Path, target_lib: str) -> None:
 
     kiutils stores property values as plain strings, so we update them
     directly.  We use kiutils so that the write round-trips cleanly.
+
+    alpha.3-bugfix: also handles un-prefixed Footprint values (no ``:``
+    at all) by looking up whether a matching ``<value>.kicad_mod`` lives
+    in the target library's ``.pretty/`` dir; if so, the value is
+    rewritten to ``<target_lib>:<value>``. This auto-heals symbols
+    imported from third-party sources where the Footprint property
+    references the footprint by bare basename (the IPEX_20952-024E-02
+    case the user hit on a drag-drop commit), so the preview matcher
+    can resolve them via the standard ``lib:fp`` convention.
     """
     lib = SymbolLib().from_file(str(sym_path))
+    pretty_dir = sym_path.parent / f"{target_lib}.pretty"
+    available_fps: set[str] = set()
+    if pretty_dir.is_dir():
+        available_fps = {p.stem for p in pretty_dir.glob("*.kicad_mod")}
+
     changed = False
     for sym in lib.symbols:
         for prop in sym.properties:
             if prop.key == "Footprint" and prop.value:
-                new_val = _rewrite_footprint_ref(prop.value, target_lib)
+                new_val = _rewrite_footprint_ref(prop.value, target_lib, available_fps)
                 if new_val != prop.value:
                     prop.value = new_val
                     changed = True
@@ -242,19 +272,30 @@ def _update_symbol_footprint_refs(sym_path: Path, target_lib: str) -> None:
         lib.to_file(str(sym_path))
 
 
-def _rewrite_footprint_ref(value: str, target_lib: str) -> str:
+def _rewrite_footprint_ref(
+    value: str,
+    target_lib: str,
+    available_fps: set[str] | None = None,
+) -> str:
     """Replace the library part of a footprint reference with *target_lib*.
 
     Handles:
     - ``".:Foo"``      → ``"<target_lib>:Foo"``
-    - ``".:Foo"``      → ``"<target_lib>:Foo"``
     - ``".Foo"``       → ``"<target_lib>:Foo"``
     - ``"OldLib:Foo"`` → left unchanged (already namespaced)
+    - ``"Foo"`` (no ``:`` at all) → ``"<target_lib>:Foo"`` IF
+      ``<target_lib>.pretty/Foo.kicad_mod`` exists in the lib dir.
+      The "file exists" guard prevents corrupting symbols whose
+      Footprint property is intentionally a comment / external ref.
     """
     # Strip leading ".:" or "." prefix
     m = re.match(r'^\.[:./\\]*(.*)', value)
     if m:
         return f"{target_lib}:{m.group(1)}"
+    # alpha.3-bugfix: un-prefixed bare basename → prefix with target_lib
+    # if the matching .kicad_mod file actually exists.
+    if ":" not in value and available_fps and value in available_fps:
+        return f"{target_lib}:{value}"
     return value
 
 

@@ -37,28 +37,6 @@ _MODEL_EXTS = {".step", ".stp", ".wrl"}
 _RECOGNISED_EXTS = _SYMBOL_EXTS | _FOOTPRINT_EXTS | _MODEL_EXTS
 
 
-def _walk_files(paths: Iterable[str]) -> list[Path]:
-    """Expand the user's drop set to a flat list of files.
-
-    Each entry in `paths` is an absolute filesystem path. Files are kept
-    as-is; directories are walked recursively. Non-existent paths are
-    silently dropped — the frontend already validated existence before
-    sending, and a vanished file shouldn't block the rest of the drop.
-    """
-    out: list[Path] = []
-    for raw in paths:
-        p = Path(raw)
-        if not p.exists():
-            continue
-        if p.is_file():
-            out.append(p)
-        elif p.is_dir():
-            for child in p.rglob("*"):
-                if child.is_file():
-                    out.append(child)
-    return out
-
-
 def _classify(path: Path) -> str | None:
     """Return 'symbol' / 'footprint' / 'model' / None for one file path."""
     suf = path.suffix.lower()
@@ -71,66 +49,105 @@ def _classify(path: Path) -> str | None:
     return None
 
 
+def _empty_group(name: str, source_dir: str) -> dict:
+    return {
+        "name": name,
+        "symbol_path": None,
+        "footprint_path": None,
+        "model_paths": [],
+        "source_dir": source_dir,
+    }
+
+
+def _scan_dir_into_group(directory: Path, group: dict, unmatched: list[str]) -> bool:
+    """Add every recognised file directly inside *directory* (NOT recursively)
+    into ``group``. Returns True if any file was added.
+
+    Subdirectories are not recursed here — the caller decides whether
+    each subdirectory becomes its own group.
+    """
+    added = False
+    for child in sorted(directory.iterdir()):
+        if not child.is_file():
+            continue
+        kind = _classify(child)
+        if kind == "symbol":
+            group["symbol_path"] = str(child)
+            added = True
+        elif kind == "footprint":
+            group["footprint_path"] = str(child)
+            added = True
+        elif kind == "model":
+            group["model_paths"].append(str(child))
+            added = True
+        else:
+            unmatched.append(str(child))
+    return added
+
+
+def _walk_folder(directory: Path, folders: list[dict], unmatched: list[str]) -> None:
+    """Each folder = one component. Subfolders become their own components.
+
+    Implements the user's spec: "If I drag a folder, you can assume that
+    all the files in a same folder are for the same component" — each
+    directory's direct children form one group; nested directories
+    recurse with the same rule.
+    """
+    group = _empty_group(name=directory.name, source_dir=str(directory))
+    if _scan_dir_into_group(directory, group, unmatched):
+        folders.append(group)
+    for child in sorted(directory.iterdir()):
+        if child.is_dir():
+            _walk_folder(child, folders, unmatched)
+
+
 def scan_paths(paths: list[str]) -> dict:
-    """Walk dropped paths, classify, group by stem.
+    """Classify dropped paths into folder-groups + loose files.
 
     Returns:
         {
-          "groups": [
-            {
-              "name": str,              # the basename stem
-              "symbol_path": str|null,
-              "footprint_path": str|null,
-              "model_paths": [str, …],  # may be empty; can hold .step + .wrl
-              "source_dir": str,         # display hint: parent dir of any file
-            },
+          "folders": [DroppedGroup, …],     # one per dropped directory
+          "loose_files": [                  # files dropped directly (NOT
+            {"kind": "symbol|footprint|model", "path": str},
             …
           ],
-          "unmatched": [str, …]          # files whose extension we don't know
+          "unmatched": [str, …]
         }
 
-    Grouping rule: two files share a group iff their basename stems match
-    (case-sensitive — KiCad library entries are case-sensitive). At most
-    one symbol and one footprint per group; multiple model files allowed
-    so a part with both `.step` and `.wrl` lands in the same row.
+    Grouping rules (per user spec, alpha.3):
+      - A dropped FOLDER → one component. All files directly inside it
+        belong to that component. Nested subdirectories recurse with
+        the same rule (each subdir = its own component).
+      - A LOOSE file (dropped directly, not inside a folder) is reported
+        in ``loose_files``. The frontend attaches them to the last
+        existing component, or starts a new one if none exists.
 
-    The order of `groups` mirrors first-seen order in the walk so the UI
-    is stable when a user re-drops the same folder.
+    Order is preserved: ``folders`` follows the order directories were
+    encountered in the drop; ``loose_files`` follows the order they were
+    dropped. This stability matters for the sequential-association rule.
     """
-    files = _walk_files(paths)
-
-    # stem → group dict (preserve insertion order via Python 3.7+ dict)
-    groups: dict[str, dict] = {}
+    folders: list[dict] = []
+    loose_files: list[dict] = []
     unmatched: list[str] = []
 
-    for f in files:
-        kind = _classify(f)
-        if kind is None:
-            unmatched.append(str(f))
+    for raw in paths:
+        p = Path(raw)
+        if not p.exists():
             continue
+        if p.is_file():
+            kind = _classify(p)
+            if kind is None:
+                unmatched.append(str(p))
+            else:
+                loose_files.append({"kind": kind, "path": str(p)})
+        elif p.is_dir():
+            _walk_folder(p, folders, unmatched)
 
-        stem = f.stem
-        g = groups.get(stem)
-        if g is None:
-            g = {
-                "name": stem,
-                "symbol_path": None,
-                "footprint_path": None,
-                "model_paths": [],
-                "source_dir": str(f.parent),
-            }
-            groups[stem] = g
-
-        if kind == "symbol":
-            # If two different .kicad_sym share a stem (unlikely),
-            # last write wins — caller can split manually if it matters.
-            g["symbol_path"] = str(f)
-        elif kind == "footprint":
-            g["footprint_path"] = str(f)
-        elif kind == "model":
-            g["model_paths"].append(str(f))
-
-    return {"groups": list(groups.values()), "unmatched": unmatched}
+    return {
+        "folders": folders,
+        "loose_files": loose_files,
+        "unmatched": unmatched,
+    }
 
 
 # ---------------------------------------------------------------------------

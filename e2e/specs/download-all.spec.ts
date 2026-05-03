@@ -1668,6 +1668,29 @@ async function main() {
         );
       }
 
+      // (G7c) alpha.3-bugfix runtime-chipNodes — the pre-fix bug had the
+      //       runtime's chipNodes JS array stay [] (because the lookup
+      //       used `findTopLevelAncestor(substrate, loadedRoot)` which
+      //       returned the only direct child of loadedRoot, then the
+      //       for-loop skipped it leaving nothing for applyLiveDelta to
+      //       move). The previous G7b probe only verified the GLB *had*
+      //       chip-bearing siblings; it walked the scene itself instead
+      //       of inspecting the runtime's actual array, so the regression
+      //       was invisible to the test. This probe reads the runtime's
+      //       own counter via window.__model3dGLChipNodeCount.
+      const runtimeChipNodes = await execAsync(sid, `
+        var done = arguments[arguments.length - 1];
+        done({ count: window.__model3dGLChipNodeCount });
+      `);
+      log(`  alpha.3 runtime-chipNodes: ${JSON.stringify(runtimeChipNodes)}`);
+      if (typeof runtimeChipNodes?.count !== 'number' || runtimeChipNodes.count < 1) {
+        throw new Error(
+          `alpha.3 runtime chipNodes empty: count=${runtimeChipNodes?.count}. ` +
+          `applyLiveDelta would silently bail and the user-reported "position controls do nothing" ` +
+          `regression is back.`
+        );
+      }
+
       // (G8) alpha.34 slider-units — assert that a 1 mm offset slider
       //      tick translates to a ~1e-3 m world translation, NOT a 1 m
       //      shift. The bug: positioner emits mm but the viewer used to
@@ -2307,14 +2330,15 @@ async function main() {
       throw new Error(`drop.scan_paths missing from sidecar REGISTRY: ${JSON.stringify(fixtureSetup)}`);
     }
 
-    // Inject a fake group + verify the DropImportList row renders.
+    // Inject a fake group with BOTH symbol and footprint so the Move
+    // button is enabled (alpha.3 requires sym+fp to commit).
     const rowProbe = await execAsync(sid, `
       var done = arguments[arguments.length - 1];
       try {
         window.__kibraryTest.addDroppedGroups([{
           name: 'PROBE_PART',
           symbol_path: '/nonexistent/PROBE_PART.kicad_sym',
-          footprint_path: null,
+          footprint_path: '/nonexistent/PROBE_PART.kicad_mod',
           model_paths: [],
           source_dir: '/nonexistent'
         }]);
@@ -2324,10 +2348,15 @@ async function main() {
           var list = document.querySelector('[data-testid="drop-import-list"]');
           var rows = list ? list.querySelectorAll('tbody tr') : [];
           var rowText = rows.length > 0 ? (rows[0].textContent || '').replace(/\\s+/g, ' ').trim() : '';
+          // alpha.3: per-row × button must exist
+          var deleteBtn = rows.length > 0
+            ? rows[0].querySelector('button[aria-label^="Remove"]')
+            : null;
           done({
             listPresent: !!list,
             rowCount: rows.length,
-            rowText: rowText.slice(0, 120)
+            rowText: rowText.slice(0, 120),
+            hasDeleteButton: !!deleteBtn
           });
         } catch (e) { done({ err: String(e) }); }
       }, 250);
@@ -2335,6 +2364,47 @@ async function main() {
     log(`  drop-import-list row probe: ${JSON.stringify(rowProbe)}`);
     if (!rowProbe?.listPresent || rowProbe.rowCount < 1 || !/PROBE_PART/.test(rowProbe.rowText || '')) {
       throw new Error(`alpha.2 drop-import-list row did not render: ${JSON.stringify(rowProbe)}`);
+    }
+    if (!rowProbe.hasDeleteButton) {
+      throw new Error(`alpha.3 drop-import row missing × delete button`);
+    }
+
+    // alpha.3: applyScanResult test — drop a folder via the new API and
+    // verify it lands as ONE group named after the folder, NOT one per
+    // file stem. Also verify loose-files attach to the last group.
+    const scanResultProbe = await execAsync(sid, `
+      var done = arguments[arguments.length - 1];
+      try {
+        window.__kibraryTest.clearDroppedGroups();
+        window.__kibraryTest.applyScanResult({
+          folders: [{
+            name: 'IPEX_part',
+            symbol_path: '/x/IPEX_part/foo.kicad_sym',
+            footprint_path: '/x/IPEX_part/bar.kicad_mod',
+            model_paths: [],
+            source_dir: '/x/IPEX_part'
+          }],
+          loose_files: [
+            { kind: 'model', path: '/x/extra.step' }
+          ],
+          unmatched: []
+        });
+        var groups = window.__kibraryTest.getDroppedGroups();
+        done({
+          groupCount: groups.length,
+          firstName: groups[0] && groups[0].name,
+          firstHasModel: groups[0] && groups[0].model_paths.length === 1
+        });
+      } catch (e) { done({ err: String(e) }); }
+    `);
+    log(`  applyScanResult probe: ${JSON.stringify(scanResultProbe)}`);
+    if (scanResultProbe?.groupCount !== 1 ||
+        scanResultProbe.firstName !== 'IPEX_part' ||
+        !scanResultProbe.firstHasModel) {
+      throw new Error(
+        `alpha.3 applyScanResult misbehaved: ${JSON.stringify(scanResultProbe)} — ` +
+        `expected one group "IPEX_part" with 1 model attached`
+      );
     }
 
     await screenshot(sid, `${OUT}/drop-import-list.png`);

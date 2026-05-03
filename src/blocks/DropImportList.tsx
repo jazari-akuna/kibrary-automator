@@ -17,7 +17,7 @@
 
 import { createSignal, createEffect, For, Show, Index } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
-import { droppedGroups, removeGroup, type DroppedGroup } from '~/state/dropImport';
+import { droppedGroups, removeGroup, isCommittable, type DroppedGroup } from '~/state/dropImport';
 import { currentWorkspace } from '~/state/workspace';
 import { setRoom } from '~/state/room';
 import { setSelectedLib, setSelectedComponent } from '~/state/librariesRoom';
@@ -84,6 +84,19 @@ export default function DropImportList() {
     const targetLib = row.targetLib.trim();
     if (!targetLib) {
       updateRow(g.name, { saveState: 'error', errorMsg: 'Pick a target library first' });
+      return;
+    }
+    // alpha.3: enforce the user's "symbol + footprint required" rule —
+    // committing partial drops (footprint-only or symbol-only) into an
+    // existing library used to silently corrupt the merge or leave files
+    // on the floor (the IPEX_20952 bug). The button itself is also
+    // disabled below as a defense-in-depth UX guard.
+    if (!isCommittable(g)) {
+      const missing = [
+        !g.symbol_path && '.kicad_sym',
+        !g.footprint_path && '.kicad_mod',
+      ].filter(Boolean).join(' + ');
+      updateRow(g.name, { saveState: 'error', errorMsg: `Missing ${missing}` });
       return;
     }
     updateRow(g.name, { saveState: 'saving', errorMsg: '' });
@@ -197,15 +210,42 @@ export default function DropImportList() {
                         </Show>
                       </td>
                       <td class="py-2 text-xs">
-                        <Show when={row().saveState !== 'ok'}>
+                        <div class="flex items-center gap-1">
+                          <Show when={row().saveState !== 'ok'}>
+                            <button
+                              class="px-2 py-0.5 rounded bg-zinc-700 text-zinc-100 hover:bg-zinc-600 disabled:opacity-30 disabled:cursor-not-allowed text-xs"
+                              disabled={
+                                row().saveState === 'saving' ||
+                                !row().targetLib.trim() ||
+                                !isCommittable(grp())
+                              }
+                              title={
+                                !isCommittable(grp())
+                                  ? `Need both .kicad_sym and .kicad_mod (missing ${
+                                      [!grp().symbol_path && 'symbol', !grp().footprint_path && 'footprint']
+                                        .filter(Boolean)
+                                        .join(' + ')
+                                    })`
+                                  : 'Move into target library'
+                              }
+                              onClick={() => commit(grp())}
+                            >
+                              Move
+                            </button>
+                          </Show>
+                          {/* alpha.3: per-row × button so the user can
+                              dismiss a wrongly-grouped row without having
+                              to commit it — applies to ANY state. */}
                           <button
-                            class="px-2 py-0.5 rounded bg-zinc-700 text-zinc-100 hover:bg-zinc-600 disabled:opacity-50 text-xs"
-                            disabled={row().saveState === 'saving' || !row().targetLib.trim()}
-                            onClick={() => commit(grp())}
+                            class="px-1.5 py-0.5 rounded text-zinc-500 hover:bg-zinc-700 hover:text-red-400 text-xs"
+                            disabled={row().saveState === 'saving'}
+                            title={`Remove ${grp().name} from list (does not delete source files)`}
+                            aria-label={`Remove ${grp().name}`}
+                            onClick={() => removeGroup(grp().name)}
                           >
-                            Move
+                            ×
                           </button>
-                        </Show>
+                        </div>
                       </td>
                     </tr>
                   );

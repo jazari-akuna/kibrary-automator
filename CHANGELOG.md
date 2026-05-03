@@ -2,6 +2,30 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.3-alpha.3] — 2026-05-03
+
+### Fixed
+- **3D viewer position controls did nothing.** A regression I introduced in alpha.36's "defensive chip-node lookup" (the `findTopLevelAncestor(substrate, loadedRoot)` walk-up). The runtime's GLB hierarchy is `loadedRoot → Scene → [substrate, chip1, chip2, …]` — substrate's top-level ancestor under `loadedRoot` IS that single Scene wrapper, so the for-loop iterating `loadedRoot.children = [Scene]` skipped the only candidate and `chipNodes` stayed `[]`. `applyLiveDelta` then early-returned silently on every slider tick. Fix: iterate the substrate's *actual* parent's children (`substrateMesh.parent.children`) — works for both the depth-1 hierarchy the smoke fixture has AND the depth-2 hierarchy the user's footprint has.
+- **Drag-drop footprint-only commit silently dropped the file.** When the user dropped just `IPEX_20952-024E-02.kicad_mod` into an existing library, `library._merge_into` unconditionally tried to read `<staging>/<lcsc>.kicad_sym` (which doesn't exist for footprint-only drops), kiutils raised, the exception propagated, and the .kicad_mod was never copied into `Connector_KSL.pretty/`. The user then opened the part and the preview matcher reported "No .kicad_mod could be matched for symbol '20952-024E-02'". Fix: every staged component (sym / pretty / 3d) is now individually optional in BOTH `_create_new` and `_merge_into`. Symbol-only and footprint-only drops succeed cleanly.
+- **Symbols with un-prefixed `Footprint` property never resolved.** `_update_symbol_footprint_refs` only rewrote values starting with `.` — so a property like `"IPEX_20952-024E-02"` (no library prefix at all) was left untouched, and the preview matcher failed to find the matching `.kicad_mod` even when both lived in the same library directory. Now: when the property has no `:` AND a matching `<value>.kicad_mod` exists in the target lib's `.pretty/`, the rewrite prefixes with `<target_lib>:`. Guarded by a "file exists" check so symbols whose Footprint property is intentionally an external reference / comment are left alone.
+
+### Changed
+- **Drag-drop grouping: folder = one component (NOT per-file stem).** Per user spec: "if I drag a folder, you can assume that all the files in a same folder are for the same component." Previously `scan_paths` grouped every file in the drop by its basename stem; now folders short-circuit that — a dropped folder yields one group named after the folder, with all its files inside. Subdirectories recurse with the same rule (each subdir becomes its own component).
+- **Drag-drop loose files attach to the last group sequentially.** Per user spec: "if the user did not put a folder containing all files, then you can assume the next file is going to be associated with the last uploaded file." Loose-file drops (files dropped without a containing folder) now attach to the most recently created group; if no group exists yet, a new one is created named after the first dropped file's stem. Order matters and is preserved.
+- **Move button disabled until both `.kicad_sym` AND `.kicad_mod` are present** for a row. Per user spec: "only accept to move component to library if it has at least symbol + footprint." The button's tooltip now spells out which of the two is missing. Defense-in-depth: the backend `commit` handler also rejects partial groups even though the UI gates them.
+- **Per-row × button** lets the user remove a wrongly-grouped entry from the dropped-imports list without committing it. Original source files on disk are left untouched (drop-import never moves files anyway, only copies on commit).
+- **`scan_paths` return shape changed** from `{groups, unmatched}` to `{folders, loose_files, unmatched}` to reflect the new folder-vs-loose distinction. Frontend wraps both into the existing `DroppedGroup` state via the new `applyScanResult()` helper.
+
+### Added
+- **Smoke probe `alpha.3 runtime-chipNodes`** — reads `window.__model3dGLChipNodeCount` (newly exposed by Model3DViewerGL.tsx) and asserts `>= 1`. Catches the position-controls regression at the runtime-state level. The previous `alpha.35 chip-nodes` probe walked the scene graph itself and missed this class of bug because the GLB hierarchy was fine — the *runtime's chipNodes JS array* was empty due to the bad lookup.
+- **Smoke probe `alpha.3 applyScanResult`** asserts a folder drop becomes one group named after the folder + a loose-file drop attaches to it (one group total, with the loose model in `model_paths`). Locks in the new sequential-association behaviour.
+- **Smoke probe `alpha.3 row-delete-button`** asserts each DropImportList row has a `[aria-label^="Remove"]` button so the per-row × is regression-protected.
+- **5 new sidecar pytest cases** for the new `scan_paths` API: folder-drop groups all files into one component, two folders become two components, subfolders each become own component, mixed folder + loose drop, loose-file order preserved. Plus 2 cases for the IPEX bug: footprint-only commit into existing library lands the file, and un-prefixed Footprint property gets the target_lib prefix.
+
+### Notes
+- The `findTopLevelAncestor` helper is still in the file but no longer called — kept around as documentation of the failed approach so the next maintainer doesn't reintroduce the same idea. It's dead code; will remove next pass.
+- The "drop loose file → attach to last group" rule applies *across* drop events, not just within one. So a user who dropped a folder, then later drops a forgotten 3D file separately, gets the 3D file attached to the folder group. This is the friendlier interpretation of the spec; if users find it surprising we can switch to per-drop scoping.
+
 ## [26.5.3-alpha.2] — 2026-05-03
 
 ### Added

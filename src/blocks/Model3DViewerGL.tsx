@@ -54,6 +54,18 @@ declare global {
     __model3dGLScene?: THREE.Scene;
     __model3dGLLoadCount?: number;
     __model3dGLLastError?: string;
+    /**
+     * alpha.3-bugfix: surfaces the runtime's actual chipNodes array so
+     * smoke probes can verify applyLiveDelta would have nodes to move.
+     * The pre-fix bug had chipNodes=[] because findTopLevelAncestor
+     * returned the substrate's wrapper node (the only direct child of
+     * loadedRoot), and the for-loop skipped it — so applyLiveDelta
+     * silently bailed. A probe asserting chipNodes.length >= 1 would
+     * have caught the regression. The previous chip-nodes probe only
+     * confirmed the GLB *had* chip nodes, not that the runtime found
+     * them.
+     */
+    __model3dGLChipNodeCount?: number;
   }
 }
 
@@ -396,24 +408,30 @@ export default function Model3DViewerGL(props: Props) {
             loadedRoot.updateMatrixWorld(true);
           }
 
-          // alpha.35: identify the chip node(s) — direct loadedRoot
-          // children that are NOT the substrate-containing branch.
-          // applyLiveDelta targets these so substrate + decal + axes
-          // stay anchored while the user nudges the chip.
+          // alpha.3-bugfix: identify the chip node(s) — siblings of the
+          // substrate within their actual container, NOT children of
+          // loadedRoot. The alpha.35-36 logic assumed loadedRoot.children
+          // was [substrate, chip1, chip2, …], but kicad-cli's GLB output
+          // is loadedRoot → Scene → [substrate, chip1, chip2, …] (one
+          // wrapper between the loader-root and the meshes). Walking up
+          // from the substrate to a "top-level ancestor under loadedRoot"
+          // returned that single Scene wrapper, the for-loop then saw
+          // only one child and skipped it, chipNodes stayed empty, and
+          // applyLiveDelta silently bailed → user-reported "position
+          // controls do nothing." The fix: iterate the substrate's
+          // ACTUAL parent's children, not loadedRoot's.
           //
-          // alpha.36 robustness: substrate could sit deeper than one
-          // level (kicad-cli has rearranged the GLB shape between
-          // releases), so walk up from the substrate mesh until we hit
-          // loadedRoot's DIRECT child — that's the branch to skip. Any
-          // other top-level child is treated as a chip-bearing node.
+          // This works for both shapes (substrate-as-direct-child and
+          // substrate-inside-Scene-wrapper) because substrate.parent
+          // is whichever container actually holds the siblings.
           chipNodes = [];
-          const substrateTopLevel = substrateMesh
-            ? findTopLevelAncestor(substrateMesh, loadedRoot)
-            : null;
-          for (const child of loadedRoot.children) {
-            if (child === substrateTopLevel) continue;
+          const substrateContainer: THREE.Object3D | null =
+            substrateMesh?.parent ?? loadedRoot;
+          for (const child of substrateContainer.children) {
+            if (child === substrateMesh) continue;
             chipNodes.push({ node: child, baseMatrix: child.matrix.clone() });
           }
+          window.__model3dGLChipNodeCount = chipNodes.length;
 
           scene.add(loadedRoot);
 
