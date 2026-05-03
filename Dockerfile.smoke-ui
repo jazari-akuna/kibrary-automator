@@ -54,6 +54,10 @@ RUN apt-get update \
 # e2e suite — plain Node, no WebdriverIO (see scripts/smoke-ui.sh header)
 WORKDIR /e2e
 COPY e2e/specs ./specs
+# Shared WebDriver helpers extracted in alpha.5 — download-all.spec.ts
+# imports from ../lib/webdriver.ts. Without this COPY the smoke runner
+# fails with ERR_MODULE_NOT_FOUND.
+COPY e2e/lib ./lib
 
 VOLUME /out
 COPY scripts/smoke-ui.sh /usr/local/bin/smoke-ui.sh
