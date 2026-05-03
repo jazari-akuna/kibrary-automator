@@ -2322,12 +2322,19 @@ async function main() {
         method: 'drop.scan_paths',
         params: { paths: [] },
       })
-      .then(function (r) { done({ scanOk: !!r && Array.isArray(r.groups) }); })
+      .then(function (r) {
+        // alpha.3: scan_paths returns {folders, loose_files, unmatched}
+        // (was {groups, unmatched} pre-alpha.3).
+        done({
+          scanOk: !!r && Array.isArray(r.folders) && Array.isArray(r.loose_files),
+          shape: r ? Object.keys(r).sort() : null,
+        });
+      })
       .catch(function (e) { done({ err: String(e) }); });
     `);
     log(`  drop.scan_paths returns expected shape: ${JSON.stringify(fixtureSetup)}`);
     if (!fixtureSetup?.scanOk) {
-      throw new Error(`drop.scan_paths missing from sidecar REGISTRY: ${JSON.stringify(fixtureSetup)}`);
+      throw new Error(`drop.scan_paths shape mismatch: ${JSON.stringify(fixtureSetup)}`);
     }
 
     // Inject a fake group with BOTH symbol and footprint so the Move
