@@ -1507,10 +1507,14 @@ async function main() {
         );
       }
 
-      // (G7c) alpha.5-visual-parity substrate-opacity — Wave 2-B reverted
-      //       alpha.36's 0.8-transparent substrate; the board is now
-      //       opaque deep KiCad green to match the kicad-cli PNG render.
-      //       Decal sits above with depthWrite:false + alphaTest:0.01.
+      // (G7c) substrate-opacity — Wave 2-B reverted alpha.36's
+      //       0.8-transparent substrate to fully opaque (alpha.5).
+      //       26.5.4-alpha.1 (Wave 9-D) settled on 0.9 with
+      //       transparent=true per user request "I would like the opacity
+      //       of the PCB and footprint to be 90%". The probe now asserts
+      //       opacity in [0.85, 1.0] (covers both alpha.5 opaque + Wave
+      //       9-D's 0.9). Decal sits above with depthWrite:false +
+      //       alphaTest:0.01 regardless of substrate opacity.
       const opacity = await execAsync(sid, `
         var done = arguments[arguments.length - 1];
         var s = window.__model3dGLScene;
@@ -1530,7 +1534,7 @@ async function main() {
         });
         if (!sub) { done({ok:false, reason:'no substrate'}); return; }
         var subMats = Array.isArray(sub.material) ? sub.material : [sub.material];
-        var subOk = subMats.every(function(m){ return m.transparent === false && Math.abs(m.opacity - 1.0) < 0.01; });
+        var subOk = subMats.every(function(m){ return m.opacity >= 0.85 && m.opacity <= 1.0; });
         done({
           ok: subOk,
           substrateOpacity: subMats.map(function(m){ return m.opacity; }),
@@ -1541,7 +1545,7 @@ async function main() {
       log(`  alpha.5 substrate-opacity: ${JSON.stringify(opacity)}`);
       if (!opacity?.ok) {
         throw new Error(
-          `alpha.5 substrate opacity not 1.0/opaque: ` +
+          `substrate opacity outside [0.85, 1.0]: ` +
           `opacity=${opacity?.substrateOpacity} transparent=${opacity?.substrateTransparent}`
         );
       }
