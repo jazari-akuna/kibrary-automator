@@ -1336,8 +1336,13 @@ async function main() {
 
       // (G4) alpha.31 / alpha.5-visual-parity material-fixup — verify the
       //      post-load traversal patched kicad-cli's two bogus PBR encodings:
-      //        * near-opaque (≥ 0.7) materials must NOT be transparent
-      //          (board substrate + soldermask false-positives).
+      //        * fully-opaque (>= 0.99) materials must NOT be transparent
+      //          (kicad-cli's bogus PBR sets transparent=true with
+      //          opacity=1.0 — board substrate + soldermask false-positives).
+      //          26.5.4-alpha.1 (Wave 9-D) intentionally sets chip-body +
+      //          substrate opacity to 0.9 with transparent=true, so the
+      //          threshold tightened from 0.7 to 0.99 to keep that
+      //          intentional 0.9 from tripping the probe.
       //        * fully metallic materials with no metalnessMap AND a GREY
       //          baseColor must NOT remain at metalness > 0.9 (OCCT default
       //          for "unknown shading" → chrome IC body). Non-grey metallic
@@ -1367,7 +1372,7 @@ async function main() {
           var mats = Array.isArray(o.material) ? o.material : [o.material];
           mats.forEach(function(m){
             total++;
-            if (m.transparent && m.opacity >= 0.7) leftoverTransparent++;
+            if (m.transparent && m.opacity >= 0.99) leftoverTransparent++;
             // alpha.5: only count GREY OCCT-default materials as "bogus".
             // Non-grey metallic materials are intentionally preserved.
             if (m.metalness !== undefined && m.metalness > 0.9 && !m.metalnessMap) {
