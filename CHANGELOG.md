@@ -2,6 +2,17 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.4-alpha.2] — 2026-05-04
+
+### Fixed
+- **"Footprint in the middle of something but the rest (step + PCB) is offset"** — a real-world IPEX (and any SnapEDA-style) footprint whose pad bbox centre sits several mm off-origin in footprint-local coords rendered the chip body+pads correctly aligned with each other, but visibly offset from the PCB centre. Cause: the empty-board template's Edge.Cuts rect is fixed at `(-20,-20)→(20,20)` centred on origin, with the footprint placed at footprint-origin (0, 0). When pads sit at e.g. X∈[3, 7] (centre = 5mm off-origin), pads + body + silk all lived at `(+5, 0)` in PCB-world while the substrate was centred at `(0, 0)`. Wave 9-B's auto-offset (alpha.1) only fixed body-vs-pad alignment, not chip-vs-PCB alignment. Fix: `_sanitise_footprint_with_warnings` now calls `_recentre_footprint_at_pad_bbox(text)` which injects `(at -cx -cy)` right after the footprint name so the footprint translation lands its pad bbox centre at PCB origin. Stale top-level `(at X Y)` from PCB-extracted footprints is stripped first. No-op (returns unchanged text) for footprints whose pad-bbox is already within 10µm of origin — preserves the U.FL / USB-C / synthetic_pcb_named visual-verify fixtures and avoids polluting their spliced text with a redundant `(at 0 0)`.
+
+### Changed
+- **"Rotation" label** added above the rotation jog dial (per user request "put a label over the rotation circle to say Rotation"). Implemented as a tiny `<span>` wrapped above the SVG via `flex flex-col items-center` so it scales with the dial without occupying SVG geometry. `data-testid="rotate-dial-label"`.
+
+### Notes
+- 3 new sidecar pytest cases for `_recentre_footprint_at_pad_bbox`: off-centre pads → injected `(at -cx -cy)`; pads ≤10µm from origin → no-op; existing top-level `(at)` → stripped before injection. Final pytest count: **300 passed, 2 skipped** (was 297 + 3 new).
+
 ## [26.5.4-alpha.1] — 2026-05-04
 
 ### Fixed

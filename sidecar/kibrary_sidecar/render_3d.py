@@ -241,6 +241,16 @@ def _sanitise_footprint_with_warnings(
     text, warnings = _rewrite_or_strip_model_blocks_with_warnings(
         text, lib_dir, footprint_file=footprint_file
     )
+    # 26.5.4-alpha.2: recentre the footprint so its pad bbox lands on
+    # PCB origin (0, 0). The empty-board template's Edge.Cuts rect is
+    # fixed at (-20, -20)→(20, 20) — a footprint whose internal pads are
+    # not centred at footprint-origin (e.g. SnapEDA IPEX with pads at
+    # X∈[3, 7]) renders the chip body+pads correctly aligned with each
+    # other but offset from the PCB centre. The user's report:
+    #   "the footprint may be in the middle of something but the rest
+    #    (step + PCB) is offset"
+    # corresponds exactly to that off-centre case.
+    text = _recentre_footprint_at_pad_bbox(text)
     if (
         override_offset is not None
         and override_rotation is not None
@@ -443,6 +453,90 @@ def _inject_offset_into_model_block(
     ox, oy, oz = offset
     insertion = f"\n\t\t(offset (xyz {ox} {oy} {oz}))"
     return block[:after_path] + insertion + block[after_path:]
+
+
+# Same shape as drop_import._PAD_AT_RE — kept independent to avoid
+# importing from drop_import at module-import time (drop_import imports
+# from library which imports from us → circular). Captures only the
+# X and Y of each pad's `(at X Y [rot])` sub-S-expr.
+_PAD_AT_RE_LOCAL = re.compile(
+    r"\(pad\s+\S+\s+\S+\s+\S+\s+"          # (pad "1" smd rect
+    r"(?:[^()]|\([^()]*\))*?"              # tokens before (at …)
+    r"\(at\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Top-level (at X Y [rot]) inside a (footprint …) S-expr — matches a
+# tab-OR-space-indented (at) on its own line that's a direct child of
+# the footprint form (depth 1). Used to STRIP an existing footprint
+# placement before injecting the recentre-on-pad-bbox-centre value.
+# Anchored on a leading `\n` + indent so it cannot match an (at) inside
+# a pad/text block (which is always at depth ≥ 2 i.e. more indent).
+_FOOTPRINT_TOP_LEVEL_AT_RE = re.compile(
+    r"\n[\t ]+\(at\s+-?\d+(?:\.\d+)?\s+-?\d+(?:\.\d+)?(?:\s+-?\d+(?:\.\d+)?)?\s*\)",
+)
+
+# (footprint <name>  — capture the header up to (and including) the
+# name token. The name may be quoted ("foo") or bare (foo).
+_FOOTPRINT_HEADER_RE = re.compile(r"\(footprint\s+(\"[^\"]+\"|\S+)")
+
+
+def _recentre_footprint_at_pad_bbox(text: str) -> str:
+    """Translate the footprint so its pad-bbox centre lands on PCB origin.
+
+    The empty-board template's Edge.Cuts rect is fixed at (-20, -20)→
+    (20, 20). A footprint whose internal pads are not centred at
+    footprint-origin (typical for SnapEDA exports of connectors like
+    IPEX, where the pad bbox centre may sit several mm off-origin)
+    renders the chip body+pads correctly aligned with each other but
+    visibly offset from the PCB centre. The user's report on alpha.1:
+        "the footprint may be in the middle of something but the rest
+         (step + PCB) is offset"
+    matches that off-centre case exactly.
+
+    Workflow:
+      1. Compute pad bbox centre `(cx, cy)` from `_PAD_AT_RE_LOCAL`.
+         If no pads or `(cx, cy)` ≈ (0, 0), no-op (preserves U.FL /
+         USB-C / synthetic_pcb_named visual-verify fixtures, all of
+         which already centre near origin).
+      2. Strip any existing top-level `(at X Y [rot])` from the
+         footprint header — this removes a stale placement from
+         footprints that were extracted from a real PCB layout.
+      3. Inject `(at -cx -cy)` right after the footprint name. KiCad
+         applies this as a translation to every child element, so all
+         pads land in PCB-world `[-bbox_w/2, +bbox_w/2]` and the chip
+         body (with Wave-9-B's auto-offset still pad-centre-relative)
+         lands at PCB origin.
+    """
+    xs: list[float] = []
+    ys: list[float] = []
+    for m in _PAD_AT_RE_LOCAL.finditer(text):
+        try:
+            xs.append(float(m.group(1)))
+            ys.append(float(m.group(2)))
+        except ValueError:
+            continue
+    if not xs:
+        return text
+    cx = (min(xs) + max(xs)) / 2.0
+    cy = (min(ys) + max(ys)) / 2.0
+    # Footprints already centred at origin (≤10µm) need no recentre —
+    # avoids polluting the spliced text with a redundant `(at 0 0)`.
+    if abs(cx) < 1e-2 and abs(cy) < 1e-2:
+        return text
+    # Strip any pre-existing top-level (at) so kicad-cli sees only ours.
+    text = _FOOTPRINT_TOP_LEVEL_AT_RE.sub("", text, count=1)
+    # Inject the recentering (at) right after the footprint name.
+    inject = f" (at {-cx:.6f} {-cy:.6f})"
+    text, n_subs = _FOOTPRINT_HEADER_RE.subn(
+        lambda m: m.group(0) + inject, text, count=1,
+    )
+    if n_subs == 0:
+        log.warning(
+            "_recentre_footprint_at_pad_bbox: no (footprint …) header "
+            "matched — leaving text unchanged"
+        )
+    return text
 
 
 def _find_basename_in_sibling_libs(lib_dir: Path, basename: str) -> str | None:

@@ -1041,3 +1041,78 @@ def test_footprint_with_explicit_offset_gets_no_auto_offset(tmp_path: Path):
         f"sample footprint already has (offset (xyz 0 0 0)); auto-offset "
         f"must not fire. Got: {warnings}"
     )
+
+
+def test_off_centre_pads_get_recentred_at_pcb_origin():
+    """26.5.4-alpha.2: a footprint whose pad bbox centre is far from
+    footprint-origin must be recentred via an injected top-level (at).
+
+    User report on 26.5.4-alpha.1:
+      "the footprint may be in the middle of something but the rest
+       (step + PCB) is offset"
+
+    Cause: the empty-board template's Edge.Cuts rect is fixed at
+    (-20,-20)→(20,20) centred on origin. SnapEDA-style footprints
+    where pad bbox is at e.g. X∈[3, 7] (centre = 5mm off-origin)
+    render the chip body+pads correctly aligned with each other but
+    visibly offset from the PCB centre. Fix: inject `(at -cx -cy)` so
+    the footprint translation lands its pad bbox centre at PCB origin.
+    """
+    from kibrary_sidecar.render_3d import _recentre_footprint_at_pad_bbox
+
+    # Pads at (3,4) + (7,4) → bbox centre = (5, 4). Expect `(at -5 -4)`.
+    text = (
+        '(footprint "OffCentre" (layer "F.Cu")\n'
+        '  (pad "1" smd rect (at 3 4) (size 1 1) (layers "F.Cu"))\n'
+        '  (pad "2" smd rect (at 7 4) (size 1 1) (layers "F.Cu"))\n'
+        ')\n'
+    )
+    result = _recentre_footprint_at_pad_bbox(text)
+    # Header should now contain the recentre (at).
+    assert '(at -5' in result, f"expected (at -5 …) injection. Got:\n{result}"
+    assert '(at -5.000000 -4.000000)' in result, (
+        f"expected `(at -5.000000 -4.000000)` after footprint name. Got:\n{result}"
+    )
+    # Pads themselves untouched (their (at)s are inside the pad block,
+    # not at depth-1 of the footprint).
+    assert '(at 3 4)' in result and '(at 7 4)' in result
+
+
+def test_centred_footprint_is_left_unchanged():
+    """Footprint already centred at origin (≤10µm) must be a no-op —
+    avoids polluting the spliced text with a redundant `(at 0 0)`. The
+    visual-verify fixtures U.FL / USB-C / synthetic_pcb_named all sit
+    near origin; without this guard they would all gain a tiny but
+    cosmetically-different recentre clause."""
+    from kibrary_sidecar.render_3d import _recentre_footprint_at_pad_bbox
+
+    text = (
+        '(footprint "Centred" (layer "F.Cu")\n'
+        '  (pad "1" smd rect (at -1 0) (size 1 1) (layers "F.Cu"))\n'
+        '  (pad "2" smd rect (at  1 0) (size 1 1) (layers "F.Cu"))\n'
+        ')\n'
+    )
+    assert _recentre_footprint_at_pad_bbox(text) == text
+
+
+def test_recentre_strips_existing_top_level_at():
+    """A footprint extracted from a real PCB layout may carry a stale
+    top-level `(at X Y)` that placed it on that PCB. The recentre must
+    REPLACE it (not stack on top), otherwise kicad-cli would either
+    error or use the wrong (first/last/last-wins) value."""
+    from kibrary_sidecar.render_3d import _recentre_footprint_at_pad_bbox
+
+    text = (
+        '(footprint "Stale" (layer "F.Cu")\n'
+        '\t(at 50 60)\n'                                                # stale
+        '\t(pad "1" smd rect (at 3 4) (size 1 1) (layers "F.Cu"))\n'
+        '\t(pad "2" smd rect (at 7 4) (size 1 1) (layers "F.Cu"))\n'
+        ')\n'
+    )
+    result = _recentre_footprint_at_pad_bbox(text)
+    # The stale (at 50 60) line is gone …
+    assert '(at 50 60)' not in result, (
+        f"stale top-level (at 50 60) should have been stripped. Got:\n{result}"
+    )
+    # … and the new (at -5 -4) is on the header line.
+    assert '(at -5.000000 -4.000000)' in result

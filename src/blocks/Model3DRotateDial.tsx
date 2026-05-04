@@ -128,6 +128,13 @@ export default function Model3DRotateDial(props: Props) {
   };
 
   return (
+    <div class="flex flex-col items-center gap-1">
+      <span
+        data-testid="rotate-dial-label"
+        class="text-[10px] font-medium uppercase tracking-wider text-zinc-600 dark:text-zinc-300 select-none"
+      >
+        Rotation
+      </span>
     <svg
       data-testid="rotate-dial"
       role="group"
@@ -172,5 +179,6 @@ export default function Model3DRotateDial(props: Props) {
         </text>
       </g>
     </svg>
+    </div>
   );
 }
