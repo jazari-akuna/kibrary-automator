@@ -300,6 +300,19 @@ def render_footprint_3d_glb_with_top_layers(
                 "node_name": node_name,
             })
 
+        # Wave 06-IPEX fix C: NOT applied. We considered escalating
+        # tessellation_failed to a hard error (so the asset-error
+        # overlay fires) when kicad-cli skipped every node, but Wave
+        # 8-C deliberately chose "informative warning, not fatal" —
+        # some assembly STEPs have a mix of tessellated and non-
+        # tessellated leaves and partial render is more useful than no
+        # render. Fix A (frontend amber banner reading
+        # ``response.warnings``) already gives the user the diagnostic
+        # without losing the partial GLB. The asset-error overlay
+        # continues to fire only when the entire kicad-cli pipeline
+        # raises (silent-drop guard, sanitiser exception, kicad-cli
+        # non-zero exit).
+
         glb_bytes = out_glb.read_bytes()
 
         # SVG export is best-effort: if kicad-cli rejects the layer list

@@ -304,12 +304,23 @@ def _footprint_pad_bbox(footprint_path: Path) -> tuple[float, float, float, floa
 
     Reads the .kicad_mod via kiutils. Pads without ``at`` are skipped.
     Returns ``None`` if the footprint has no pads with positions.
+
+    Falls back to a regex parser when kiutils can't parse the file —
+    happens for legacy footprints whose ``(model …)`` block omits an
+    ``(offset …)`` sub-S-expr (kiutils raises "Expression does not have
+    the correct type"). The auto-offset render path explicitly targets
+    that shape, so the fallback is what makes Bug-1 ("chip body off
+    centre on legacy footprints") fixable from the render side without
+    rewriting the file on disk.
     """
     try:
         fp = Footprint().from_file(str(footprint_path))
     except Exception as exc:  # noqa: BLE001
-        log.warning("Cannot parse footprint %s for pad bbox: %s", footprint_path, exc)
-        return None
+        log.info(
+            "kiutils cannot parse %s for pad bbox (%s); falling back to regex",
+            footprint_path, exc,
+        )
+        return _footprint_pad_bbox_via_regex(footprint_path)
 
     xs: list[float] = []
     ys: list[float] = []
@@ -323,6 +334,46 @@ def _footprint_pad_bbox(footprint_path: Path) -> tuple[float, float, float, floa
             continue
         xs.append(float(x))
         ys.append(float(y))
+    if not xs:
+        return None
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+# (pad "<num>" <type> <shape> (at <x> <y> [<rot>]) …) — captures only the
+# X and Y of each pad's position. Pad numbers may be quoted or bare; the
+# (at …) form may carry an optional rotation we ignore. Used as the kiutils
+# fallback for legacy footprints whose (model …) block can't be round-
+# tripped through kiutils.
+_PAD_AT_RE = re.compile(
+    r"\(pad\s+\S+\s+\S+\s+\S+\s+"          # (pad "1" smd rect
+    r"(?:[^()]|\([^()]*\))*?"              # any non-(at) sub-tokens before (at …)
+    r"\(at\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _footprint_pad_bbox_via_regex(
+    footprint_path: Path,
+) -> tuple[float, float, float, float] | None:
+    """Regex-based pad bbox extraction for footprints kiutils rejects.
+
+    Walks every ``(pad … (at X Y [rot]) …)`` form in the file and unions
+    the X/Y coordinates. Skips footprints with no parseable pads (returns
+    ``None``).
+    """
+    try:
+        text = footprint_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError as exc:
+        log.warning("regex pad bbox: cannot read %s: %s", footprint_path, exc)
+        return None
+    xs: list[float] = []
+    ys: list[float] = []
+    for match in _PAD_AT_RE.finditer(text):
+        try:
+            xs.append(float(match.group(1)))
+            ys.append(float(match.group(2)))
+        except ValueError:
+            continue
     if not xs:
         return None
     return (min(xs), min(ys), max(xs), max(ys))

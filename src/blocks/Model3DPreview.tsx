@@ -27,6 +27,7 @@ import Model3DViewer from '~/blocks/Model3DViewer';
 import Model3DViewerGL from '~/blocks/Model3DViewerGL';
 import Model3DJogDial from '~/blocks/Model3DJogDial';
 import Model3DJogZ from '~/blocks/Model3DJogZ';
+import Model3DRotateDial from '~/blocks/Model3DRotateDial';
 
 type Triple = [number, number, number];
 
@@ -99,6 +100,11 @@ export default function Model3DPreview(props: Props) {
   // Pulse-shaped absolute-offset reset (jog dial centre button). Carries
   // the new offset triple; cleared by the positioner once it applies it.
   const [forceOffset, setForceOffset] = createSignal<Triple | null>(null);
+  // Wave 9-C: rotate-dial pulses (mirror of jogDelta / forceOffset).
+  const [rotateJogDelta, setRotateJogDelta] = createSignal<
+    { axis: 'x' | 'y' | 'z'; amount: number } | null
+  >(null);
+  const [forceRotation, setForceRotation] = createSignal<Triple | null>(null);
 
   // Seed the live signals once the model info loads (and any time the
   // selected component changes — keeps live state in sync with the new
@@ -291,6 +297,29 @@ export default function Model3DPreview(props: Props) {
                 />
                 <Model3DJogZ
                   onJog={(amount) => setJogDelta({ axis: 'z', amount })}
+                  onReset={() => {
+                    // Zero Z but preserve X+Y. Push through both the live
+                    // signal (so the viewer snaps immediately) and the
+                    // positioner's forceOffset prop (so the form fields
+                    // also display 0 in the Z column and the next Save
+                    // persists it).
+                    const [x, y] = liveOffset();
+                    const next: Triple = [x, y, 0];
+                    setLiveOffset(next);
+                    setForceOffset(next);
+                  }}
+                />
+                <Model3DRotateDial
+                  onRotate={(axis, amount) =>
+                    setRotateJogDelta({ axis, amount })
+                  }
+                  onReset={() => {
+                    // Zero all three rotation axes. Same dual-write
+                    // pattern as the offset reset above.
+                    const next: Triple = [0, 0, 0];
+                    setLiveRotation(next);
+                    setForceRotation(next);
+                  }}
                 />
               </div>
             </Show>
@@ -337,6 +366,10 @@ export default function Model3DPreview(props: Props) {
                 onJogConsumed={() => setJogDelta(null)}
                 forceOffset={forceOffset()}
                 onForceOffsetConsumed={() => setForceOffset(null)}
+                rotateJogDelta={rotateJogDelta()}
+                onRotateJogConsumed={() => setRotateJogDelta(null)}
+                forceRotation={forceRotation()}
+                onForceRotationConsumed={() => setForceRotation(null)}
                 onSaved={() => {
                   refetch();
                   setSavedRev((n) => n + 1);

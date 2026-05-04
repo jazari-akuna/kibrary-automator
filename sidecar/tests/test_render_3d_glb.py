@@ -13,6 +13,7 @@ when the (model …) path didn't resolve on disk.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import struct
 import subprocess
@@ -891,3 +892,152 @@ def test_ipex_end_to_end_resolves_via_rpc(tmp_path: Path):
     # response shape, and the absence of warnings already confirms the
     # resolver succeeded.
     assert result["glb_data_url"].startswith("data:model/gltf-binary;base64,")
+
+
+# ---------------------------------------------------------------------------
+# Bug: legacy footprint with a (model …) block that has NO (offset …) sub-
+# S-expr renders the chip body off-pad. Pre-fix the sanitiser passed the
+# block through unchanged → KiCad placed the body at the STEP origin (often
+# the body centroid for SnapEDA STEPs), which sits far from pin-1 / pad
+# centre. Post-fix we auto-compute pad-centre - body-centre on-the-fly and
+# inject (offset (xyz …)) into the spliced board only — no disk write.
+# ---------------------------------------------------------------------------
+
+# Real STEP shipped with the e2e fixtures; same one test_drop_import uses.
+# OCP bbox is roughly x[-1.55, 1.55] y[-1.50, 1.50] z[0, 1.25] →
+# centre ≈ (0, 0, 0.625). Choosing pad centre away from the origin lets
+# us assert the offset matches pad_centre - step_centre (mostly the pad
+# centre itself, since the step centre's X/Y are ~0).
+_UFL_STEP = (
+    Path(__file__).parent.parent.parent
+    / "e2e" / "fixtures" / "u_fl_hirose"
+    / "U.FL_Hirose_U.FL-R-SMT-1_Vertical.step"
+)
+
+
+def test_legacy_footprint_without_offset_gets_auto_offset(tmp_path: Path):
+    """Legacy footprint case: a (model …) block with no (offset …) sub-
+    S-expr triggers the in-memory auto-offset injection at render time.
+
+    Sets up pads at (3, 4) and (7, 4) → pad bbox centre (5, 4). Real U.FL
+    STEP body centre ≈ (0, 0, 0.625). Expected injected offset ≈ (5, 4, 0)
+    (Z is left at 0 — the user adjusts via the positioner UI; matches
+    drop_import.compute_step_pad_offset's contract).
+
+    Asserts BOTH (a) the spliced board kicad-cli sees has the (offset
+    (xyz …)) clause inserted into the model block, AND (b) the warnings
+    list carries an `auto_offset_applied` entry the JSON-RPC layer can
+    surface to the frontend so the user knows their footprint was missing
+    a default offset.
+    """
+    if not _UFL_STEP.is_file():
+        pytest.skip(f"e2e fixture missing: {_UFL_STEP}")
+
+    lib_dir = tmp_path / "Legacy_KSL"
+    pretty = lib_dir / "Legacy_KSL.pretty"
+    shapes = lib_dir / "Legacy_KSL.3dshapes"
+    pretty.mkdir(parents=True)
+    shapes.mkdir(parents=True)
+
+    # Copy the real U.FL STEP so OCP/regex can compute a real bbox.
+    step_dest = shapes / "Legacy.step"
+    step_dest.write_bytes(_UFL_STEP.read_bytes())
+
+    # Footprint with model block but NO (offset …). Pads at (3,4),(7,4)
+    # → pad bbox centre = (5, 4). Note the model block has (scale …) and
+    # (rotate …) but deliberately omits (offset …) — this is the user-
+    # reported "committed before alpha.5" shape.
+    mod = pretty / "Legacy.kicad_mod"
+    mod.write_text(
+        '(footprint "Legacy" (layer "F.Cu")\n'
+        '  (pad "1" smd rect (at 3 4) (size 1 1) (layers "F.Cu" "F.Mask"))\n'
+        '  (pad "2" smd rect (at 7 4) (size 1 1) (layers "F.Cu" "F.Mask"))\n'
+        '  (model "${KSL_ROOT}/Legacy_KSL/Legacy_KSL.3dshapes/Legacy.step"\n'
+        '    (scale (xyz 1 1 1)) (rotate (xyz 0 0 0))\n'
+        '  )\n'
+        ')\n',
+        encoding="utf-8",
+    )
+
+    # The spliced board lives in a tempdir that's torn down once
+    # render_footprint_3d_glb_with_top_layers returns. Snapshot the
+    # board text inside the mock so we can assert what kicad-cli was
+    # asked to render. (The default _kicad_cli_glb_and_svg_mock doesn't
+    # snapshot the board.)
+    captured: dict = {}
+
+    def _mock_with_board_snapshot(cmd, capture_output=True, text=True, env=None):  # noqa: ARG001
+        captured.setdefault("calls", []).append(list(cmd))
+        out_idx = cmd.index("-o") + 1
+        out_path = Path(cmd[out_idx])
+        if cmd[3] == "glb":
+            board_path = Path(cmd[-1])
+            captured["board"] = board_path.read_text(encoding="utf-8")
+            out_path.write_bytes(_GLB_MAGIC + b"\x00" * 64)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        out_path.write_text('<svg viewBox="0 0 40 40"/>', encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch(
+        "kibrary_sidecar.render_3d_glb.subprocess.run",
+        side_effect=_mock_with_board_snapshot,
+    ):
+        result = render_3d_glb.render_footprint_3d_glb_with_top_layers(
+            lib_dir, mod
+        )
+
+    # (a) The spliced board kicad-cli received must carry an (offset
+    # (xyz …)) inside the model block. Match the values to the expected
+    # pad-centre - step-centre delta (≈ (5, 4, 0)).
+    spliced = captured["board"]
+    # The injected offset clause must be present somewhere in the model block.
+    offset_match = re.search(
+        r"\(offset\s+\(xyz\s+([\-\d.]+)\s+([\-\d.]+)\s+([\-\d.]+)\)\s*\)",
+        spliced,
+    )
+    assert offset_match is not None, (
+        f"auto-offset clause should have been injected into the spliced "
+        f"board for a legacy no-offset footprint. Spliced board:\n{spliced}"
+    )
+    ox, oy, oz = (float(g) for g in offset_match.groups())
+    # U.FL body centre ≈ (0, 0, 0.625); pad centre = (5, 4); Z left at 0.
+    assert abs(ox - 5.0) < 0.05, f"expected offset.X≈5, got {ox}"
+    assert abs(oy - 4.0) < 0.05, f"expected offset.Y≈4, got {oy}"
+    assert abs(oz - 0.0) < 0.05, f"expected offset.Z=0, got {oz}"
+
+    # (b) The result must surface a structured auto_offset_applied warning
+    # so the frontend can tell the user "your footprint was missing an
+    # offset; we centred it for this preview".
+    warnings = result.get("warnings") or []
+    auto_warnings = [w for w in warnings if w.get("kind") == "auto_offset_applied"]
+    assert len(auto_warnings) == 1, (
+        f"expected exactly one auto_offset_applied warning, got {warnings}"
+    )
+    w = auto_warnings[0]
+    assert "Legacy.step" in w["model_path"]
+    assert len(w["offset"]) == 3
+    assert abs(w["offset"][0] - 5.0) < 0.05
+    assert abs(w["offset"][1] - 4.0) < 0.05
+
+
+def test_footprint_with_explicit_offset_gets_no_auto_offset(tmp_path: Path):
+    """Negative case: when (offset …) IS present, the auto-injector must
+    NOT fire — the user's existing offset is authoritative and an
+    auto-offset would silently double-translate the body."""
+    lib_dir, mod = _make_sample_kicad_mod(tmp_path, name="HasOffset")
+
+    captured: dict = {}
+    with patch(
+        "kibrary_sidecar.render_3d_glb.subprocess.run",
+        side_effect=_kicad_cli_glb_and_svg_mock(captured),
+    ):
+        result = render_3d_glb.render_footprint_3d_glb_with_top_layers(
+            lib_dir, mod
+        )
+
+    warnings = result.get("warnings") or []
+    auto_warnings = [w for w in warnings if w.get("kind") == "auto_offset_applied"]
+    assert auto_warnings == [], (
+        f"sample footprint already has (offset (xyz 0 0 0)); auto-offset "
+        f"must not fire. Got: {warnings}"
+    )

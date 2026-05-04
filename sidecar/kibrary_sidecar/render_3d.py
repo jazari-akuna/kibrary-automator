@@ -201,6 +201,14 @@ def _sanitise_footprint_with_warnings(
     * Legacy layer aliases (bare and quoted) → canonical name.
     * ``(model …)`` paths → absolute filesystem paths (``${KSL_ROOT}``
       expanded, ``./foo.step`` resolved against ``lib_dir/*.3dshapes``).
+    * For ``(model …)`` blocks WITHOUT an ``(offset …)`` sub-S-expr, an
+      auto-offset is computed (STEP body bbox centred over pad bbox
+      centre) and injected into the block in-memory. Mirrors the logic
+      ``drop_import.compute_step_pad_offset`` runs at commit time, but
+      applies to legacy footprints committed before that machinery
+      existed (the "chip body sits on its side / off-centre" case from
+      the user report). Surfaces as ``{"kind": "auto_offset_applied",
+      "model_path": …, "offset": [x, y, z]}`` in the warnings list.
     * Optional offset/rotation/scale overrides — when ALL three are
       provided, the first ``(model …)`` block's transform sub-S-exprs are
       rewritten in-memory. Used by the live-preview renderer so the user
@@ -214,6 +222,9 @@ def _sanitise_footprint_with_warnings(
       — the (model …) block was stripped because the .step couldn't be
       located. ``sibling_match`` is set when the same basename exists in
       a sibling library's ``.3dshapes/`` (likely mis-targeted commit).
+    * ``{"kind": "auto_offset_applied", "model_path": <str>,
+       "offset": [x, y, z]}`` — the block had no ``(offset …)`` so a
+      pad-centre-on-body-centre offset was injected in-memory.
     """
     text = footprint_file.read_text(encoding="utf-8")
     for alias, canonical in _LAYER_ALIASES.items():
@@ -227,7 +238,9 @@ def _sanitise_footprint_with_warnings(
             f'(layer "{canonical}")',
             text,
         )
-    text, warnings = _rewrite_or_strip_model_blocks_with_warnings(text, lib_dir)
+    text, warnings = _rewrite_or_strip_model_blocks_with_warnings(
+        text, lib_dir, footprint_file=footprint_file
+    )
     if (
         override_offset is not None
         and override_rotation is not None
@@ -252,7 +265,7 @@ def _rewrite_or_strip_model_blocks(text: str, lib_dir: Path) -> str:
 
 
 def _rewrite_or_strip_model_blocks_with_warnings(
-    text: str, lib_dir: Path
+    text: str, lib_dir: Path, *, footprint_file: Path | None = None,
 ) -> tuple[str, list[dict]]:
     """Rewrite each ``(model …)`` path to absolute, OR strip the whole
     block when the resolved path doesn't exist on disk.
@@ -260,6 +273,14 @@ def _rewrite_or_strip_model_blocks_with_warnings(
     Returns ``(new_text, warnings)`` where each warning is a structured
     dict the call site (and ultimately the JSON-RPC response) can use to
     tell the user why their 3D body is missing.
+
+    When ``footprint_file`` is supplied AND a ``(model …)`` block lacks
+    an ``(offset …)`` sub-S-expr, an auto-offset is computed (STEP body
+    bbox centred over the footprint pad bbox) and injected in-memory.
+    This fixes legacy footprints whose authors omitted the offset field —
+    SnapEDA STEPs often centre at the body centroid rather than the pin-1
+    corner, so without an offset the body floats off-pad. Emits a
+    ``{"kind": "auto_offset_applied", ...}`` warning per injection.
 
     Stripping is the safe choice: ``kicad-cli pcb export glb`` silently
     drops a missing-file 3D model and emits a board-plane-only GLB with
@@ -345,10 +366,83 @@ def _rewrite_or_strip_model_blocks_with_warnings(
             prefix_in_block + '"' + resolved + '"',
             1,
         )
+
+        # Auto-offset injection: legacy footprints (committed before
+        # drop_import.compute_step_pad_offset existed) often have a
+        # (model …) block with NO (offset …) sub-S-expr. SnapEDA STEPs
+        # are typically centred at the body centroid, NOT pin-1, so
+        # without an offset the body floats off the pads. Compute the
+        # same pad-centre-on-body-centre offset drop_import would have
+        # injected at commit time, but only in-memory — never write to
+        # disk. Skip when the caller didn't pass a footprint_file
+        # (defensive — happens via the legacy _rewrite_or_strip path).
+        if (
+            footprint_file is not None
+            and not _OFFSET_SUBEXPR_RE.search(new_block)
+        ):
+            try:
+                # Lazy import: drop_import → library, breaks any future
+                # cycle between the two modules.
+                from kibrary_sidecar.drop_import import compute_step_pad_offset
+                ox, oy, oz = compute_step_pad_offset(resolved, footprint_file)
+            except Exception as exc:  # noqa: BLE001 — degrade gracefully
+                log.warning(
+                    "render_3d: auto-offset compute failed for %s in %s: %s "
+                    "— rendering with original (no-offset) transform",
+                    resolved, footprint_file, exc,
+                )
+                ox = oy = oz = 0.0
+            new_block = _inject_offset_into_model_block(
+                new_block, (ox, oy, oz)
+            )
+            warnings.append({
+                "kind": "auto_offset_applied",
+                "model_path": resolved,
+                "offset": [ox, oy, oz],
+            })
+            log.info(
+                "render_3d: injected auto-offset (%.4f, %.4f, %.4f) for "
+                "model %s — block had no (offset …) field",
+                ox, oy, oz, resolved,
+            )
+
         out_parts.append(new_block)
         i = end
 
     return "".join(out_parts), warnings
+
+
+# Match a top-level (offset (xyz …)) sub-S-expr inside a (model …) block.
+# Accepts the inline form ``(offset (xyz 1 2 3))`` and the multi-line
+# form KiCad's own footprint editor emits:
+#     (offset
+#       (xyz 1 2 3)
+#     )
+# Anchored on ``(offset`` followed by whitespace (incl. newlines) +
+# ``(xyz`` to avoid false matches on a hypothetical ``(offset_foo …)``.
+_OFFSET_SUBEXPR_RE = re.compile(r"\(offset\s+\(xyz\b", re.IGNORECASE)
+
+
+def _inject_offset_into_model_block(
+    block: str, offset: tuple[float, float, float]
+) -> str:
+    """Insert an ``(offset (xyz …))`` clause near the start of *block*.
+
+    Inserts immediately after the ``(model "<path>"`` prefix, on a new
+    line indented with one tab — matches the KiCad-emitted formatting
+    so kicad-cli's tokenizer accepts it cleanly. Caller must already
+    have verified there is no existing ``(offset …)`` sub-S-expr.
+    """
+    # Find the path token's closing quote so we insert AFTER the path
+    # but BEFORE any existing (scale …) / (rotate …) sub-S-exprs. The
+    # path is always the first arg in (model "…" …).
+    m = re.match(r'\(model\s+("[^"]+"|[^\s\(\)]+)', block)
+    if m is None:  # pragma: no cover - defensive; loop only enters with a match
+        return block
+    after_path = m.end()
+    ox, oy, oz = offset
+    insertion = f"\n\t\t(offset (xyz {ox} {oy} {oz}))"
+    return block[:after_path] + insertion + block[after_path:]
 
 
 def _find_basename_in_sibling_libs(lib_dir: Path, basename: str) -> str | None:
@@ -394,6 +488,26 @@ def footprint_has_model_block(footprint_file: Path) -> bool:
     except OSError:
         return False
     return _MODEL_PATH_RE.search(text) is not None
+
+
+def count_model_blocks(footprint_file: Path) -> int:
+    """Return the number of ``(model …)`` blocks in the .kicad_mod source.
+
+    Wave 06-IPEX fix C: ``render_footprint_3d_glb_with_top_layers``
+    compares this count against the warnings list. If the warning list
+    reports that EVERY expected model was dropped (``model_not_found``
+    in the sanitiser, ``tessellation_failed`` in kicad-cli) then the
+    GLB contains only the auto-generated PCB substrate — no chip body
+    the user can actually see. Raising in that case lets the frontend's
+    existing asset-error overlay fire on a hard render failure instead
+    of leaving the user with a green PCB and an amber warning they
+    might dismiss without realising the chip is missing.
+    """
+    try:
+        text = footprint_file.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    return len(_MODEL_PATH_RE.findall(text))
 
 
 def _patch_model_transform(

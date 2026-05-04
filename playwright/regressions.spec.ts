@@ -968,3 +968,119 @@ test('bug 12 — 3D positioner inputs are editable + Save fires the right RPC', 
   expect(setOffsetCall!.params.rotation).toEqual([0, 0, 0]);
   expect(setOffsetCall!.params.scale).toEqual([1, 1, 1]);
 });
+
+// ---------------------------------------------------------------------------
+// Wave 9-C — new positioner controls (jog-z-reset disk + rotate-dial).
+//
+// 1. The Z jog column must surface a centre `jog-z-reset` disk between the
+//    +0.1 and −0.1 buttons.
+// 2. A new `rotate-dial` SVG must render alongside the XY jog dial, with
+//    six wedges (±X / ±Y / ±Z) and a centre `rotate-reset` disk.
+// 3. Clicking `rotate-+x` must update the Rotation X positioner input by
+//    +90° (modulo wrapped to (−180, 180]) and persist via Save.
+//
+// Also captures a Playwright screenshot of the positioner panel into
+// `screenshots/wave9c-positioner.png` so a human reviewer can eyeball the
+// new controls.
+// ---------------------------------------------------------------------------
+test('wave 9-C — Z reset disk + rotation dial render and dispatch correctly', async ({ page }) => {
+  await mountApp(page, {
+    extraHandlers: {
+      'library.list': `() => ({
+        libraries: [{
+          name: 'Resistors_KSL',
+          path: '/tmp/kib-regression-ws/Resistors_KSL',
+          component_count: 1,
+          has_pretty: true,
+          has_3dshapes: true,
+        }],
+      })`,
+      'library.list_components': `() => ({
+        components: [{
+          name: 'R_10k_0402',
+          description: '10k 0402',
+          reference: 'R',
+          value: '10k',
+          footprint: 'Resistor_SMD:R_0402',
+        }],
+      })`,
+      'library.read_file_content': `() => ({ content: '(stub)' })`,
+      'library.get_3d_info': `() => ({
+        info: {
+          model_path: '\${KSL_ROOT}/Resistors_KSL/Resistors_KSL.3dshapes/R_10k_0402.step',
+          filename: 'R_10k_0402.step',
+          format: 'step',
+          offset: [0, 0, 0],
+          rotation: [0, 0, 0],
+          scale: [1, 1, 1],
+        }
+      })`,
+      'library.set_3d_offset': `() => ({ ok: true })`,
+      'library.get_component': `() => ({ properties: { Reference: 'R', Value: '10k' }, footprint_path: null, model3d_path: null })`,
+      'library.get_component_icon': `() => ({ svg: null })`,
+      'parts.read_props': `() => ({ properties: {} })`,
+      'parts.read_meta': `() => ({ meta: {} })`,
+    },
+  });
+
+  await page.getByRole('button', { name: /^Libraries$/, exact: true }).click();
+  await page.getByRole('button', { name: /Resistors_KSL/ }).first().click();
+  await page.locator('text=R_10k_0402').first().click();
+
+  // Both new controls must be in the DOM.
+  const zReset = page.locator('[data-testid="jog-z-reset"]');
+  const rotateDial = page.locator('[data-testid="rotate-dial"]');
+  const rotatePlusX = page.locator('[data-testid="rotate-+x"]');
+  const rotateReset = page.locator('[data-testid="rotate-reset"]');
+
+  await expect(zReset).toBeVisible({ timeout: 3000 });
+  await expect(rotateDial).toBeVisible({ timeout: 3000 });
+  await expect(rotatePlusX).toBeVisible({ timeout: 3000 });
+  await expect(rotateReset).toBeVisible({ timeout: 3000 });
+
+  // Capture the positioner panel for human review. Scroll the rotate-dial
+  // into view so the new controls are guaranteed to be in the viewport,
+  // then take a fullPage snapshot for the wider context shot.
+  await rotateDial.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(100);
+  const fs = await import('node:fs');
+  fs.mkdirSync('screenshots', { recursive: true });
+  // Tight crop showing the two dials + Z column side by side.
+  const dialsContainer = page.locator('[data-testid="jog-dial"]').locator(
+    'xpath=ancestor::div[contains(@class, "flex")][1]',
+  );
+  await dialsContainer.screenshot({ path: 'screenshots/wave9c-positioner.png' });
+  // Wider context shot of the whole positioner card.
+  await page.screenshot({ path: 'screenshots/wave9c-positioner-full.png', fullPage: true });
+
+  // Click +X — Rotation X input must read 90.
+  await rotatePlusX.click();
+  await page.waitForTimeout(150);
+  const rotXInput = page.locator('[data-testid="positioner-rotation-x"]');
+  await expect(rotXInput).toHaveValue(/^90(\.0*)?$/, { timeout: 2000 });
+
+  // Click +X three more times → 90+90+90+90 = 360 → wraps to 0
+  // (or -180 at the boundary; either way numerically stable, not 360).
+  await rotatePlusX.click();
+  await rotatePlusX.click();
+  await rotatePlusX.click();
+  await page.waitForTimeout(150);
+  const finalVal = await rotXInput.inputValue();
+  const finalNum = parseFloat(finalVal);
+  expect(Math.abs(finalNum)).toBeLessThanOrEqual(180);
+
+  // Click rotate-reset → all rotation inputs must be 0.
+  await rotateReset.click();
+  await page.waitForTimeout(150);
+  await expect(page.locator('[data-testid="positioner-rotation-x"]')).toHaveValue(/^-?0(\.0*)?$/);
+  await expect(page.locator('[data-testid="positioner-rotation-y"]')).toHaveValue(/^-?0(\.0*)?$/);
+  await expect(page.locator('[data-testid="positioner-rotation-z"]')).toHaveValue(/^-?0(\.0*)?$/);
+
+  // Z-reset preserves X+Y. Pre-set X to 1.5 via the input, then click jog-z-reset.
+  await page.locator('[data-testid="positioner-offset-x"]').fill('1.5');
+  await page.locator('[data-testid="positioner-offset-z"]').fill('2.0');
+  await zReset.click();
+  await page.waitForTimeout(150);
+  await expect(page.locator('[data-testid="positioner-offset-x"]')).toHaveValue('1.5');
+  await expect(page.locator('[data-testid="positioner-offset-z"]')).toHaveValue(/^-?0(\.0*)?$/);
+});

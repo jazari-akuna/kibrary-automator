@@ -25,6 +25,11 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+// Wave 06-IPEX: structured warnings from the sidecar (Wave 1-E + 8-C).
+// `formatWarning` lives in its own module so the vitest spec can import
+// it without booting Solid's `solid-js/web` bundle (which touches
+// `window` at module-eval time and breaks node-environment tests).
+import { formatWarning, type RenderWarning } from './_renderWarnings';
 
 type Triple = [number, number, number];
 
@@ -131,6 +136,14 @@ declare global {
       candidateNamesBeforeDedup: string[];
       candidateNamesAfterDedup: string[];
     };
+    /**
+     * Wave 06-IPEX: the most recent sidecar warnings array (Wave 1-E +
+     * 8-C structured diagnostics). Surfaces what kicad-cli skipped so
+     * the visual-verify harness and Playwright specs can assert that
+     * the warning UI fires when (and only when) the sidecar reports a
+     * partial-render. Empty array on a clean load.
+     */
+    __model3dGLLastWarnings?: unknown[];
   }
 }
 
@@ -144,6 +157,16 @@ export default function Model3DViewerGL(props: Props) {
   //   fall back permanently for this kind.
   const [webglError, setWebglError] = createSignal<string | null>(null);
   const [assetError, setAssetError] = createSignal<string | null>(null);
+  // Wave 06-IPEX: sidecar returned a successful GLB but flagged one or
+  // more (model …) blocks as model_not_found / tessellation_failed (Wave
+  // 1-E + 8-C). The GLB still loaded — typically board-only or missing
+  // one chip body — so we render a non-blocking amber banner listing
+  // what kicad-cli could not embed. Without this the user sees a green
+  // PCB with no chip and no error message (the IPEX bug report).
+  const [assetWarnings, setAssetWarnings] = createSignal<RenderWarning[] | null>(
+    null,
+  );
+  const [warningsDismissed, setWarningsDismissed] = createSignal(false);
   const [loading, setLoading] = createSignal(true);
 
   let containerEl: HTMLDivElement | undefined;
@@ -224,7 +247,19 @@ export default function Model3DViewerGL(props: Props) {
       // envMapIntensity=0.5 stacking; once envMap goes back up to 0.85
       // the global exposure can come up too. 0.95 (just under 1.0) keeps
       // ACES highlight rolloff without the muddy midtones.
-      renderer.toneMappingExposure = 0.95;
+      // alpha.6-shading (26.5.4-alpha.1): 0.95 → 0.75. User reported
+      // "still a bit bright"; with the new directional+shadow rig the
+      // ambient contribution is also coming down so we drop the global
+      // exposure another notch to let cast shadows actually read.
+      renderer.toneMappingExposure = 0.75;
+      // alpha.6-shading: enable real shadow casting. PCFSoftShadowMap is
+      // ~2-3 ms/frame on integrated GPUs at 2048² which is acceptable for
+      // a 30 fps preview viewer. Without this the substrate read as a
+      // single uniformly-lit slab — the user couldn't tell where the
+      // chip body sat relative to the board because there was no
+      // contact shadow.
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       setWebglError(reason);
@@ -304,15 +339,53 @@ export default function Model3DViewerGL(props: Props) {
     // top-front-right of the chip. Key position pulled more overhead
     // (5,8,5 → 3,10,3) for less side rake. Fill nudged 0.4→0.35 to keep
     // the relative key/fill ratio.
-    scene.add(new THREE.AmbientLight(0xffffff, 0.25));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 0.55);
+    // alpha.6-shading (26.5.4-alpha.1): drop ambient 0.25→0.15, raise
+    // key 0.55→0.75, enable shadow casting on the key. The user said
+    // "I don't think there is any shading applied" — with no shadows
+    // the chip body floated visually because there was nothing
+    // grounding it to the substrate. Lower ambient lets the directional
+    // contrast actually read; higher key intensity compensates for the
+    // shadow's local darkening so the lit side stays bright.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.15));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.75);
     keyLight.position.set(3, 10, 3);
-    keyLight.castShadow = false;
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    // Shadow bias is expressed in shadow-camera-space units. Our scene
+    // is in metres so the alpha.6-shading initial value of -5e-4 (=0.5
+    // mm — half a chip-height) was too coarse and pushed shadows fully
+    // off their casters. Shrink to -1e-5 (=10 µm) and add a normalBias
+    // of 1e-4 to handle slope-scale acne on the substrate top.
+    keyLight.shadow.bias = -1e-5;
+    keyLight.shadow.normalBias = 1e-4;
+    // Soften the shadow penumbra a touch — sharp shadow edges read as
+    // CGI; PCFSoftShadowMap + radius=4 gives a believable contact
+    // shadow without making the chip's outline blurry.
+    keyLight.shadow.radius = 4;
+    // Shadow-camera frustum sized for kicad-cli's metres-scale GLBs.
+    // A typical 4 cm board fits inside ±0.05 m. The light sits at
+    // (3, 10, 3) — distance from origin ≈ 10.8 m — so the orthographic
+    // depth range needs to bracket that. near=0.1 / far=20 gives
+    // headroom on either side without wasting depth precision.
+    keyLight.shadow.camera.left = -0.05;
+    keyLight.shadow.camera.right = 0.05;
+    keyLight.shadow.camera.top = 0.05;
+    keyLight.shadow.camera.bottom = -0.05;
+    keyLight.shadow.camera.near = 0.1;
+    keyLight.shadow.camera.far = 20;
+    keyLight.shadow.camera.updateProjectionMatrix();
     scene.add(keyLight);
     const fillLight = new THREE.DirectionalLight(0xffffff, 0.35);
     fillLight.position.set(-5, 8, -5);
     fillLight.castShadow = false;
     scene.add(fillLight);
+    // alpha.6-shading: subtle hemisphere fill — slight green-cyan sky
+    // (matches the soldermask) and a dark ground. Adds cool/warm
+    // separation between top-lit and ambient-lit faces without raising
+    // the overall brightness. Intensity 0.20 is below the directional
+    // key so it doesn't wash shadows out.
+    const hemiLight = new THREE.HemisphereLight(0xa6c9b3, 0x1a1a1a, 0.20);
+    scene.add(hemiLight);
 
     // Resize-aware: when the wrapper changes size (responsive grid in
     // ComponentDetail.tsx), keep the camera aspect + renderer in sync.
@@ -361,6 +434,8 @@ export default function Model3DViewerGL(props: Props) {
     // footprint (or hit Save), so the inline "GLB load failed" message
     // from the previous component should not stick.
     setAssetError(null);
+    setAssetWarnings(null);
+    setWarningsDismissed(false);
     const myId = ++loadId;
     window.__model3dGLLoadCount = (window.__model3dGLLoadCount || 0) + 1;
     // 3d-fix-journal Wave-2 follow-up: zero out per-load probe state so
@@ -378,6 +453,7 @@ export default function Model3DViewerGL(props: Props) {
       const r = await invoke<{
         glb_data_url: string;
         top_layers_svg_data_url?: string;
+        warnings?: RenderWarning[];
       }>('sidecar_call', {
         method: 'library.render_3d_glb_angled',
         params: {
@@ -389,6 +465,20 @@ export default function Model3DViewerGL(props: Props) {
         },
       });
       if (myId !== loadId) return; // user moved on, discard
+
+      // Wave 06-IPEX: surface structured warnings from the sidecar
+      // (model_not_found / tessellation_failed) BEFORE we kick off the
+      // GLTF parse. The GLB itself still rendered — typically board-only
+      // or with one chip body missing — so we keep loading it but
+      // simultaneously prime the amber banner. The user immediately sees
+      // "kicad-cli skipped 'IPEX_…' — file not found" rather than a
+      // green PCB with no chip and no diagnostic.
+      if (Array.isArray(r.warnings) && r.warnings.length > 0) {
+        setAssetWarnings(r.warnings);
+        window.__model3dGLLastWarnings = r.warnings;
+      } else {
+        window.__model3dGLLastWarnings = [];
+      }
 
       // Snapshot the saved-at-load-time values so the live-delta path
       // can compute (live - saved) instead of accumulating drift.
@@ -442,16 +532,29 @@ export default function Model3DViewerGL(props: Props) {
             // becomes 80 % transparent so internal structure / pads
             // beneath the chip are partially visible).
             const isSubstrate = mesh.name === 'preview_PCB' || /pcb/i.test(mesh.name);
+            // alpha.6-shading (26.5.4-alpha.1): wire shadow casting at the
+            // mesh level. Substrate receives shadows (the chip's contact
+            // shadow lands on the soldermask). Chip meshes both cast AND
+            // receive — multi-body OCCT assemblies (chip + lead frame)
+            // self-shadow correctly. The decal mesh is added later under
+            // attachTopLayerDecal and is configured separately.
+            if (isSubstrate) {
+              mesh.receiveShadow = true;
+            } else {
+              mesh.castShadow = true;
+              mesh.receiveShadow = true;
+            }
             for (const m of mats) {
               const std = m as THREE.MeshStandardMaterial;
 
-              if (std.transparent && std.opacity >= 0.7) {
-                std.transparent = false;
-                std.depthWrite = true;
-                std.opacity = 1;
-                std.alphaTest = 0;
-                std.needsUpdate = true;
-              }
+              // alpha.6-shading (26.5.4-alpha.1): user requested 90 %
+              // opacity for both PCB and footprint chip body. Previously
+              // alpha.5 force-opaqued any material with opacity ≥ 0.7
+              // (the kicad-cli artifact path). The substrate / chip
+              // branches below now set transparent=true / opacity=0.9
+              // authoritatively, so the legacy "force opaque" sweep is
+              // no longer needed — every material in this traversal is
+              // either substrate or chip-body geometry.
 
               // alpha.5-visual-parity: smarter metalness demote. The
               // alpha.4 blanket "metalness>0.9 → 0.1" rule correctly fixes
@@ -498,12 +601,29 @@ export default function Model3DViewerGL(props: Props) {
               // OCCT-emitted soldermask is too desaturated even when
               // opaque, so clamp the color to kicad-cli's default green
               // (RGB 0.05/0.20/0.10) and a matte-but-not-flat finish.
+              // alpha.6-shading (26.5.4-alpha.1): user requested 90 %
+              // opacity. Keep depthWrite true so the chip standing on
+              // the board doesn't get z-fight overdraw (the chip
+              // backside is below the board top so should be hidden,
+              // not bled through).
               if (isSubstrate) {
                 std.color.setRGB(0.05, 0.20, 0.10);
                 std.roughness = 0.55;
                 std.metalness = 0;
-                std.transparent = false;
-                std.opacity = 1;
+                std.transparent = true;
+                std.opacity = 0.9;
+                std.depthWrite = true;
+                std.alphaTest = 0;
+                std.needsUpdate = true;
+              } else {
+                // alpha.6-shading: chip body (footprint) at 90 % opacity
+                // too. Same depthWrite-true rationale: a chip that's
+                // semi-transparent shouldn't reveal its own back faces
+                // in front of its near faces.
+                std.transparent = true;
+                std.opacity = 0.9;
+                std.depthWrite = true;
+                std.alphaTest = 0;
                 std.needsUpdate = true;
               }
             }
@@ -1125,6 +1245,58 @@ export default function Model3DViewerGL(props: Props) {
             <div class="space-y-1">
               <p class="font-medium">3D model failed to load for this footprint</p>
               <p class="font-mono text-[11px] opacity-80 break-words">{assetError()}</p>
+            </div>
+          </div>
+        </Show>
+        {/*
+          Wave 06-IPEX: non-blocking warning banner. Anchored top so it
+          doesn't fight the canvas (the user can still orbit the
+          partially-rendered GLB underneath). Renders only when the GLB
+          itself loaded (no assetError) AND the sidecar returned at
+          least one structured warning AND the user hasn't dismissed
+          this load. Solves the user's "IPEX fails silently — green PCB
+          with no chip" report by pinning the kicad-cli skip diagnostics
+          on top of the otherwise-empty render.
+        */}
+        <Show
+          when={
+            !loading() &&
+            !assetError() &&
+            assetWarnings() &&
+            assetWarnings()!.length > 0 &&
+            !warningsDismissed()
+          }
+        >
+          <div
+            data-testid="3d-viewer-gl-asset-warnings"
+            class="absolute top-2 left-2 right-2 px-3 py-2 rounded text-[11px] text-amber-900 dark:text-amber-200 bg-amber-100/95 dark:bg-amber-900/85 border border-amber-300 dark:border-amber-700 shadow pointer-events-auto"
+          >
+            <div class="flex items-start justify-between gap-2">
+              <div class="space-y-0.5 min-w-0">
+                <p class="font-medium">
+                  3D model partially missing — {assetWarnings()!.length}{' '}
+                  warning{assetWarnings()!.length === 1 ? '' : 's'} from kicad-cli
+                </p>
+                <ul class="font-mono text-[10px] opacity-90 break-words space-y-0.5 list-disc list-inside">
+                  {assetWarnings()!.slice(0, 5).map((w) => (
+                    <li>{formatWarning(w)}</li>
+                  ))}
+                  <Show when={(assetWarnings()?.length ?? 0) > 5}>
+                    <li class="italic opacity-70">
+                      …and {assetWarnings()!.length - 5} more
+                    </li>
+                  </Show>
+                </ul>
+              </div>
+              <button
+                type="button"
+                data-testid="3d-viewer-gl-asset-warnings-dismiss"
+                class="text-amber-900 dark:text-amber-200 hover:opacity-70 text-base leading-none px-1"
+                aria-label="Dismiss 3D model warnings"
+                onClick={() => setWarningsDismissed(true)}
+              >
+                ×
+              </button>
             </div>
           </div>
         </Show>

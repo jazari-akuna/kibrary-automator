@@ -39,6 +39,13 @@ interface Props {
    *  onForceOffsetConsumed so the same value can't re-apply on re-render. */
   forceOffset?: Triple | null;
   onForceOffsetConsumed?: () => void;
+  /** Pulse-shaped: ±90° rotation jog from the rotate dial. Same pulse
+   *  pattern as jogDelta — apply, ack via onRotateJogConsumed. */
+  rotateJogDelta?: { axis: 'x' | 'y' | 'z'; amount: number } | null;
+  onRotateJogConsumed?: () => void;
+  /** Pulse-shaped absolute rotation reset (rotate dial centre). */
+  forceRotation?: Triple | null;
+  onForceRotationConsumed?: () => void;
 }
 
 const ZERO: Triple = [0, 0, 0];
@@ -96,6 +103,32 @@ export default function Model3DPositioner(props: Props) {
     if (!f) return;
     setOffset([f[0], f[1], f[2]]);
     props.onForceOffsetConsumed?.();
+  });
+
+  // Wave 9-C: rotation jog pulses from the rotate dial. ±90° steps,
+  // wrapped to (−180, 180] so the numerical inputs don't drift to large
+  // multi-turn values after repeated clicks.
+  createEffect(() => {
+    const j = props.rotateJogDelta;
+    if (!j) return;
+    if (j.axis === 'x' || j.axis === 'y' || j.axis === 'z') {
+      const idx = { x: 0, y: 1, z: 2 }[j.axis];
+      const next = [...rotation()] as Triple;
+      let v = next[idx] + j.amount;
+      // Normalise to (-180, 180]
+      v = ((v + 180) % 360 + 360) % 360 - 180;
+      next[idx] = +v.toFixed(3);
+      setRotation(next);
+    }
+    props.onRotateJogConsumed?.();
+  });
+
+  // Apply absolute-rotation pulses (rotate dial Reset).
+  createEffect(() => {
+    const f = props.forceRotation;
+    if (!f) return;
+    setRotation([f[0], f[1], f[2]]);
+    props.onForceRotationConsumed?.();
   });
 
   const handleReset = () => {
