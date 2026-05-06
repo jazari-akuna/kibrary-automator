@@ -2,6 +2,15 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.6-alpha.1] — 2026-05-06
+
+### Fixed
+- **`HANDLER_ERROR: kicad-cli pcb export glb failed (exit 3): Failed to load board`** for footprints with off-centre pads (most SnapEDA exports, including the user's IPEX_20952-024E-02). Cause: alpha.2's `_FOOTPRINT_TOP_LEVEL_AT_RE` regex was greedy — it matched any indented `(at X Y [rot])` line and used `count=1`, so for tab-indented `.kicad_mod` files the FIRST match was typically the `Reference` property's `(at)` at S-expr depth 2, NOT the top-level footprint placement at depth 1. The corrupted property block left a malformed text node that kicad-cli rejected outright. Fix: replaced the regex with `_strip_top_level_at()` — a depth-aware S-expr scanner that walks the text token-by-token, skipping the contents of quoted strings, and only strips `(at …)` whose opening paren occurs at depth 1 (a direct child of `(footprint`). Preserves all pad/property/fp_text `(at)`s untouched. New regression test `test_recentre_does_not_strip_property_at` covers the bug.
+
+### Notes
+- The earlier "footprint layer not aligned with PCB layer" symptom on the user's IPEX (alpha.1 baseline → screenshot they shared) is a separate alignment issue. Alpha.2's fix correctly recentres the footprint when it can, but for the user's IPEX it broke kicad-cli parsing entirely. Alpha.3 (this release) restores parsing; verifying the alignment for IPEX is the next step pending direct visual confirmation against their workspace.
+- pytest: 301 passing (was 300 + the new `test_recentre_does_not_strip_property_at` regression). vitest unchanged at 25.
+
 ## [26.5.4-alpha.2] — 2026-05-04
 
 ### Fixed

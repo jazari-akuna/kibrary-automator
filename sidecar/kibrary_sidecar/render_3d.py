@@ -466,19 +466,86 @@ _PAD_AT_RE_LOCAL = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Top-level (at X Y [rot]) inside a (footprint …) S-expr — matches a
-# tab-OR-space-indented (at) on its own line that's a direct child of
-# the footprint form (depth 1). Used to STRIP an existing footprint
-# placement before injecting the recentre-on-pad-bbox-centre value.
-# Anchored on a leading `\n` + indent so it cannot match an (at) inside
-# a pad/text block (which is always at depth ≥ 2 i.e. more indent).
-_FOOTPRINT_TOP_LEVEL_AT_RE = re.compile(
-    r"\n[\t ]+\(at\s+-?\d+(?:\.\d+)?\s+-?\d+(?:\.\d+)?(?:\s+-?\d+(?:\.\d+)?)?\s*\)",
-)
-
 # (footprint <name>  — capture the header up to (and including) the
 # name token. The name may be quoted ("foo") or bare (foo).
 _FOOTPRINT_HEADER_RE = re.compile(r"\(footprint\s+(\"[^\"]+\"|\S+)")
+
+
+def _strip_top_level_at(text: str) -> str:
+    """Remove the first ``(at X Y [rot])`` that's a DIRECT child of the
+    ``(footprint …)`` form (S-expr depth 1).
+
+    A regex-only approach that matches "indented ``(at …)``" is too greedy:
+    it also matches the ``(at …)`` of pads, properties (Reference, Value),
+    fp_lines etc. — all of which sit at depth 2+ and have the same leading
+    whitespace. The earlier 26.5.4-alpha.2 implementation stripped the
+    Reference property's ``(at)`` for the user's IPEX, leaving a malformed
+    property that kicad-cli rejected with ``Failed to load board`` (exit 3).
+
+    This function walks the text and tracks paren depth so it only strips
+    the depth-1 ``(at …)``. Quoted strings (``"foo"`` for the footprint
+    name etc.) are skipped so a literal ``)`` inside a string can't fool
+    the depth tracker. Returns the text unchanged when no depth-1 ``(at)``
+    is present.
+    """
+    m = _FOOTPRINT_HEADER_RE.search(text)
+    if m is None:
+        return text
+    # Position right after the closing token of `(footprint <name>` —
+    # depth is now 1 (we entered the footprint form).
+    i = m.end()
+    depth = 1
+    n = len(text)
+    while i < n and depth > 0:
+        c = text[i]
+        # Skip the contents of quoted strings — `(` or `)` inside a
+        # string doesn't change S-expr depth.
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                if text[j] == '\\' and j + 1 < n:
+                    j += 2
+                else:
+                    j += 1
+            i = j + 1
+            continue
+        if c == '(':
+            # depth-1 (at — this is the top-level one we want.
+            if depth == 1 and text[i:i + 4] == '(at ' and not text[i:i + 5] == '(attr':
+                # Find the matching close paren.
+                d = 1
+                j = i + 1
+                while j < n and d > 0:
+                    if text[j] == '"':
+                        # Skip strings inside the (at) (shouldn't happen
+                        # but be defensive).
+                        k = j + 1
+                        while k < n and text[k] != '"':
+                            k += 1
+                        j = k + 1
+                        continue
+                    if text[j] == '(':
+                        d += 1
+                    elif text[j] == ')':
+                        d -= 1
+                    j += 1
+                # text[i:j] is the (at …) clause. Also eat the leading
+                # `\n` + indent so we don't leave a blank line behind.
+                left = i
+                while left > 0 and text[left - 1] in ' \t':
+                    left -= 1
+                if left > 0 and text[left - 1] == '\n':
+                    left -= 1
+                # Trailing whitespace on the same line, if any.
+                right = j
+                while right < n and text[right] in ' \t':
+                    right += 1
+                return text[:left] + text[right:]
+            depth += 1
+        elif c == ')':
+            depth -= 1
+        i += 1
+    return text
 
 
 def _recentre_footprint_at_pad_bbox(text: str) -> str:
@@ -525,7 +592,8 @@ def _recentre_footprint_at_pad_bbox(text: str) -> str:
     if abs(cx) < 1e-2 and abs(cy) < 1e-2:
         return text
     # Strip any pre-existing top-level (at) so kicad-cli sees only ours.
-    text = _FOOTPRINT_TOP_LEVEL_AT_RE.sub("", text, count=1)
+    # Depth-aware (must NOT touch pad/property (at)s at depth 2+).
+    text = _strip_top_level_at(text)
     # Inject the recentering (at) right after the footprint name.
     inject = f" (at {-cx:.6f} {-cy:.6f})"
     text, n_subs = _FOOTPRINT_HEADER_RE.subn(

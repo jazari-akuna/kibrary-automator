@@ -1095,6 +1095,56 @@ def test_centred_footprint_is_left_unchanged():
     assert _recentre_footprint_at_pad_bbox(text) == text
 
 
+def test_recentre_does_not_strip_property_at():
+    """26.5.4-alpha.3 regression — alpha.2's regex-based stripper was
+    greedy: it matched any indented `(at X Y [rot])` and used `count=1`,
+    so for tab-indented .kicad_mod files the FIRST match was typically
+    the `Reference` property's `(at)` at depth 2 (not the top-level
+    footprint placement at depth 1). The corrupted property caused
+    kicad-cli to reject the spliced board with `Failed to load board
+    (exit 3)` for the user's IPEX_20952-024E-02.
+
+    The depth-aware `_strip_top_level_at` must:
+      * leave depth-2 (at)s (inside pads, properties, fp_text, fp_line)
+        untouched, AND
+      * still inject a depth-1 recentre (at) for off-centre pad bboxes.
+    """
+    from kibrary_sidecar.render_3d import _recentre_footprint_at_pad_bbox
+
+    text = (
+        '(footprint "WithProps" (layer "F.Cu")\n'
+        '\t(property "Reference" "REF**"\n'
+        '\t\t(at 10 -3 0)\n'
+        '\t\t(layer "F.SilkS")\n'
+        '\t)\n'
+        '\t(property "Value" "WithProps"\n'
+        '\t\t(at 10 3 0)\n'
+        '\t\t(layer "F.Fab")\n'
+        '\t)\n'
+        '\t(pad "1" smd rect\n'
+        '\t\t(at 5 0)\n'
+        '\t\t(size 1 1)\n'
+        '\t\t(layers "F.Cu")\n'
+        '\t)\n'
+        '\t(pad "2" smd rect\n'
+        '\t\t(at 15 0)\n'
+        '\t\t(size 1 1)\n'
+        '\t\t(layers "F.Cu")\n'
+        '\t)\n'
+        ')\n'
+    )
+    result = _recentre_footprint_at_pad_bbox(text)
+    # All depth-2 `(at)`s preserved.
+    assert '(at 10 -3 0)' in result, "Reference property (at) was stripped"
+    assert '(at 10 3 0)' in result, "Value property (at) was stripped"
+    assert '(at 5 0)' in result, "Pad #1 (at) was stripped"
+    assert '(at 15 0)' in result, "Pad #2 (at) was stripped"
+    # Recentre still injected.
+    assert '(at -10.000000 -0.000000)' in result, (
+        f"recentre injection missing. Got:\n{result}"
+    )
+
+
 def test_recentre_strips_existing_top_level_at():
     """A footprint extracted from a real PCB layout may carry a stale
     top-level `(at X Y)` that placed it on that PCB. The recentre must
