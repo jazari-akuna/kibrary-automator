@@ -37,6 +37,7 @@ MAPPINGS=(
   "u_fl_hirose|UFL_KSL|U.FL_Hirose_U.FL-R-SMT-1_Vertical.kicad_mod|U.FL_Hirose_U.FL-R-SMT-1_Vertical.step"
   "usb_c_hro|USBC_KSL|USB_C_Receptacle_HRO_TYPE-C-31-M-12.kicad_mod|USB_C_Receptacle_HRO_TYPE-C-31-M-12.STEP"
   "synthetic_pcb_named|SyntheticPCB_KSL|synthetic_pcb_named.kicad_mod|synthetic_pcb_named.step"
+  "ipex_user|IPEXUser_KSL|IPEX_20952-024E-02.kicad_mod|20952-024E-02.step"
 )
 
 for entry in "${MAPPINGS[@]}"; do

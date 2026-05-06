@@ -44,6 +44,6 @@ export default defineConfig({
     // pulling jsdom for purely-reactive Solid logic. Specs that need
     // a DOM should opt in per-file via `// @vitest-environment jsdom`.
     environment: 'node',
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['src/**/*.test.{ts,tsx}', 'e2e/**/__tests__/*.test.{ts,tsx}'],
   },
 });

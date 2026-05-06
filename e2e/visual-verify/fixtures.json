@@ -46,6 +46,22 @@
         "maxAddedMeshes": 0,
         "maxRemovedMeshes": 0
       }
+    },
+    {
+      "name": "ipex_user",
+      "lib": "IPEXUser_KSL",
+      "footprint": "IPEX_20952-024E-02",
+      "action": "User-supplied asymmetric IPEX 20952-024E-02 — verify decal alignment and jog-z-plus1 chip movement",
+      "expectedSubstrateName": "preview_PCB",
+      "jogButtonSelector": "[data-testid=\"jog-z-plus1\"]",
+      "assertOverrides": {
+        "substrateMaxDelta": 0.0001,
+        "chipYDeltaRange": [0.0005, 0.002],
+        "chipYDeltaMinCount": 1,
+        "maxAddedMeshes": 0,
+        "maxRemovedMeshes": 0,
+        "decalAlignmentMaxDelta": 0.0005
+      }
     }
   ]
 }

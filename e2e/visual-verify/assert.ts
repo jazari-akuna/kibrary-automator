@@ -105,6 +105,27 @@ function bboxSizeDelta(b: MeshRecord, a: MeshRecord) {
   };
 }
 
+/**
+ * Substrate centre (XZ plane) — union of all preview_PCB(_<n>)? meshes.
+ * Returns null if no substrate-named meshes are present.
+ */
+function computeSubstrateCentre(snap: SceneSnapshot): { x: number; z: number } | null {
+  let minX = +Infinity, maxX = -Infinity, minZ = +Infinity, maxZ = -Infinity;
+  let any = false;
+  for (const m of snap.meshes) {
+    if (m.name === 'preview_PCB_top_decal') continue;
+    if (!/^preview_PCB(_\d+)?$/.test(m.name)) continue;
+    if (!m.worldBbox) continue;
+    if (m.worldBbox.min.x < minX) minX = m.worldBbox.min.x;
+    if (m.worldBbox.max.x > maxX) maxX = m.worldBbox.max.x;
+    if (m.worldBbox.min.z < minZ) minZ = m.worldBbox.min.z;
+    if (m.worldBbox.max.z > maxZ) maxZ = m.worldBbox.max.z;
+    any = true;
+  }
+  if (!any) return null;
+  return { x: (minX + maxX) / 2, z: (minZ + maxZ) / 2 };
+}
+
 /** Threshold + expected-direction config for one fixture. */
 export interface AssertOverrides {
   /** Substrate may shift up to this many metres on any axis. Default 1e-4. */
@@ -121,6 +142,16 @@ export interface AssertOverrides {
   /** Tolerance for "mesh count changed" — usually 0 (no add/remove allowed). */
   maxAddedMeshes?: number;
   maxRemovedMeshes?: number;
+  /**
+   * 26.5.6-alpha.4 regression: max distance (metres, per axis) between
+   * the SVG-decal mesh centre and the substrate XZ centre, measured on
+   * the BEFORE snapshot. Pre-fix value was ~0.02 m (the decal was
+   * centred at world Z=+20mm because findSubstrateMesh + setFromObject
+   * saw only the substrate's +Z edge face). Default 5e-4 (0.5 mm) — the
+   * decal should sit within half a millimetre of true centre after the
+   * fix. Set to null to disable (e.g. fixtures without a decal plane).
+   */
+  decalAlignmentMaxDelta?: number | null;
 }
 
 /** Static defaults for the standard "jog-z-+1mm on a kicad-cli GLB" action. */
@@ -130,6 +161,7 @@ export const DEFAULT_OVERRIDES: Required<AssertOverrides> = {
   chipYDeltaMinCount: 1,
   maxAddedMeshes: 0,
   maxRemovedMeshes: 0,
+  decalAlignmentMaxDelta: 5e-4,
 };
 
 /** What a fixture entry feeds into runAssertions. */
@@ -157,12 +189,45 @@ export interface Verdict {
  * Pure-function assertions for the standard 3D-fix campaign. Returns
  * verdict + reasons; never throws.
  */
-export function runAssertions(diff: DiffRecord, fixture: FixtureLike): Verdict {
+export function runAssertions(
+  diff: DiffRecord,
+  fixture: FixtureLike,
+  before?: SceneSnapshot,
+): Verdict {
   const t: Required<AssertOverrides> = {
     ...DEFAULT_OVERRIDES,
     ...(fixture.assertOverrides ?? {}),
   };
   const fail: string[] = [];
+
+  // 26.5.6-alpha.4 regression: decal must sit at substrate XZ centre.
+  // Static check on the BEFORE snapshot (alignment is a state property,
+  // not a delta). Bug pre-fix: decal world Z = +0.02 m (the substrate's
+  // canonical "preview_PCB" mesh is the +Z edge face only, so its bbox
+  // collapses Z to a single value and cz=+20mm).
+  if (before && t.decalAlignmentMaxDelta !== null) {
+    const decal = before.meshes.find((m) => m.name === 'preview_PCB_top_decal');
+    const substrateCentre = computeSubstrateCentre(before);
+    if (!decal) {
+      fail.push(
+        `BEFORE snapshot has no preview_PCB_top_decal mesh — the SVG decal ` +
+          `did not attach. Was attachTopLayerDecal short-circuited?`,
+      );
+    } else if (substrateCentre) {
+      const dx = Math.abs(decal.worldPosition.x - substrateCentre.x);
+      const dz = Math.abs(decal.worldPosition.z - substrateCentre.z);
+      const dmax = Math.max(dx, dz);
+      if (dmax > t.decalAlignmentMaxDelta) {
+        fail.push(
+          `decal misaligned: world position (x=${decal.worldPosition.x.toFixed(5)}, ` +
+            `z=${decal.worldPosition.z.toFixed(5)}) vs substrate centre ` +
+            `(x=${substrateCentre.x.toFixed(5)}, z=${substrateCentre.z.toFixed(5)}) — ` +
+            `max-axis delta ${dmax.toExponential(3)} m exceeds ${t.decalAlignmentMaxDelta.toExponential(3)} m. ` +
+            `26.5.6-alpha.4 regression: pads + silk float off the substrate.`,
+        );
+      }
+    }
+  }
 
   if (diff.reloadDetected) {
     fail.push(

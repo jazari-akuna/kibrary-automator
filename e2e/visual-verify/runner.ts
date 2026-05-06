@@ -501,7 +501,7 @@ async function runFixture(
   const afterViewerPng = await grabViewerScreenshot(sid);
 
   const diff = computeDiff(before, after);
-  const verdict = runAssertions(diff, fixture);
+  const verdict = runAssertions(diff, fixture, before);
   const reportPath = writeReport(join(outDir, fixture.name), {
     fixture,
     before,

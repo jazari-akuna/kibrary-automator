@@ -30,6 +30,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 // it without booting Solid's `solid-js/web` bundle (which touches
 // `window` at module-eval time and breaks node-environment tests).
 import { formatWarning, type RenderWarning } from './_renderWarnings';
+import { findSubstrateMesh, computeSubstrateBboxLocal } from './_substrateBbox';
 
 type Triple = [number, number, number];
 
@@ -641,7 +642,7 @@ export default function Model3DViewerGL(props: Props) {
           let substrateBboxLocal: THREE.Box3 | null = null;
           if (substrateMesh) {
             loadedRoot.updateMatrixWorld(true);
-            substrateBboxLocal = new THREE.Box3().setFromObject(substrateMesh);
+            substrateBboxLocal = computeSubstrateBboxLocal(loadedRoot, substrateMesh);
           }
           window.__model3dGLSubstrateName = substrateMesh?.name ?? '';
 
@@ -1330,46 +1331,6 @@ function findTopLevelAncestor(node: THREE.Object3D, root: THREE.Object3D): THREE
     cur = cur.parent;
   }
   return cur;
-}
-
-// alpha.33: kicad-cli's GLB names the extruded board mesh "preview_PCB".
-// We need to identify it post-load so we can (a) compute its top-Y for
-// the world-recenter shift and (b) anchor the SVG decal plane on top.
-//
-// alpha.4-bugfix: previous implementation matched ALL meshes whose name
-// contained /pcb/i and kept overwriting `named` on each match — so for
-// connector footprints with chip meshes named like "J1_PCB_Edge" or
-// "Connector_PCB_Pad", the LAST matching mesh (a chip body) won. The
-// real substrate then ended up in chipNodes and got translated by
-// applyLiveDelta — user reported this as "PCB moves down, part stays."
-//
-// New strategy:
-//   1. Exact-match `preview_PCB` first — kicad-cli's canonical name.
-//   2. If no exact match, fall back to the LARGEST-XY-area mesh, which
-//      is reliably the board (substrate is wide+flat, chip bodies are
-//      small). XY-area not 3D-volume — chip body STEPs sometimes have
-//      a larger Z extent than the thin substrate.
-function findSubstrateMesh(root: THREE.Object3D): THREE.Mesh | null {
-  let exactMatch: THREE.Mesh | null = null;
-  let largestXY: THREE.Mesh | null = null;
-  let largestArea = 0;
-  root.traverse((o) => {
-    const m = o as THREE.Mesh;
-    if (!m.isMesh) return;
-    if (m.name === 'preview_PCB' && exactMatch === null) {
-      exactMatch = m;
-    }
-    const b = new THREE.Box3().setFromObject(m);
-    if (b.isEmpty()) return;
-    const s = new THREE.Vector3();
-    b.getSize(s);
-    const area = s.x * s.z; // X-by-Z is the board face in three.js Y-up world
-    if (area > largestArea) {
-      largestArea = area;
-      largestXY = m;
-    }
-  });
-  return exactMatch || largestXY;
 }
 
 // alpha.33: rasterise the front-layers SVG and attach it as a thin decal

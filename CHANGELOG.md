@@ -2,6 +2,20 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.6-alpha.4] — 2026-05-06
+
+### Fixed
+- **SVG decal pads + `REF**` label floated +20 mm off the substrate corner** for every footprint, with asymmetric ones (the user's IPEX 20952-024E-02 with 24 pads on one edge) making the misalignment visually obvious — radially symmetric ones (U.FL, USB-C) hid it because the half-shifted decal still looked roughly aligned. Cause: `findSubstrateMesh` exact-matches kicad-cli's canonical `preview_PCB` mesh, but kicad-cli's GLB export splits the 40×40 mm substrate plate into SIX sibling meshes (top face, bottom face, four edge faces) named `preview_PCB / preview_PCB_1 … _5`. The matched `preview_PCB` is just the +Z edge face — its bbox collapses Z to a single value, so `setFromObject(substrateMesh)` returned `{ Z: [+0.02, +0.02] }` and the decal centre `cz = (min+max)/2 = +0.02 m`. Net effect: the SVG decal landed +20 mm off in world Z. Fix: extracted the bbox logic into `src/blocks/_substrateBbox.ts` (`computeSubstrateBboxLocal`) which unions every `preview_PCB(_<n>)?` mesh's bbox, excluding `preview_PCB_top_decal`. The speculative +90° texture rotation added during the alpha.4-prep investigation was reverted — once the position bug was fixed, the decal aligned correctly without it.
+
+### Tests
+- New unit suite `src/blocks/__tests__/_substrateBbox.test.ts` (4 tests) — synthetic 6-mesh substrate hierarchy + decal exclusion + fallback path.
+- New harness assertion `decalAlignmentMaxDelta` (default 0.5 mm) in `e2e/visual-verify/assert.ts` — fails the run if the decal world centre drifts more than 0.5 mm from the substrate XZ centre.
+- New visual-verify fixture `ipex_user` wired into `fixtures.json` + `setup-workspace.sh`. The user's actual IPEX `.kicad_mod` + `.step` files are committed under `e2e/fixtures/ipex_user/` so the regression is reproducible.
+- New `e2e/visual-verify/__tests__/decal-alignment.test.ts` (4 tests) — exercises the assertion logic directly with synthetic snapshots; would have caught the pre-fix +20 mm offset.
+- vitest: 33 passing (was 25 + 4 substrate + 4 alignment).
+- `kibrary-visual-verify:alpha.4` docker image now bundles the fixture sources and runs `setup-workspace.sh` at container start, so `docker run kibrary-visual-verify` is a self-contained regression check.
+- All 4 visual-verify fixtures (`u_fl_hirose`, `usb_c_hro`, `synthetic_pcb_named`, `ipex_user`) PASS in headless docker.
+
 ## [26.5.6-alpha.3] — 2026-05-06
 
 ### Fixed
