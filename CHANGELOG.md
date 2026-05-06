@@ -2,6 +2,11 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.6-alpha.3] — 2026-05-06
+
+### Fixed
+- **alpha.2's debug-dump on kicad-cli failure dumped from the WRONG code path.** `render_3d_glb.py` has two `subprocess.run` blocks invoking `kicad-cli pcb export glb`: the legacy single-call path (`proc` at line 161) and the newer with-top-layers path (`glb_proc` at line 290). The frontend's `library_render_3d_glb_angled` reaches the second path, but alpha.2 only instrumented the first one. Result: the user's IPEX failure on alpha.2 produced no artifacts in `~/.cache/kibrary/debug/`. Fix: add the same dump logic to `glb_proc`.
+
 ## [26.5.6-alpha.2] — 2026-05-06
 
 ### Changed

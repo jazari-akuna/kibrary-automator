@@ -293,9 +293,36 @@ def render_footprint_3d_glb_with_top_layers(
         )
         if glb_proc.returncode != 0:
             err = (glb_proc.stderr or glb_proc.stdout or "").strip()
+            # 26.5.6-alpha.3: persist the spliced board + full kicad-cli
+            # output for the with_top_layers code path. (alpha.2 added the
+            # same dump only for the legacy single-call render path; the
+            # frontend's library_render_3d_glb_angled actually reaches THIS
+            # code path, so the user's IPEX failure produced no artifacts
+            # despite alpha.2 being installed.)
+            try:
+                debug_dir = Path.home() / ".cache" / "kibrary" / "debug"
+                debug_dir.mkdir(parents=True, exist_ok=True)
+                ts_safe = fp_name.replace("/", "_").replace(" ", "_")
+                board_dump = debug_dir / f"failed_board_{ts_safe}.kicad_pcb"
+                board_dump.write_text(
+                    board_path.read_text(encoding="utf-8"), encoding="utf-8",
+                )
+                stderr_dump = debug_dir / f"failed_stderr_{ts_safe}.txt"
+                stderr_dump.write_text(
+                    f"--- cmd ---\n{' '.join(['kicad-cli', 'pcb', 'export', 'glb', '-o', str(out_glb), str(board_path)])}\n\n"
+                    f"--- exit code ---\n{glb_proc.returncode}\n\n"
+                    f"--- stdout ---\n{glb_proc.stdout or ''}\n\n"
+                    f"--- stderr ---\n{glb_proc.stderr or ''}\n",
+                    encoding="utf-8",
+                )
+                debug_hint = (
+                    f" (full output: {stderr_dump}; spliced board: {board_dump})"
+                )
+            except Exception:  # noqa: BLE001 — diagnostic must never mask the real error
+                debug_hint = ""
             raise RuntimeError(
                 f"kicad-cli pcb export glb failed (exit {glb_proc.returncode}) "
-                f"for footprint {fp_name!r}: {err}"
+                f"for footprint {fp_name!r}: {err}{debug_hint}"
             )
         if not out_glb.is_file():
             raise FileNotFoundError(
