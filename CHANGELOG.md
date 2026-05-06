@@ -2,6 +2,11 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.6-alpha.2] — 2026-05-06
+
+### Changed
+- **kicad-cli failure diagnostic**: when `pcb export glb` exits non-zero (the user's "Failed to load board" case for IPEX 20952-024E-02 that I cannot reproduce locally), the sidecar now persists the spliced kicad_pcb input + full stdout/stderr to `~/.cache/kibrary/debug/failed_{board,stderr}_<footprint>.{kicad_pcb,txt}` and includes those paths in the error message. Lets the user (or me) inspect what kicad-cli was actually fed and what specific message it printed before "Failed to load board".
+
 ## [26.5.6-alpha.1] — 2026-05-06
 
 ### Fixed

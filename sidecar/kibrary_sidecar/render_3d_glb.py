@@ -163,9 +163,35 @@ def render_footprint_3d_glb(
         )
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip()
+            # 26.5.6-alpha.2: persist the spliced board + full kicad-cli
+            # output so we can debug failures we can't reproduce locally.
+            # Without this, "Failed to load board" is opaque — kicad-cli's
+            # stderr is captured but multi-line context can be truncated
+            # in the chain of message frames before it reaches the user.
+            try:
+                debug_dir = Path.home() / ".cache" / "kibrary" / "debug"
+                debug_dir.mkdir(parents=True, exist_ok=True)
+                ts_safe = fp_name.replace("/", "_").replace(" ", "_")
+                board_dump = debug_dir / f"failed_board_{ts_safe}.kicad_pcb"
+                board_dump.write_text(
+                    board_path.read_text(encoding="utf-8"), encoding="utf-8",
+                )
+                stderr_dump = debug_dir / f"failed_stderr_{ts_safe}.txt"
+                stderr_dump.write_text(
+                    f"--- cmd ---\n{' '.join(cmd)}\n\n"
+                    f"--- exit code ---\n{proc.returncode}\n\n"
+                    f"--- stdout ---\n{proc.stdout or ''}\n\n"
+                    f"--- stderr ---\n{proc.stderr or ''}\n",
+                    encoding="utf-8",
+                )
+                debug_hint = (
+                    f" (full output: {stderr_dump}; spliced board: {board_dump})"
+                )
+            except Exception:  # noqa: BLE001 — diagnostic must never mask the real error
+                debug_hint = ""
             raise RuntimeError(
                 f"kicad-cli pcb export glb failed (exit {proc.returncode}) "
-                f"for footprint {fp_name!r}: {err}"
+                f"for footprint {fp_name!r}: {err}{debug_hint}"
             )
 
         if not out_glb.is_file():
