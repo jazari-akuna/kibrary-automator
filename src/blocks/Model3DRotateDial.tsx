@@ -22,6 +22,7 @@
  */
 
 import { For } from 'solid-js';
+import type { HoverPreview } from './Model3DJogDial';
 
 type Axis = 'x' | 'y' | 'z';
 
@@ -30,6 +31,8 @@ interface Props {
   onRotate: (axis: Axis, deltaDeg: number) => void;
   /** Click the centre disk to zero all three rotation axes. */
   onReset: () => void;
+  /** Hover a wedge → ghost rotation arc on the viewer; leave / click → null. */
+  onHoverChange?: (preview: HoverPreview | null) => void;
 }
 
 const CX = 70;
@@ -109,7 +112,19 @@ export default function Model3DRotateDial(props: Props) {
           stroke-width="1"
           class="opacity-80 hover:opacity-100 cursor-pointer transition-opacity"
           data-testid={`rotate-${w.sign}${w.axis}`}
-          onClick={() => props.onRotate(w.axis, delta)}
+          onMouseEnter={() =>
+            props.onHoverChange?.({
+              kind: 'rotate',
+              axis: w.axis,
+              sign: w.sign,
+              magnitude: 90,
+            })
+          }
+          onMouseLeave={() => props.onHoverChange?.(null)}
+          onClick={() => {
+            props.onHoverChange?.(null);
+            props.onRotate(w.axis, delta);
+          }}
         />
         <text
           x={lx}

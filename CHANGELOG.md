@@ -2,6 +2,21 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.7-alpha.2] — 2026-05-07
+
+### Fixed
+- **Save → reload mangled position/rotation values**, especially rotation. Both the save path (`set_3d_offset`) and load path (`get_3d_info`) used `kiutils.Footprint.from_file`, which calls `Model.from_sexpr` with a hard `len(exp) >= 5` assertion — any `(model …)` block missing one of `(offset)/(scale)/(rotate)` (typical for SnapEDA exports) raised, desynchronising dial state from disk. Independently, the GLB renderer's `_patch_model_transform` used in-place `re.sub` that only touched sub-S-exprs already in the source — so when an override needed to add a missing `(rotate)`, it was silently dropped on first render and only "stuck" after a Save forced the file to acquire the block (the user's "chip jumps after save" symptom). Fix: new paren-depth-bounded regex helpers in `sidecar/kibrary_sidecar/model3d_ops.py` (`read_model_transform` / `write_model_transform`) default missing fields on read and INSERT them on write. Read, write, and render-time patch all go through the same helper, so legacy SnapEDA shapes round-trip cleanly. The `.kicad_mod` is no longer fully rewritten on every save — only the three sub-S-exprs inside the first `(model …)` change. UUIDs, multi-line layout, and non-canonical sub-blocks survive verbatim.
+- **App refused to close after Save.** Two compounding fragilities introduced in alpha.1's warn-before-quit: (1) `confirm_quit` used `window.close()` which **re-emits** `CloseRequested`, relying on a `QUIT_CONFIRMED` AtomicBool latch with a GTK-event-loop timing window where prevent_close could fire again; (2) the `app.close-requested` listener in `Shell.tsx` had no re-entrancy guard, so each X-click queued another `ask()` dialog + `confirm_quit` invocation, stacking native dialogs and racing destroy() calls. Fix: `confirm_quit` now calls `window.destroy()` (Tauri 2's documented force-close primitive — bypasses CloseRequested entirely); Shell.tsx wraps the listener body with a `closing` re-entrancy guard released on Cancel and on errors so subsequent clicks can retry.
+
+### Added
+- **Hover-preview arrows on the 3D part.** Hover a wedge in the position dial → a cyan `THREE.ArrowHelper` appears at the chip's centre pointing in the direction the chip would move (with KiCad → world axis remap so it matches `applyLiveDelta`'s actual translation). Hover a wedge in the rotation dial → an amber 90° arc + cone-head shows the axis + direction. Helper is parented to the scene root (not chipNodes) so it stays anchored mid-hover; `depthTest:false` + `renderOrder:999` so it draws on top; cleaned up on mouseleave / click / fresh GLB load. New `__model3dGLHoverHelperName` global lets visual-verify probe the helper kind.
+
+### Tests
+- vitest: 84 passing (was 67; +13 hover-preview, +5 close-handler, +5 dirty-lifecycle, ‒6 placeholder).
+- pytest: 326 passing (was 304; +22 round-trip transform tests covering every fixture × every realistic transform tuple, plus regression tests for `_patch_model_transform`'s missing-sub-block insertion and `get_3d_info`'s tolerance of incomplete `(model …)` blocks).
+- New playwright spec drives the full edit → Save → reload → assert-restored UI flow.
+- Regression fixture `e2e/fixtures/snapeda_offcentre/` (already committed) is now exercised by the round-trip suite — its `(model …)` block has only `(scale)` and `(rotate)`, the exact kiutils-strict-len shape that triggered the bug.
+
 ## [26.5.7-alpha.1] — 2026-05-07
 
 ### Fixed

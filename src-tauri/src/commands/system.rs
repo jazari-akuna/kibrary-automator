@@ -30,15 +30,25 @@ pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// Frontend acks the unsaved-edits prompt with "Discard". Sets the latch so
-/// the next CloseRequested propagates through, then closes the main window.
-/// (Separate from quit_app so the existing post-update flow can keep its
-/// own semantics — exit-zero from any thread — without going through the
-/// window-close path.)
+/// Frontend acks the unsaved-edits prompt (or "no edits, just close").
+/// Force-destroys the main window via `window.destroy()` — which, unlike
+/// `window.close()`, does NOT re-emit the `CloseRequested` event so the
+/// frontend cannot accidentally loop back into the prevent-close handler.
+///
+/// We also set `QUIT_CONFIRMED` as defense-in-depth: if some other window
+/// triggers CloseRequested between this command running and the destroy
+/// actually landing on the event loop, the latch lets it through.
+///
+/// The bug this fixes (v26.5.7-alpha.1): the previous `window.close()`
+/// implementation re-fired CloseRequested, relying on the latch to break
+/// the loop. On some Linux WMs the latch ordering with the GTK event loop
+/// resulted in the close being prevented anyway — the user reported "after
+/// saving the app does not want to close anymore". `destroy()` sidesteps
+/// the re-emission entirely and is the documented pattern for force-close.
 #[tauri::command]
 pub fn confirm_quit(window: tauri::Window) -> Result<(), String> {
     QUIT_CONFIRMED.store(true, Ordering::SeqCst);
-    window.close().map_err(|e| e.to_string())
+    window.destroy().map_err(|e| e.to_string())
 }
 
 #[tauri::command]

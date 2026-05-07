@@ -31,6 +31,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 // `window` at module-eval time and breaks node-environment tests).
 import { formatWarning, type RenderWarning } from './_renderWarnings';
 import { findSubstrateMesh, computeSubstrateBboxLocal } from './_substrateBbox';
+import type { HoverPreview } from './Model3DJogDial';
 
 type Triple = [number, number, number];
 
@@ -69,6 +70,13 @@ interface Props {
    * Model3DPositioner UI can later surface a checkbox to flip this on.
    */
   showAxisIndicators?: boolean;
+  /**
+   * 26.5.7 hover-preview: when non-null, paints a transient ArrowHelper
+   * (translate) or circular-arc helper (rotate) at the chip's centre so
+   * the user can see which way the wedge they're hovering would push the
+   * part. Cleared (null) on mouseleave + on click in the parent.
+   */
+  hoverPreview?: HoverPreview | null;
 }
 
 // Light test harness: expose the active scene + a counter of in-flight
@@ -145,6 +153,14 @@ declare global {
      * partial-render. Empty array on a clean load.
      */
     __model3dGLLastWarnings?: unknown[];
+    /**
+     * 26.5.7 hover-preview: the name of the helper Object3D currently
+     * mounted in the scene (string) or '' when no hover preview is
+     * active. Lets the visual-verify harness assert that hovering a
+     * specific wedge actually paints a helper without relying on
+     * scene traversal.
+     */
+    __model3dGLHoverHelperName?: string;
   }
 }
 
@@ -206,6 +222,16 @@ export default function Model3DViewerGL(props: Props) {
   // Discard stale GLB load promises by id — a fast Save→Save sequence
   // could otherwise paint an older model on top of a newer one.
   let loadId = 0;
+
+  // 26.5.7 hover-preview: when the user hovers a dial wedge the parent
+  // pushes a HoverPreview into props.hoverPreview; we paint a transient
+  // helper (ArrowHelper for translate, circular arc + cone for rotate)
+  // anchored at the chip body's centre. The helper sits in the scene
+  // ROOT (not parented to chipNodes) so it stays anchored mid-hover even
+  // if a previous jog has already moved the chip. The helper name is
+  // 'hover-preview-arrow' or 'hover-preview-rotate' so the visual-verify
+  // harness can assert its presence.
+  let hoverHelper: THREE.Object3D | null = null;
 
   // ---------------------------------------------------------------
   // Three.js scene init.
@@ -501,6 +527,10 @@ export default function Model3DViewerGL(props: Props) {
             disposeObject(loadedRoot);
             loadedRoot = null;
           }
+          // 26.5.7 hover-preview: any helper from the previous footprint's
+          // bbox no longer points at a valid chip. Clear so a Save mid-
+          // hover doesn't leave a dangling arrow at stale coordinates.
+          disposeHoverHelper();
 
           loadedRoot = gltf.scene;
 
@@ -961,6 +991,196 @@ export default function Model3DViewerGL(props: Props) {
   }
 
   // ---------------------------------------------------------------
+  // 26.5.7 hover-preview helpers — translate + rotate ghost arrows.
+  //
+  // The dial wedges emit a HoverPreview {kind, axis, sign, magnitude}
+  // on mouseenter; the parent forwards via props.hoverPreview. We
+  // paint at the chip's centre using the same KiCad → world axis
+  // remap as applyLiveDelta (KiCad +Y → world +Z, KiCad +Z → world +Y)
+  // so the arrow direction matches where a click would actually move
+  // the part.
+  //
+  // The helper sits in the SCENE ROOT, not under loadedRoot, so a
+  // pending live-delta translation on chipNodes doesn't drag it sideways
+  // mid-hover. We compute its anchor from the union bbox of chipNodes
+  // (falls back to loadedRoot bbox for the no-classification edge case).
+  // ---------------------------------------------------------------
+
+  function chipUnionBbox(): THREE.Box3 | null {
+    const union = new THREE.Box3();
+    let any = false;
+    for (const { node } of chipNodes) {
+      const b = new THREE.Box3().setFromObject(node);
+      if (b.isEmpty()) continue;
+      union.union(b);
+      any = true;
+    }
+    if (any) return union;
+    if (loadedRoot) {
+      const b = new THREE.Box3().setFromObject(loadedRoot);
+      if (!b.isEmpty()) return b;
+    }
+    return null;
+  }
+
+  function disposeHoverHelper() {
+    if (!hoverHelper || !scene) return;
+    scene.remove(hoverHelper);
+    disposeObject(hoverHelper);
+    hoverHelper = null;
+    window.__model3dGLHoverHelperName = '';
+  }
+
+  /**
+   * KiCad-axis-letter → world-space unit vector. Mirrors applyLiveDelta:
+   *   KiCad +X → world +X
+   *   KiCad +Y → world +Z   (back along the layout sheet → world depth)
+   *   KiCad +Z → world +Y   (out of the board → world up)
+   * sign flips the corresponding component.
+   */
+  function kicadAxisToWorld(axis: 'x' | 'y' | 'z', sign: '+' | '-'): THREE.Vector3 {
+    const s = sign === '+' ? 1 : -1;
+    switch (axis) {
+      case 'x': return new THREE.Vector3(s, 0, 0);
+      case 'y': return new THREE.Vector3(0, 0, s);
+      case 'z': return new THREE.Vector3(0, s, 0);
+    }
+  }
+
+  function buildTranslateHelper(
+    direction: THREE.Vector3,
+    origin: THREE.Vector3,
+    chipDim: number,
+  ): THREE.ArrowHelper {
+    // 1.5× chip max-dim so the arrow is unambiguously visible against
+    // the chip body without yanking the framing. Head-length 30 % of
+    // shaft, head-width 50 % of head-length — three.js defaults look
+    // chunky; these read as "engineering arrow" not "kid's drawing".
+    const length = Math.max(chipDim * 1.5, 0.005);
+    const helper = new THREE.ArrowHelper(
+      direction.clone().normalize(),
+      origin,
+      length,
+      0x22d3ee, // cyan — distinct from the substrate green and chip greys
+      length * 0.3,
+      length * 0.15,
+    );
+    helper.name = 'hover-preview-arrow';
+    helper.renderOrder = 999;
+    // Force the lines + cone to draw on top of the chip even though
+    // they are spatially behind it (depthTest off). Without this the
+    // arrow disappears when its tail dips into the chip body.
+    const lineMat = helper.line.material as THREE.LineBasicMaterial;
+    lineMat.depthTest = false;
+    lineMat.transparent = true;
+    helper.line.renderOrder = 999;
+    const coneMat = helper.cone.material as THREE.MeshBasicMaterial;
+    coneMat.depthTest = false;
+    coneMat.transparent = true;
+    helper.cone.renderOrder = 999;
+    return helper;
+  }
+
+  function buildRotateHelper(
+    axis: THREE.Vector3,
+    sign: '+' | '-',
+    origin: THREE.Vector3,
+    chipDim: number,
+  ): THREE.Group {
+    // 90° arc of radius ≈ 0.9× chip max-dim, drawn in the plane
+    // perpendicular to the rotation axis, with a small cone head at
+    // one end pointing in the rotation direction (right-hand rule).
+    const radius = Math.max(chipDim * 0.9, 0.004);
+    const segments = 32;
+    const startDeg = 0;
+    const endDeg = 90;
+    const dir = sign === '+' ? 1 : -1;
+
+    // Pick two basis vectors orthogonal to `axis` so we can sample the
+    // arc as r·(cosθ·u + sinθ·v). u = any unit vector ⊥ axis.
+    const axisN = axis.clone().normalize();
+    const helperUp = Math.abs(axisN.y) < 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+    const u = new THREE.Vector3().crossVectors(helperUp, axisN).normalize();
+    const v = new THREE.Vector3().crossVectors(axisN, u).normalize();
+
+    const points: THREE.Vector3[] = [];
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const deg = startDeg + (endDeg - startDeg) * t * dir;
+      const theta = (deg * Math.PI) / 180;
+      const p = new THREE.Vector3()
+        .addScaledVector(u, Math.cos(theta) * radius)
+        .addScaledVector(v, Math.sin(theta) * radius);
+      points.push(p);
+    }
+
+    const geom = new THREE.BufferGeometry().setFromPoints(points);
+    const lineMat = new THREE.LineBasicMaterial({
+      color: 0xfacc15, // amber — distinct from the cyan translate arrow
+      transparent: true,
+      depthTest: false,
+    });
+    const arc = new THREE.Line(geom, lineMat);
+    arc.renderOrder = 999;
+    arc.name = 'hover-preview-rotate-arc';
+
+    // Cone head at the arc's terminal point, oriented along the local
+    // tangent so it reads as "spinning that way."
+    const tail = points[points.length - 1].clone();
+    const tailPrev = points[points.length - 2].clone();
+    const tangent = tail.clone().sub(tailPrev).normalize();
+    const coneGeom = new THREE.ConeGeometry(radius * 0.12, radius * 0.3, 12);
+    const coneMat = new THREE.MeshBasicMaterial({
+      color: 0xfacc15,
+      transparent: true,
+      depthTest: false,
+    });
+    const cone = new THREE.Mesh(coneGeom, coneMat);
+    cone.name = 'hover-preview-rotate-cone';
+    cone.renderOrder = 999;
+    // ConeGeometry's apex points along +Y by default; rotate to align
+    // with the local tangent direction so the head sits flush at the
+    // arc's tip.
+    const defaultUp = new THREE.Vector3(0, 1, 0);
+    const q = new THREE.Quaternion().setFromUnitVectors(defaultUp, tangent);
+    cone.quaternion.copy(q);
+    cone.position.copy(tail);
+
+    const group = new THREE.Group();
+    group.name = 'hover-preview-rotate';
+    group.position.copy(origin);
+    group.add(arc);
+    group.add(cone);
+    group.renderOrder = 999;
+    return group;
+  }
+
+  function applyHoverPreview(preview: HoverPreview | null) {
+    if (!scene) return;
+    disposeHoverHelper();
+    if (!preview) return;
+    const bbox = chipUnionBbox();
+    if (!bbox) return;
+    const center = new THREE.Vector3();
+    bbox.getCenter(center);
+    const size = new THREE.Vector3();
+    bbox.getSize(size);
+    const chipDim = Math.max(size.x, size.y, size.z) || 0.005;
+    if (preview.kind === 'translate') {
+      const dir = kicadAxisToWorld(preview.axis, preview.sign);
+      hoverHelper = buildTranslateHelper(dir, center, chipDim);
+    } else {
+      // The rotate dial passes the kicad axis directly. Remap to world
+      // basis so the arc plane matches the actual rotation plane the
+      // chip would experience on click.
+      const axisVec = kicadAxisToWorld(preview.axis, '+');
+      hoverHelper = buildRotateHelper(axisVec, preview.sign, center, chipDim);
+    }
+    scene.add(hoverHelper);
+    window.__model3dGLHoverHelperName = hoverHelper.name;
+  }
+
+  // ---------------------------------------------------------------
   // Auto-frame the camera to the loaded model's bounding box. Called
   // once per successful load — the user can re-frame manually with
   // OrbitControls afterwards.
@@ -1169,11 +1389,23 @@ export default function Model3DViewerGL(props: Props) {
     applyLiveDelta();
   });
 
+  // 26.5.7 hover-preview — ghost arrow / arc on dial-wedge hover. Cheap
+  // (one Object3D allocation, one scene.add) so we don't gate on
+  // chipNodes.length: applyHoverPreview short-circuits when the bbox
+  // can't be derived. Null clears any existing helper.
+  createEffect(() => {
+    const p = props.hoverPreview ?? null;
+    applyHoverPreview(p);
+  });
+
   onCleanup(() => {
     loadId++; // discard any in-flight load
     if (rafHandle) cancelAnimationFrame(rafHandle);
     resizeObs?.disconnect();
     controls?.dispose();
+    // 26.5.7 hover-preview: drop the helper before disposing the scene
+    // so its geometry/material make it through disposeObject.
+    disposeHoverHelper();
     if (loadedRoot) {
       scene?.remove(loadedRoot);
       disposeObject(loadedRoot);

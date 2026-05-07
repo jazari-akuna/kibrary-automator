@@ -695,41 +695,17 @@ def _patch_model_transform(
 ) -> str:
     """Rewrite the first ``(model …)`` block's offset/rotate/scale.
 
-    Uses a paren-depth scanner to bound the model block (regex can't
-    reliably balance nested S-exprs), then sub-S-expr regex inside that
-    slice. No-op when the footprint has no model block.
+    Delegates to :func:`model3d_ops.write_model_transform` so missing
+    sub-S-exprs are INSERTED (not silently dropped). The earlier in-place
+    re.sub-only implementation only patched sub-S-exprs that were already
+    present — a footprint whose model block lacked ``(offset …)`` got
+    rendered without the user's offset override on first load and only
+    picked it up after Save (which forced the file to acquire the missing
+    block). This produced the user-reported "chip jumps when 3D view
+    reloads after save" symptom.
     """
-    idx = text.find("(model")
-    if idx == -1:
-        return text
-    depth = 0
-    end = idx
-    for i in range(idx, len(text)):
-        ch = text[i]
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-    block = text[idx:end]
-    block = re.sub(
-        r"\(offset\s+\(xyz[^)]*\)\s*\)",
-        f"(offset (xyz {offset[0]} {offset[1]} {offset[2]}))",
-        block,
-    )
-    block = re.sub(
-        r"\(rotate\s+\(xyz[^)]*\)\s*\)",
-        f"(rotate (xyz {rotation[0]} {rotation[1]} {rotation[2]}))",
-        block,
-    )
-    block = re.sub(
-        r"\(scale\s+\(xyz[^)]*\)\s*\)",
-        f"(scale (xyz {scale[0]} {scale[1]} {scale[2]}))",
-        block,
-    )
-    return text[:idx] + block + text[end:]
+    from kibrary_sidecar.model3d_ops import write_model_transform
+    return write_model_transform(text, offset, rotation, scale)
 
 
 _VALID_QUALITIES = {"basic", "high", "user", "job_settings"}

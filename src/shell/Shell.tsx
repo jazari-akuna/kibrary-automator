@@ -41,23 +41,46 @@ export default function Shell() {
 
   // Window-close guard: Rust intercepts CloseRequested, prevents the close,
   // and emits 'app.close-requested'. We surface the unsaved-edits prompt;
-  // if the user picks Discard we call confirm_quit which latches the
-  // "ok to quit" flag in Rust and re-closes the window.
+  // when the user picks Discard (or there are no edits) we call confirm_quit
+  // which destroys the main window — Rust's destroy() bypasses CloseRequested
+  // so there's no risk of looping back into the prevent-close handler.
+  //
+  // Re-entrancy guard (`closing`): if the user clicks the X button multiple
+  // times in quick succession, the Tauri event re-emits each time. Without
+  // this guard each click queues another `confirmDiscardIfDirty()` and
+  // potentially another invoke('confirm_quit'). Stacking native `ask()`
+  // dialogs and racing destroy() calls was the user-visible "after saving
+  // the app does not want to close anymore" bug in v26.5.7-alpha.1 — the
+  // first click's ask() dialog was already pending so subsequent clicks
+  // either piled more dialogs on top or no-op'd while the first awaited.
+  //
+  // Registered via onMount so the listen() Promise resolves *after* mount
+  // (not racing the Tauri event loop's first emit at startup).
   let unlistenClose: (() => void) | undefined;
-  listen('app.close-requested', async () => {
-    const ok = await confirmDiscardIfDirty('quit');
-    if (ok) {
-      try {
-        await invoke('confirm_quit');
-      } catch (e) {
-        console.error('[shell] confirm_quit failed:', e);
-      }
+  let closing = false;
+  onMount(async () => {
+    try {
+      unlistenClose = await listen('app.close-requested', async () => {
+        if (closing) return;
+        closing = true;
+        try {
+          const ok = await confirmDiscardIfDirty('quit');
+          if (ok) {
+            await invoke('confirm_quit');
+          } else {
+            // User cancelled — release the guard so a subsequent X-click
+            // can re-prompt.
+            closing = false;
+          }
+        } catch (e) {
+          console.error('[shell] confirm_quit failed:', e);
+          closing = false;
+        }
+      });
+    } catch (e) {
+      console.warn('[shell] close-requested listen failed:', e);
     }
-  })
-    .then((unlisten) => {
-      unlistenClose = unlisten;
-    })
-    .catch((e) => console.warn('[shell] close-requested listen failed:', e));
+  });
   onCleanup(() => unlistenClose?.());
 
   return (

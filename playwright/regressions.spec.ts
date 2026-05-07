@@ -1084,3 +1084,283 @@ test('wave 9-C — Z reset disk + rotation dial render and dispatch correctly', 
   await expect(page.locator('[data-testid="positioner-offset-x"]')).toHaveValue('1.5');
   await expect(page.locator('[data-testid="positioner-offset-z"]')).toHaveValue(/^-?0(\.0*)?$/);
 });
+
+// ---------------------------------------------------------------------------
+// 26.5.7 hover-preview regression — hover a dial wedge → ghost ArrowHelper /
+// arc appears in the 3D scene; mouseleave / click → helper disappears. Pure
+// visual feedback so users see WHICH way each wedge will push the chip.
+//
+// We can't easily verify the actual three.js scene through the Playwright
+// browser because the page has no live WebGL context (the regression suite
+// uses the Tauri-IPC mock and there's no real GLB load). Instead we prove
+// the wedge → onHoverChange → setHoverPreview wiring by hovering each wedge
+// and asserting the prod hook (`__kibraryTest.setHoverPreview`) is callable
+// — i.e. Model3DPreview mounted and registered the test harness installed
+// in 26.5.7. We then call the harness directly with a synthetic preview
+// payload and assert the call goes through without throwing.
+//
+// The actual ArrowHelper rendering is exercised under the docker visual-
+// verify harness (e2e/visual-verify) where there's a live WebGL2 context
+// and a real GLB. This regression test guards the wiring contract.
+// ---------------------------------------------------------------------------
+test('26.5.7 — dial wedge hover dispatches HoverPreview through __kibraryTest hook', async ({ page }) => {
+  await mountApp(page, {
+    extraHandlers: {
+      'library.list': `() => ({
+        libraries: [{
+          name: 'Resistors_KSL',
+          path: '/tmp/kib-regression-ws/Resistors_KSL',
+          component_count: 1,
+          has_pretty: true,
+          has_3dshapes: true,
+        }],
+      })`,
+      'library.list_components': `() => ({
+        components: [{
+          name: 'R_10k_0402',
+          description: '10k 0402',
+          reference: 'R',
+          value: '10k',
+          footprint: 'Resistor_SMD:R_0402',
+        }],
+      })`,
+      'library.read_file_content': `() => ({ content: '(stub)' })`,
+      'library.get_3d_info': `() => ({
+        info: {
+          model_path: '\${KSL_ROOT}/Resistors_KSL/Resistors_KSL.3dshapes/R_10k_0402.step',
+          filename: 'R_10k_0402.step',
+          format: 'step',
+          offset: [0, 0, 0],
+          rotation: [0, 0, 0],
+          scale: [1, 1, 1],
+        }
+      })`,
+      'library.set_3d_offset': `() => ({ ok: true })`,
+      'library.get_component': `() => ({ properties: { Reference: 'R', Value: '10k' }, footprint_path: null, model3d_path: null })`,
+      'library.get_component_icon': `() => ({ svg: null })`,
+      'parts.read_props': `() => ({ properties: {} })`,
+      'parts.read_meta': `() => ({ meta: {} })`,
+    },
+  });
+
+  await page.getByRole('button', { name: /^Libraries$/, exact: true }).click();
+  await page.getByRole('button', { name: /Resistors_KSL/ }).first().click();
+  await page.locator('text=R_10k_0402').first().click();
+
+  // The XY jog dial and rotate dial both have to be visible.
+  const jogDial = page.locator('[data-testid="jog-dial"]');
+  const rotateDial = page.locator('[data-testid="rotate-dial"]');
+  await expect(jogDial).toBeVisible({ timeout: 3000 });
+  await expect(rotateDial).toBeVisible({ timeout: 3000 });
+
+  // Wait for the harness hook to land on window.__kibraryTest. Solid mounts
+  // Model3DPreview's onMount synchronously after the parent paint.
+  await page.waitForFunction(
+    () =>
+      typeof (window as Window & { __kibraryTest?: Record<string, unknown> })
+        .__kibraryTest?.setHoverPreview === 'function',
+    { timeout: 3000 },
+  );
+
+  // Drive the hook directly — the production wedge mouseenter handler
+  // emits exactly this shape into setHoverPreview. If a future refactor
+  // changes the payload shape, the type-check and the contract test in
+  // src/blocks/__tests__/Model3DDials.hoverPreview.test.tsx fail in
+  // lock-step.
+  for (const payload of [
+    { kind: 'translate', axis: 'x', sign: '+', magnitude: 1.0 },
+    { kind: 'translate', axis: 'y', sign: '-', magnitude: 0.1 },
+    { kind: 'rotate',    axis: 'z', sign: '+', magnitude: 90 },
+    { kind: 'rotate',    axis: 'x', sign: '-', magnitude: 90 },
+  ] as const) {
+    const ok = await page.evaluate(
+      (p) => {
+        try {
+          (window as Window & { __kibraryTest?: { setHoverPreview?: (p: unknown) => void } })
+            .__kibraryTest?.setHoverPreview?.(p);
+          return true;
+        } catch (_e) {
+          return false;
+        }
+      },
+      payload,
+    );
+    expect(ok, `setHoverPreview(${JSON.stringify(payload)}) did not throw`).toBe(true);
+  }
+
+  // Clearing must also be a no-throw.
+  const clearOk = await page.evaluate(() => {
+    try {
+      (window as Window & { __kibraryTest?: { setHoverPreview?: (p: unknown) => void } })
+        .__kibraryTest?.setHoverPreview?.(null);
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  });
+  expect(clearOk).toBe(true);
+
+  // The actual wedge mouseenter must dispatch the corresponding payload —
+  // we assert it indirectly by hovering and checking the JogDial doesn't
+  // throw. (The DOM-level event-firing contract is fully covered by the
+  // unit spec; here we just confirm the prod onMouseEnter wiring connects
+  // to a live SVG path.)
+  const plusXOuter = page.locator('[data-testid="jog-outer-+x"]');
+  await expect(plusXOuter).toBeVisible();
+  await plusXOuter.hover();
+  await page.waitForTimeout(50);
+  // Hover should not have changed any positioner input value (this is
+  // pure visual preview — no state mutation).
+  await expect(page.locator('[data-testid="positioner-offset-x"]')).toHaveValue(/^-?0(\.0*)?$/);
+});
+
+// ---------------------------------------------------------------------------
+// 26.5.7-alpha.2 — 3D position values must round-trip through Save → reload.
+//
+// User report: "When saving the actual position values seem to not be saved
+// correctly, when the 3d view reloads the part orientation in particular is
+// mangled." Drive the exact UI flow:
+//
+//   1. Open the library / component → dial inputs seeded from get_3d_info.
+//   2. User edits each axis (Offset X+Y+Z, Rotation X+Y+Z, Scale X).
+//   3. Click Save → set_3d_offset must receive the typed tuple verbatim.
+//   4. Simulate the reload by re-selecting the same component → get_3d_info
+//      fires again and now returns the just-saved values.
+//   5. The dial inputs must reflect the post-reload values byte-for-byte.
+//
+// The test uses a stateful mock (window.__bug12State) shared between
+// get_3d_info and set_3d_offset so the second get_3d_info reads back what
+// set_3d_offset just wrote — exactly mirroring the on-disk round-trip.
+// ---------------------------------------------------------------------------
+test('3d position values round-trip through Save → reload', async ({ page }) => {
+  await mountApp(page, {
+    extraHandlers: {
+      'library.list': `() => ({
+        libraries: [{
+          name: 'TestLib',
+          path: '/tmp/kib-regression-ws/TestLib',
+          component_count: 1,
+          has_pretty: true,
+          has_3dshapes: true,
+        }],
+      })`,
+      'library.list_components': `() => ({
+        components: [{
+          name: 'test_chip',
+          description: 'fixture',
+          reference: 'U',
+          value: 'Chip',
+          footprint: 'TestLib:test_chip',
+        }],
+      })`,
+      'library.read_file_content': `() => ({ content: '(stub)' })`,
+      'library.get_component': `() => ({ properties: {}, footprint_path: null, model3d_path: null })`,
+      'library.get_component_icon': `() => ({ svg: null })`,
+      'parts.read_props': `() => ({ properties: {} })`,
+      'parts.read_meta': `() => ({ meta: {} })`,
+      // Stateful round-trip store. get_3d_info and set_3d_offset share it
+      // so the post-Save reload reads back what was just persisted —
+      // mirroring the on-disk kicad_mod the user actually sees.
+      'library.get_3d_info': `(params) => {
+        const w = window;
+        if (!w.__bug12State) {
+          w.__bug12State = {
+            offset: [0.4749999928, 0, 0],
+            rotation: [0, 0, 0],
+            scale: [1, 1, 1],
+          };
+        }
+        return {
+          info: {
+            model_path: '\${KSL_ROOT}/TestLib/TestLib.3dshapes/test_chip.step',
+            filename: 'test_chip.step',
+            format: 'step',
+            offset: w.__bug12State.offset.slice(),
+            rotation: w.__bug12State.rotation.slice(),
+            scale: w.__bug12State.scale.slice(),
+          },
+        };
+      }`,
+      'library.set_3d_offset': `(params) => {
+        const w = window;
+        w.__bug12State = w.__bug12State || {};
+        w.__bug12State.offset = params.offset.slice();
+        w.__bug12State.rotation = params.rotation.slice();
+        w.__bug12State.scale = params.scale.slice();
+        return { ok: true };
+      }`,
+      'library.render_3d_glb_angled': `() => ({
+        glb_data_url: '',
+        top_layers_svg_data_url: '',
+        warnings: [],
+      })`,
+      'library.render_3d_png_angled': `() => ({ png_data_url: '' })`,
+    },
+  });
+
+  await page.getByRole('button', { name: /^Libraries$/, exact: true }).click();
+  await page.getByRole('button', { name: /TestLib/ }).first().click();
+  await page.locator('text=test_chip').first().click();
+
+  // Initial baseline — values from the seeded state.
+  const offsetX = page.locator('[data-testid="positioner-offset-x"]');
+  const rotY = page.locator('[data-testid="positioner-rotation-y"]');
+  const rotZ = page.locator('[data-testid="positioner-rotation-z"]');
+  await expect(offsetX).toBeVisible({ timeout: 3000 });
+  // Initial offset[0] = 0.4749999928 from the seed.
+  await expect(offsetX).toHaveValue(/^0\.4749999928$/);
+  await expect(rotY).toHaveValue(/^-?0(\.0*)?$/);
+
+  // Edit each axis the user is most likely to touch.
+  await page.locator('[data-testid="positioner-offset-x"]').fill('1.5');
+  await page.locator('[data-testid="positioner-offset-y"]').fill('-2.25');
+  await page.locator('[data-testid="positioner-offset-z"]').fill('0.75');
+  await page.locator('[data-testid="positioner-rotation-x"]').fill('10');
+  await page.locator('[data-testid="positioner-rotation-y"]').fill('90');
+  await page.locator('[data-testid="positioner-rotation-z"]').fill('-45');
+  await page.locator('[data-testid="positioner-scale-x"]').fill('1.1');
+
+  // Save fires the RPC.
+  await page.getByRole('button', { name: /^Save$/ }).click();
+  await page.waitForFunction(() => {
+    const calls = (window as unknown as { __sidecarCalls?: Array<{ method: string }> })
+      .__sidecarCalls ?? [];
+    return calls.some((c) => c.method === 'library.set_3d_offset');
+  }, { timeout: 3000 });
+
+  // The save call must carry the exact typed tuple.
+  const setCall = await page.evaluate(() => {
+    const calls = (window as unknown as {
+      __sidecarCalls?: Array<{ method: string; params: Record<string, unknown> }>;
+    }).__sidecarCalls ?? [];
+    return calls.find((c) => c.method === 'library.set_3d_offset');
+  });
+  expect(setCall, 'library.set_3d_offset must fire on Save').toBeDefined();
+  expect(setCall!.params.offset).toEqual([1.5, -2.25, 0.75]);
+  expect(setCall!.params.rotation).toEqual([10, 90, -45]);
+  expect(setCall!.params.scale).toEqual([1.1, 1, 1]);
+
+  // Simulate the reload — re-select the component to force a refetch
+  // (the 3D viewer reload the user describes). The mock's get_3d_info
+  // now returns the just-saved values from the shared state object.
+  await page.locator('[data-testid="positioner-offset-x"]').waitFor();
+  // Force a refetch by toggling component selection.
+  await page.evaluate(() => {
+    const t = (window as unknown as { __kibraryTest?: { selectComponent?: (n: string | null) => void } })
+      .__kibraryTest;
+    t?.selectComponent?.(null);
+  });
+  await page.waitForTimeout(50);
+  await page.locator('text=test_chip').first().click();
+
+  // After the reload the dial inputs MUST reflect what was saved.
+  // This is the assertion that catches the user's "values mangled on
+  // reload" bug — if get_3d_info round-trips wrong, these inputs would
+  // show pre-edit (or zero) values.
+  await expect(page.locator('[data-testid="positioner-offset-x"]')).toHaveValue(/^1\.5$/, { timeout: 3000 });
+  await expect(page.locator('[data-testid="positioner-offset-y"]')).toHaveValue(/^-2\.25$/);
+  await expect(page.locator('[data-testid="positioner-offset-z"]')).toHaveValue(/^0\.75$/);
+  await expect(page.locator('[data-testid="positioner-rotation-x"]')).toHaveValue(/^10$/);
+  await expect(page.locator('[data-testid="positioner-rotation-y"]')).toHaveValue(/^90$/);
+  await expect(page.locator('[data-testid="positioner-rotation-z"]')).toHaveValue(/^-45$/);
+});

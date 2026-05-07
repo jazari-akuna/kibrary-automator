@@ -18,10 +18,13 @@ pub static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
 
 /// Latched once the user has confirmed "Discard" in the unsaved-edits prompt
 /// (or via the explicit quit_app command after the app handed control back).
-/// This breaks the otherwise-infinite loop where:
-///   1. user closes the window → Rust prevents close, asks frontend
-///   2. frontend confirms, calls app.exit(0) which fires CloseRequested again
-///   3. without this flag, step 1 would re-prevent → app never quits.
+///
+/// Since v26.5.7-alpha.2 `confirm_quit` uses `window.destroy()` which does
+/// NOT re-emit CloseRequested — so the latch is no longer strictly required
+/// to break a re-entry loop. It's kept as defense-in-depth: if any code
+/// path triggers CloseRequested between `confirm_quit` running and the
+/// destroy actually landing on the event loop, the latch lets that close
+/// through unconditionally instead of re-prompting the user.
 pub static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
 // NOTE: do NOT mark this `#[tokio::main]`. Tauri owns the async runtime

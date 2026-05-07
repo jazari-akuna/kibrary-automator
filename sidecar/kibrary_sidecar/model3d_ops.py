@@ -6,6 +6,7 @@ Supported 3D model formats: .step, .stp, .wrl, .glb
 """
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -16,6 +17,172 @@ _KSL_ROOT = "${KSL_ROOT}"
 
 # Extensions we accept as 3D model sources.
 _SUPPORTED_EXTS = frozenset({".step", ".stp", ".wrl", ".glb"})
+
+
+# ---------------------------------------------------------------------------
+# Robust (model …) block reader/writer — bypasses kiutils for the
+# offset/rotate/scale round-trip.
+#
+# Why bypass kiutils:
+#
+# * ``kiutils.Footprint.from_file`` ultimately calls
+#   ``kiutils.footprint.Model.from_sexpr`` which ASSERTS ``len(exp) >= 5``
+#   (path + 3 sub-S-exprs). KiCad accepts ``(model PATH (offset …))``
+#   alone, ``(model PATH (scale …) (rotate …))``, or any other partial
+#   combination — kiutils refuses to parse them. The user-reported bug
+#   "values not saved correctly when 3D view reloads" reproduces here:
+#   on a legacy / SnapEDA footprint missing one of the sub-blocks,
+#   ``set_3d_offset`` raises and the dial state then drifts out of sync
+#   with the on-disk values.
+#
+# * ``kiutils.Footprint.to_file`` rewrites the ENTIRE footprint —
+#   destroying UUIDs, embedded_fonts, generator_version, multi-line
+#   formatting etc. We only want to rewrite the (offset/scale/rotate)
+#   sub-S-exprs inside the FIRST (model …) block.
+#
+# These helpers locate the first ``(model …)`` block by paren-depth scan,
+# then read or rewrite the three sub-S-exprs in place. Missing sub-S-exprs
+# are inserted (write side) or default to (0,0,0)/(1,1,1) (read side).
+# ---------------------------------------------------------------------------
+
+
+_MODEL_OPEN_RE = re.compile(r'\(model\b', re.IGNORECASE)
+_MODEL_PATH_RE = re.compile(
+    r'\(model\s+("[^"]+"|[^\s\(\)]+)',
+    flags=re.IGNORECASE,
+)
+# Capture the X/Y/Z numbers from a (offset|scale|rotate) sub-S-expr. Both
+# the inline form ``(offset (xyz 1 2 3))`` and KiCad's multi-line form
+# (``(offset\n\t(xyz 1 2 3)\n)``) are matched; ``\s+`` straddles newlines.
+_XYZ_NUM = r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
+_OFFSET_RE = re.compile(
+    rf"\(offset\s+\(xyz\s+({_XYZ_NUM})\s+({_XYZ_NUM})\s+({_XYZ_NUM})\s*\)\s*\)",
+    re.IGNORECASE,
+)
+_SCALE_RE = re.compile(
+    rf"\(scale\s+\(xyz\s+({_XYZ_NUM})\s+({_XYZ_NUM})\s+({_XYZ_NUM})\s*\)\s*\)",
+    re.IGNORECASE,
+)
+_ROTATE_RE = re.compile(
+    rf"\(rotate\s+\(xyz\s+({_XYZ_NUM})\s+({_XYZ_NUM})\s+({_XYZ_NUM})\s*\)\s*\)",
+    re.IGNORECASE,
+)
+
+
+Triple = tuple[float, float, float]
+
+
+def _find_first_model_block(text: str) -> tuple[int, int] | None:
+    """Locate the first ``(model …)`` block in *text* and return
+    ``(start_idx, end_idx)`` (half-open, end is the index AFTER the
+    matching close paren). Returns ``None`` when no block is present."""
+    m = _MODEL_OPEN_RE.search(text)
+    if m is None:
+        return None
+    start = m.start()
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return start, i + 1
+    return None  # unbalanced — caller treats as no block
+
+
+def read_model_transform(
+    text: str,
+) -> tuple[str, Triple, Triple, Triple] | None:
+    """Read the first ``(model …)`` block's path + offset/rotate/scale.
+
+    Returns ``(path, offset, rotation, scale)`` or ``None`` when no model
+    block exists. Missing sub-S-exprs default to ``(0, 0, 0)`` for offset
+    and rotation, ``(1, 1, 1)`` for scale — matching KiCad's interpretation
+    of the omitted form.
+
+    Path is returned with surrounding quotes stripped if quoted.
+    """
+    span = _find_first_model_block(text)
+    if span is None:
+        return None
+    block = text[span[0]:span[1]]
+
+    pm = _MODEL_PATH_RE.match(block)
+    if pm is None:
+        return None
+    raw_path = pm.group(1)
+    path = raw_path[1:-1] if raw_path.startswith('"') else raw_path
+
+    def _parse(rx: re.Pattern, default: Triple) -> Triple:
+        m = rx.search(block)
+        if m is None:
+            return default
+        return (float(m.group(1)), float(m.group(2)), float(m.group(3)))
+
+    offset = _parse(_OFFSET_RE, (0.0, 0.0, 0.0))
+    rotation = _parse(_ROTATE_RE, (0.0, 0.0, 0.0))
+    scale = _parse(_SCALE_RE, (1.0, 1.0, 1.0))
+    return path, offset, rotation, scale
+
+
+def write_model_transform(
+    text: str,
+    offset: Triple,
+    rotation: Triple,
+    scale: Triple,
+) -> str:
+    """Rewrite the first ``(model …)`` block's offset/rotate/scale.
+
+    Each sub-S-expr is replaced if present, inserted otherwise — the
+    write is therefore tolerant of the legacy/SnapEDA shapes that omit
+    one or more of (offset/scale/rotate). The model path and any other
+    sub-S-exprs (``(opacity …)``, ``hide`` flag, ``(name …)`` etc.) are
+    preserved. Indentation of inserted blocks mirrors the closest existing
+    sub-S-expr's indent, falling back to a single tab so kicad-cli's
+    tokenizer doesn't see an inconsistent layout.
+    """
+    span = _find_first_model_block(text)
+    if span is None:
+        return text
+    start, end = span
+    block = text[start:end]
+
+    # Determine the indent used for sub-S-exprs in this block — pick
+    # the indent of the first sub-S-expr after the path, falling back
+    # to a single tab. This keeps re-emitted blocks visually consistent
+    # with the source file's existing style (KiCad emits multi-line
+    # tabs; some hand-written files use 2 spaces).
+    indent_match = re.search(r"\n([\t ]+)\(", block)
+    indent = indent_match.group(1) if indent_match else "\t\t"
+
+    def _make(name: str, vals: Triple) -> str:
+        return f"({name} (xyz {vals[0]} {vals[1]} {vals[2]}))"
+
+    def _replace_or_insert(
+        block_text: str, rx: re.Pattern, name: str, vals: Triple,
+    ) -> str:
+        new_clause = _make(name, vals)
+        if rx.search(block_text):
+            return rx.sub(new_clause, block_text, count=1)
+        # Insert immediately before the closing ')' of the (model …) block.
+        # Preserve a trailing newline + indent to keep the close paren on
+        # its own line (KiCad-canonical layout).
+        # Find the rightmost ')' (the close of the model block).
+        rstrip = block_text.rstrip()
+        if rstrip.endswith(")"):
+            inner = rstrip[:-1].rstrip("\n").rstrip(" \t")
+            tail = block_text[len(rstrip):]
+            return f"{inner}\n{indent}{new_clause}\n{indent[:-1] or ''})" + tail
+        return block_text  # malformed — skip insertion silently
+
+    # Rotate is replaced/inserted last so its insertion sits AFTER offset
+    # and scale (the KiCad-canonical order is offset / scale / rotate).
+    block = _replace_or_insert(block, _OFFSET_RE, "offset", offset)
+    block = _replace_or_insert(block, _SCALE_RE, "scale", scale)
+    block = _replace_or_insert(block, _ROTATE_RE, "rotate", rotation)
+    return text[:start] + block + text[end:]
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +249,12 @@ def set_3d_offset(
     Library layout (committed):
         <lib_dir>/<lib_name>.pretty/<component>.kicad_mod
 
+    Uses an in-place regex rewrite (see :func:`write_model_transform`) so
+    the rest of the footprint S-expression — UUIDs, embedded_fonts, layer
+    aliases, multi-line formatting — is preserved verbatim. Tolerates
+    legacy / SnapEDA model blocks that omit one or more of
+    ``(offset)``/``(scale)``/``(rotate)``.
+
     Raises
     ------
     FileNotFoundError
@@ -107,15 +280,11 @@ def set_3d_offset(
             )
         mod_path = candidate
 
-    fp = Footprint().from_file(str(mod_path))
-    if not fp.models:
+    text = mod_path.read_text(encoding="utf-8")
+    if _find_first_model_block(text) is None:
         raise ValueError(f"no 3D model block in {mod_path}")
-
-    m = fp.models[0]
-    m.pos.X, m.pos.Y, m.pos.Z = offset
-    m.rotate.X, m.rotate.Y, m.rotate.Z = rotation
-    m.scale.X, m.scale.Y, m.scale.Z = scale
-    fp.to_file(str(mod_path))
+    new_text = write_model_transform(text, offset, rotation, scale)
+    mod_path.write_text(new_text, encoding="utf-8")
 
 
 def add_3d_model(lib_dir: Path, component_name: str, src_path: Path) -> Path:

@@ -12,10 +12,28 @@
 
 import { For } from 'solid-js';
 
+/**
+ * 26.5.7 hover-preview contract: when the user hovers a wedge the dial
+ * emits a payload describing the move that a click WOULD perform; the
+ * parent forwards that to the 3D viewer which paints a transient ghost
+ * ArrowHelper. `null` means "no wedge under the cursor any more" — the
+ * viewer wipes the helper. The translate-dial only ever emits axis
+ * 'x' | 'y' (Z lives on the separate Model3DJogZ column).
+ */
+export interface HoverPreview {
+  kind: 'translate' | 'rotate';
+  axis: 'x' | 'y' | 'z';
+  sign: '+' | '-';
+  /** Step magnitude (mm for translate, degrees for rotate). */
+  magnitude: number;
+}
+
 interface Props {
   onJog: (axis: 'x' | 'y', amount: number) => void;
   /** Click the centre disk to zero X and Y offset. */
   onReset: () => void;
+  /** Hover a wedge → ghost arrow on the 3D viewer; leave / click → null. */
+  onHoverChange?: (preview: HoverPreview | null) => void;
 }
 
 const CX = 90;
@@ -146,7 +164,22 @@ export default function Model3DJogDial(props: Props) {
           stroke-width="1"
           class="opacity-80 hover:opacity-100 cursor-pointer transition-opacity"
           data-testid={`jog-${w.ring}-${w.sign}${w.axis}`}
-          onClick={() => props.onJog(w.axis, delta)}
+          onMouseEnter={() =>
+            props.onHoverChange?.({
+              kind: 'translate',
+              axis: w.axis,
+              sign: w.sign,
+              magnitude: Math.abs(delta),
+            })
+          }
+          onMouseLeave={() => props.onHoverChange?.(null)}
+          onClick={() => {
+            // Click consumes the hover (the part is about to actually move
+            // — the ghost arrow has done its job and would otherwise linger
+            // on top of the now-moved chip).
+            props.onHoverChange?.(null);
+            props.onJog(w.axis, delta);
+          }}
         />
         <text
           x={lx}

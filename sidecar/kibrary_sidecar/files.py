@@ -107,27 +107,33 @@ def get_3d_info(
     Returns ``None`` when the footprint has no ``(model ...)`` block or when
     the footprint file cannot be found / parsed.
     """
-    from kiutils.footprint import Footprint
+    from kibrary_sidecar.model3d_ops import read_model_transform
 
     mod_path = _resolve_kicad_mod(staging_dir, lcsc, lib_dir, component_name)
     if mod_path is None or not mod_path.is_file():
         return None
 
     try:
-        fp = Footprint().from_file(str(mod_path))
-    except Exception:
+        text = mod_path.read_text(encoding="utf-8")
+    except OSError:
         return None
 
-    if not fp.models:
+    # Use the regex-based reader rather than kiutils. kiutils' Model parser
+    # asserts ``len(exp) >= 5`` (path + 3 sub-S-exprs) and raises on legacy
+    # / SnapEDA blocks that omit one or more of (offset/scale/rotate) —
+    # exactly the kicad_mod shapes that produced the user-reported "values
+    # not saved correctly when 3D view reloads" bug. The regex reader
+    # defaults missing sub-blocks to (0,0,0)/(1,1,1), matching KiCad's
+    # interpretation and keeping the round-trip byte-identical.
+    parsed = read_model_transform(text)
+    if parsed is None:
         return None
-
-    model = fp.models[0]
-    filename = Path(model.path.replace("\\", "/")).name
+    raw_path, offset, rotation, scale = parsed
+    filename = Path(raw_path.replace("\\", "/")).name
     fmt = Path(filename).suffix.lstrip(".").lower()
 
     # Resolve ${KSL_ROOT} → workspace root for human display + existence check.
     # KSL_ROOT is the workspace; in library mode the workspace is `lib_dir.parent`.
-    raw_path = model.path
     resolved_path = raw_path
     file_exists: bool | None = None
     if "${KSL_ROOT}" in raw_path:
@@ -148,9 +154,9 @@ def get_3d_info(
         "file_exists": file_exists,
         "filename": filename,
         "format": fmt,
-        "offset": [model.pos.X, model.pos.Y, model.pos.Z],
-        "rotation": [model.rotate.X, model.rotate.Y, model.rotate.Z],
-        "scale": [model.scale.X, model.scale.Y, model.scale.Z],
+        "offset": list(offset),
+        "rotation": list(rotation),
+        "scale": list(scale),
     }
 
 

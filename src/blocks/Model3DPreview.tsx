@@ -17,7 +17,7 @@
  * with an editable Model3DPositioner block.
  */
 
-import { createEffect, createMemo, createResource, createSignal, onCleanup, Show } from 'solid-js';
+import { createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { currentWorkspace } from '~/state/workspace';
@@ -27,6 +27,7 @@ import Model3DPositioner from '~/blocks/Model3DPositioner';
 import Model3DViewer from '~/blocks/Model3DViewer';
 import Model3DViewerGL from '~/blocks/Model3DViewerGL';
 import Model3DJogDial from '~/blocks/Model3DJogDial';
+import type { HoverPreview } from '~/blocks/Model3DJogDial';
 import Model3DJogZ from '~/blocks/Model3DJogZ';
 import Model3DRotateDial from '~/blocks/Model3DRotateDial';
 
@@ -106,6 +107,33 @@ export default function Model3DPreview(props: Props) {
     { axis: 'x' | 'y' | 'z'; amount: number } | null
   >(null);
   const [forceRotation, setForceRotation] = createSignal<Triple | null>(null);
+
+  // ---- 26.5.7 hover-preview wiring (kept in this distinct block to
+  //      ease parallel-agent merges). The dials emit a HoverPreview on
+  //      mouseenter / mouseleave; we forward it to the GL viewer which
+  //      paints a transient ghost ArrowHelper for translates and a
+  //      circular-arc helper for rotations. Pure visual feedback —
+  //      hovering must NOT mutate any positioner state.
+  const [hoverPreview, setHoverPreview] = createSignal<HoverPreview | null>(null);
+
+  // Test hook: lets the visual-verify harness drive the hover signal
+  // directly without faking WebDriver mouseenter/mouseleave on the
+  // SVG <path> wedges. Mirrors the runtime-only zoomToChip hook in
+  // Model3DViewerGL.tsx — installed on mount, removed on unmount.
+  onMount(() => {
+    const w = window as unknown as { __kibraryTest?: Record<string, unknown> };
+    w.__kibraryTest = w.__kibraryTest ?? {};
+    (w.__kibraryTest as Record<string, unknown>).setHoverPreview = (
+      p: HoverPreview | null,
+    ) => setHoverPreview(p);
+  });
+  onCleanup(() => {
+    const w = window as unknown as { __kibraryTest?: Record<string, unknown> };
+    if (w.__kibraryTest && 'setHoverPreview' in w.__kibraryTest) {
+      delete (w.__kibraryTest as Record<string, unknown>).setHoverPreview;
+    }
+    setHoverPreview(null);
+  });
 
   // Seed the live signals once the model info loads (and any time the
   // selected component changes — keeps live state in sync with the new
@@ -287,6 +315,7 @@ export default function Model3DPreview(props: Props) {
                   rotation={liveRotation()}
                   scale={liveScale()}
                   savedRev={savedRev()}
+                  hoverPreview={hoverPreview()}
                   // alpha.5-axes-shrink: ±X / ±Y / ±Z indicators default
                   // OFF (vision-agent flagged them as dominating the
                   // canvas). Future positioner-toolbar checkbox can flip
@@ -314,6 +343,7 @@ export default function Model3DPreview(props: Props) {
               <div class="flex items-center justify-center gap-3 pt-2">
                 <Model3DJogDial
                   onJog={(axis, amount) => setJogDelta({ axis, amount })}
+                  onHoverChange={setHoverPreview}
                   onReset={() => {
                     // Restore X+Y to the ORIGINAL (last-saved) values but
                     // preserve the current Z. Falls back to 0 only if the
@@ -344,6 +374,7 @@ export default function Model3DPreview(props: Props) {
                   onRotate={(axis, amount) =>
                     setRotateJogDelta({ axis, amount })
                   }
+                  onHoverChange={setHoverPreview}
                   onReset={() => {
                     // Restore all three rotation axes to the ORIGINAL
                     // (last-saved) values, not zero — clicking RESET must
