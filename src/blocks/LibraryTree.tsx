@@ -10,6 +10,7 @@ import { createResource, createSignal, For, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { currentWorkspace } from '~/state/workspace';
 import { selectedLib, setSelectedLib, setSelectedComponent, setMultiSelected } from '~/state/librariesRoom';
+import { confirmDiscardIfDirty, setIsDirty } from '~/state/dirty';
 
 interface LibraryInfo {
   name: string;
@@ -62,7 +63,16 @@ export default function LibraryTree() {
     });
   };
 
-  const selectLib = (name: string) => {
+  const selectLib = async (name: string): Promise<boolean> => {
+    // No-op if the user clicks the already-selected library — preserves
+    // toggle-expand semantics without prompting for discard.
+    if (selectedLib() !== name) {
+      const ok = await confirmDiscardIfDirty('switch');
+      if (!ok) return false;
+      // The active component is being torn down; clear the dirty flag so
+      // a stale "unsaved" assertion can't survive the swap.
+      setIsDirty(false);
+    }
     setSelectedLib(name);
     setSelectedComponent(null);
     setMultiSelected(new Set<string>());
@@ -72,6 +82,7 @@ export default function LibraryTree() {
       next.add(name);
       return next;
     });
+    return true;
   };
 
   return (
@@ -153,9 +164,13 @@ export default function LibraryTree() {
                         ? 'bg-zinc-300 dark:bg-zinc-600 text-zinc-900 dark:text-zinc-100'
                         : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700'
                       }`}
-                    onClick={() => {
-                      selectLib(lib.name);
-                      toggleExpand(lib.name);
+                    onClick={async () => {
+                      // Only toggle the expand-arrow if we actually
+                      // committed to switching libraries — otherwise the
+                      // user cancelled out of the discard prompt and we
+                      // must leave the expand state untouched.
+                      const proceed = await selectLib(lib.name);
+                      if (proceed) toggleExpand(lib.name);
                     }}
                   >
                     <span class="text-zinc-500 dark:text-zinc-400 w-3 flex-shrink-0">

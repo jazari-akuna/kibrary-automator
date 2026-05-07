@@ -1,7 +1,9 @@
 use crate::embedded_secrets;
 use crate::sidecar::Sidecar;
+use crate::QUIT_CONFIRMED;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tauri::State;
 
 /// Returns the Tauri-shell binary version (the Rust crate's package version,
@@ -18,9 +20,25 @@ pub fn app_version(app: tauri::AppHandle) -> String {
 /// "Quit Kibrary" and we call this to terminate the running (now-stale)
 /// process. Re-launching is intentionally left to the user — auto-relaunch
 /// from inside a polkit-mediated install transition is unreliable.
+///
+/// Also used by the unsaved-edits confirm flow — the frontend calls this
+/// after the user picks "Discard" so app.exit() bypasses the close-requested
+/// gate (see the QUIT_CONFIRMED latch in main.rs).
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
+    QUIT_CONFIRMED.store(true, Ordering::SeqCst);
     app.exit(0);
+}
+
+/// Frontend acks the unsaved-edits prompt with "Discard". Sets the latch so
+/// the next CloseRequested propagates through, then closes the main window.
+/// (Separate from quit_app so the existing post-update flow can keep its
+/// own semantics — exit-zero from any thread — without going through the
+/// window-close path.)
+#[tauri::command]
+pub fn confirm_quit(window: tauri::Window) -> Result<(), String> {
+    QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+    window.close().map_err(|e| e.to_string())
 }
 
 #[tauri::command]

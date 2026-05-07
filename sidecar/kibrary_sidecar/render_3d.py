@@ -163,6 +163,18 @@ _LAYER_ALIASES = {
     "User.Eco2":     "Eco2.User",
 }
 
+# 26.5.6-alpha.5: kicad-cli rejects `(layer "*.Cu")` (singular form with
+# a wildcard layer name) — wildcards are valid only inside the PLURAL
+# `(layers …)` form. The user's IPEX 20952-024E-02 .kicad_mod (after
+# round-tripping through whatever editor or import path produced their
+# on-disk library copy) has zone keepouts shaped as `(layer "*.Cu")`,
+# triggering kicad-cli's "Failed to load board" exit-3 with no other
+# diagnostic. Repair both the unquoted and quoted singular-wildcard
+# forms back to plural before splicing into the empty-board template.
+_SINGULAR_WILDCARD_LAYER_RE = re.compile(
+    r'\(layer\s+("(?:\*\.[^"]+|[A-Z]\*\.[^"]+)"|\*\.\S+)\s*\)'
+)
+
 
 def _sanitise_footprint(
     footprint_file: Path,
@@ -238,6 +250,9 @@ def _sanitise_footprint_with_warnings(
             f'(layer "{canonical}")',
             text,
         )
+    # 26.5.6-alpha.5: repair (layer "*.Cu") (singular wildcard, invalid)
+    # → (layers "*.Cu") (plural). See _SINGULAR_WILDCARD_LAYER_RE for why.
+    text = _SINGULAR_WILDCARD_LAYER_RE.sub(r'(layers \1)', text)
     text, warnings = _rewrite_or_strip_model_blocks_with_warnings(
         text, lib_dir, footprint_file=footprint_file
     )
@@ -987,6 +1002,13 @@ def _splice_into_template(footprint_text: str) -> str:
 # embedded here to avoid depending on the system pcbnew Python module at
 # render time. The (layers) table defines all canonical layer names so a
 # spliced footprint that references e.g. ``"Cmts.User"`` resolves cleanly.
+#
+# A note on the (general (thickness 1.6)) value below: kicad-cli renders
+# the substrate at `thickness − 2·copper_thickness − soldermask` ≈ 1.51 mm
+# (KiCad 9 default copper 0.035 mm × 2 + ~0.020 mm mask shave). To pin
+# the rendered dielectric to an exact value, add an explicit (stackup …)
+# block under (setup …); changing this constant alone won't get you 1.6 mm
+# of *visible* substrate.
 _EMPTY_BOARD_TEMPLATE = """\
 (kicad_pcb
 \t(version 20241229)

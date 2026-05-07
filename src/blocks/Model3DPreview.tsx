@@ -17,11 +17,12 @@
  * with an editable Model3DPositioner block.
  */
 
-import { createEffect, createMemo, createResource, createSignal, Show } from 'solid-js';
+import { createEffect, createMemo, createResource, createSignal, onCleanup, Show } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { currentWorkspace } from '~/state/workspace';
 import { pushToast } from '~/state/toasts';
+import { computeIsDirty, setIsDirty } from '~/state/dirty';
 import Model3DPositioner from '~/blocks/Model3DPositioner';
 import Model3DViewer from '~/blocks/Model3DViewer';
 import Model3DViewerGL from '~/blocks/Model3DViewerGL';
@@ -117,6 +118,35 @@ export default function Model3DPreview(props: Props) {
       setLiveScale(m.scale);
     }
   });
+
+  // Drive the global "unsaved edits" flag. The baseline is the most recent
+  // info() snapshot (which is refetched after a successful save, so saving
+  // collapses the diff back to zero). savedRev() is read so that a manual
+  // refetch+rev-bump from the positioner forces this effect to re-evaluate
+  // even if info() is byref-identical.
+  createEffect(() => {
+    const m = info();
+    savedRev();
+    if (!m) {
+      setIsDirty(false);
+      return;
+    }
+    setIsDirty(
+      computeIsDirty(
+        liveOffset(),
+        m.offset,
+        liveRotation(),
+        m.rotation,
+        liveScale(),
+        m.scale,
+      ),
+    );
+  });
+
+  // Belt-and-braces: if Model3DPreview unmounts (e.g. user clears the
+  // workspace, navigates to a different room), don't leave a stale dirty
+  // flag asserting "unsaved" forever — there's no positioner to save from.
+  onCleanup(() => setIsDirty(false));
 
   // alpha.28: prefer the WebGL2 / three.js viewer (60+ fps interactive
   // GLB render). If WebGL2 init fails (older WebKitGTK builds), the GL
@@ -285,12 +315,15 @@ export default function Model3DPreview(props: Props) {
                 <Model3DJogDial
                   onJog={(axis, amount) => setJogDelta({ axis, amount })}
                   onReset={() => {
-                    // Zero X+Y but preserve Z. Push through both the live
-                    // signal (so the viewer snaps immediately) and the
+                    // Restore X+Y to the ORIGINAL (last-saved) values but
+                    // preserve the current Z. Falls back to 0 only if the
+                    // model info hasn't loaded yet. Push through the live
+                    // signal (so the viewer snaps immediately) AND the
                     // positioner's forceOffset prop (so the form fields
-                    // also display 0 and the next Save persists it).
+                    // mirror it; next Save persists).
+                    const orig = info()?.offset;
                     const z = liveOffset()[2];
-                    const next: Triple = [0, 0, z];
+                    const next: Triple = [orig?.[0] ?? 0, orig?.[1] ?? 0, z];
                     setLiveOffset(next);
                     setForceOffset(next);
                   }}
@@ -298,13 +331,11 @@ export default function Model3DPreview(props: Props) {
                 <Model3DJogZ
                   onJog={(amount) => setJogDelta({ axis: 'z', amount })}
                   onReset={() => {
-                    // Zero Z but preserve X+Y. Push through both the live
-                    // signal (so the viewer snaps immediately) and the
-                    // positioner's forceOffset prop (so the form fields
-                    // also display 0 in the Z column and the next Save
-                    // persists it).
+                    // Restore Z to the ORIGINAL (last-saved) value but
+                    // preserve the current X+Y. Same dual-write pattern.
+                    const orig = info()?.offset;
                     const [x, y] = liveOffset();
-                    const next: Triple = [x, y, 0];
+                    const next: Triple = [x, y, orig?.[2] ?? 0];
                     setLiveOffset(next);
                     setForceOffset(next);
                   }}
@@ -314,9 +345,15 @@ export default function Model3DPreview(props: Props) {
                     setRotateJogDelta({ axis, amount })
                   }
                   onReset={() => {
-                    // Zero all three rotation axes. Same dual-write
-                    // pattern as the offset reset above.
-                    const next: Triple = [0, 0, 0];
+                    // Restore all three rotation axes to the ORIGINAL
+                    // (last-saved) values, not zero — clicking RESET must
+                    // not destroy the user's pre-existing placement.
+                    const orig = info()?.rotation;
+                    const next: Triple = [
+                      orig?.[0] ?? 0,
+                      orig?.[1] ?? 0,
+                      orig?.[2] ?? 0,
+                    ];
                     setLiveRotation(next);
                     setForceRotation(next);
                   }}

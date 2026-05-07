@@ -21,6 +21,7 @@ import {
   toggleSelect,
   setMultiSelected,
 } from '~/state/librariesRoom';
+import { confirmDiscardIfDirty, setIsDirty } from '~/state/dirty';
 import ComponentRenameModal from '~/blocks/ComponentRenameModal';
 import ComponentMoveModal from '~/blocks/ComponentMoveModal';
 import ComponentDeleteModal from '~/blocks/ComponentDeleteModal';
@@ -355,7 +356,13 @@ export default function ComponentList() {
                           ? 'bg-zinc-300 dark:bg-zinc-600'
                           : 'hover:bg-zinc-200 dark:hover:bg-zinc-700'
                         }`}
-                      onClick={() => setSelectedComponent(comp.name)}
+                      onClick={async () => {
+                        if (selectedComponent() === comp.name) return;
+                        const ok = await confirmDiscardIfDirty('switch');
+                        if (!ok) return;
+                        setIsDirty(false);
+                        setSelectedComponent(comp.name);
+                      }}
                     >
                       {/* Checkbox */}
                       <input

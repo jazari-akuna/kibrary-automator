@@ -1,4 +1,6 @@
-import { Switch, Match, Show, lazy, onMount } from 'solid-js';
+import { Switch, Match, Show, lazy, onCleanup, onMount } from 'solid-js';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import LeftRail from './LeftRail';
 import Header from './Header';
 import { room } from '~/state/room';
@@ -10,6 +12,7 @@ import {
   recentWorkspaces,
   openWorkspace,
 } from '~/state/workspace';
+import { confirmDiscardIfDirty } from '~/state/dirty';
 import UpdatePrompt from '~/blocks/UpdatePrompt';
 import DropZoneOverlay from '~/blocks/DropZoneOverlay';
 
@@ -35,6 +38,27 @@ export default function Shell() {
       console.warn('[shell] auto-open of last workspace failed:', e);
     }
   });
+
+  // Window-close guard: Rust intercepts CloseRequested, prevents the close,
+  // and emits 'app.close-requested'. We surface the unsaved-edits prompt;
+  // if the user picks Discard we call confirm_quit which latches the
+  // "ok to quit" flag in Rust and re-closes the window.
+  let unlistenClose: (() => void) | undefined;
+  listen('app.close-requested', async () => {
+    const ok = await confirmDiscardIfDirty('quit');
+    if (ok) {
+      try {
+        await invoke('confirm_quit');
+      } catch (e) {
+        console.error('[shell] confirm_quit failed:', e);
+      }
+    }
+  })
+    .then((unlisten) => {
+      unlistenClose = unlisten;
+    })
+    .catch((e) => console.warn('[shell] close-requested listen failed:', e));
+  onCleanup(() => unlistenClose?.());
 
   return (
     <div class="h-screen flex flex-col">

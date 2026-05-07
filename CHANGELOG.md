@@ -2,6 +2,27 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.7-alpha.1] — 2026-05-07
+
+### Fixed
+- **IPEX still failed `kicad-cli pcb export glb` exit 3 "Failed to load board"** even after alpha.4 fixed the decal alignment. The user's actual on-disk `.kicad_mod` (after whatever editor / import path produced their library copy) contains zone keepouts shaped as `(layer "*.Cu")` — singular form with a wildcard layer name, which kicad-cli rejects because wildcards are valid only in the PLURAL `(layers …)` form. Reproduced locally against the user's own `failed_board_*.kicad_pcb` from `~/.cache/kibrary/debug/`. Fix: sanitiser now repairs both the unquoted (`(layer *.Cu)`) and quoted (`(layer "*.Cu")`) singular-wildcard forms back to plural before splicing the footprint into the empty-board template. `kicad-cli` then accepts the board (verified end-to-end against the user's actual failed_board fixture, exit 0).
+- **Position-adjustment "RESET" buttons restored zero, not the original (last-saved) values** — losing the user's prior placement. The three RESET handlers in `Model3DPreview.tsx` (XY jog, Z jog, rotation) hardcoded the target to `[0, 0, …]`. Fix: read the original from the already-populated `info()` resource (`library.get_3d_info`), which is the source of truth for last-saved offset/rotation. After a Save → `refetch()` updates the baseline, so RESET correctly retargets.
+- **Z position-adjuster button labelled "0"** changed to "RESET" (consistent with the X/Y dial centre + the new restore-original behaviour). Tooltip updated to "Reset Z to original".
+- **Position dial Y axis was inverted relative to the viewport.** kicad-cli renders PCB +Y onto world +Z, and with the default camera at `(0.12, 0.10, 0.12)` world +Z projects to screen-down-left — so clicking the dial wedge geometrically sitting at 12 o'clock moved the chip *down*. Fix: the top wedge now sends `('y', −amount)` and the bottom wedge `('y', +amount)`, so clicking-up on the dial moves the chip up on screen. Keyboard `ArrowUp` / `ArrowDown` were inverted to match. The label "+Y / −Y" is preserved (the underlying PCB axis being mutated is still PCB Y; KiCad's PCB editor uses Y-down too, so this also matches the editor's convention).
+
+### Added
+- **Warn before quit / component-switch when there are unsaved position/rotation changes**. New `src/state/dirty.ts` exposes a global `isDirty` signal (computed with axis-aware epsilons: 1 µm offset / 0.1° rotation / 1e-4 scale) and a `confirmDiscardIfDirty('quit'|'switch')` helper that wraps `@tauri-apps/plugin-dialog`'s `ask()`. The Tauri close-requested handler intercepts window close and round-trips through the webview prompt; library-tree and component-list switches `await` the same prompt before swapping selection. Discard / Cancel from the dialog clears or preserves the change accordingly.
+
+### Notes
+- PCB substrate "looks thicker than 1.6 mm" — investigated, **not a bug**. kicad-cli renders the dielectric core at `general_thickness − 2·copper_thickness − soldermask` ≈ 1.51 mm by default. Added a clarifying comment near `_EMPTY_BOARD_TEMPLATE` in `render_3d.py` documenting that pinning visible substrate to exactly 1.6 mm requires an explicit `(stackup …)` block, not just bumping `(general (thickness …))`.
+
+### Tests
+- vitest: 67 passing (was 33; + 11 reset-original + 10 dirty-state + 13 jog-dial axis-mapping).
+- pytest: 304 passing (was 303; + wildcard-layer repair + real-world failed_board regression).
+- New fixture `sidecar/tests/fixtures/ipex_singular_wildcard_failed_board.kicad_pcb` is the user's actual `.cache/kibrary/debug` dump — guarantees future sessions can replay the failure.
+- New fixture `e2e/fixtures/ipex_singular_wildcard/IPEX_singular_wildcard.kicad_mod` covers both quoted and unquoted singular-wildcard forms.
+- New `Model3DJogDial.axisMapping.test.ts` includes a camera-projection sanity block that re-derives the screen-direction signs from the camera position — if the camera moves, the test flags which signs need updating.
+
 ## [26.5.6-alpha.4] — 2026-05-06
 
 ### Fixed

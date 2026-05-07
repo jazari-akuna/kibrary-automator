@@ -616,3 +616,105 @@ def test_spliced_board_keeps_edge_cuts_outline(tmp_path: Path):
                 depth -= 1
                 assert depth >= 0
     assert depth == 0
+
+
+# ---------------------------------------------------------------------------
+# 26.5.6-alpha.5 regression: kicad-cli rejects (layer "*.Cu") because the
+# wildcard form is only valid in the PLURAL (layers …) S-expr. The user's
+# IPEX 20952-024E-02 .kicad_mod (after whatever editor / import path
+# produced their on-disk library copy) has zone keepouts shaped as
+# `(layer "*.Cu")`, triggering kicad-cli "Failed to load board" exit 3.
+# The sanitiser must repair both quoted and unquoted singular-wildcard
+# forms back to plural before splicing.
+# ---------------------------------------------------------------------------
+
+def _kicad_mod_with_singular_wildcard(tmp_path: Path) -> tuple[Path, Path]:
+    lib_dir = tmp_path / "Wildcard_KSL"
+    pretty = lib_dir / "Wildcard_KSL.pretty"
+    shapes = lib_dir / "Wildcard_KSL.3dshapes"
+    pretty.mkdir(parents=True)
+    shapes.mkdir(parents=True)
+    mod = pretty / "WildcardProbe.kicad_mod"
+    mod.write_text(
+        '(footprint "WildcardProbe" (layer "F.Cu")\n'
+        '  (pad "1" smd rect (at 0 0) (size 0.5 0.5) (layers "F.Cu" "F.Mask" "F.Paste"))\n'
+        # The two zone shapes the user has in their IPEX:
+        # singular quoted wildcard (the bug)
+        '  (zone (net 0) (net_name "") (layer "*.Cu") (hatch full 0.508)\n'
+        '    (connect_pads (clearance 0)) (min_thickness 0.01)\n'
+        '    (keepout (tracks allowed) (vias not_allowed) (pads allowed) (copperpour allowed) (footprints allowed))\n'
+        '    (fill (thermal_gap 0.508) (thermal_bridge_width 0.508))\n'
+        '    (polygon (pts (xy -1 -1) (xy 1 -1) (xy 1 1) (xy -1 1))))\n'
+        # singular unquoted wildcard (legacy KiCad 5 form)
+        '  (zone (net 0) (net_name "") (layer *.Cu) (hatch full 0.508)\n'
+        '    (connect_pads (clearance 0)) (min_thickness 0.01)\n'
+        '    (keepout (tracks allowed) (vias not_allowed) (pads allowed) (copperpour allowed) (footprints allowed))\n'
+        '    (fill (thermal_gap 0.508) (thermal_bridge_width 0.508))\n'
+        '    (polygon (pts (xy -2 -2) (xy 2 -2) (xy 2 2) (xy -2 2))))\n'
+        ')\n',
+        encoding="utf-8",
+    )
+    return lib_dir, mod
+
+
+def test_singular_wildcard_layer_repaired_to_plural(tmp_path: Path):
+    """`(layer "*.Cu")` and `(layer *.Cu)` → `(layers "*.Cu")` and
+    `(layers *.Cu)` respectively. Pre-fix the spliced board kept the
+    singular form and kicad-cli emitted "Failed to load board" exit 3.
+    """
+    lib_dir, mod = _kicad_mod_with_singular_wildcard(tmp_path)
+    out_png = tmp_path / "out.png"
+    captured: dict = {}
+    with patch("kibrary_sidecar.render_3d.subprocess.run",
+               side_effect=_kicad_cli_mock(captured)):
+        render_3d.render_footprint_3d_png(lib_dir, mod, out_png)
+    board = captured["board"]
+    # No singular wildcard layer left
+    assert '(layer "*.Cu")' not in board, f"singular quoted wildcard survived:\n{board}"
+    assert '(layer *.Cu)' not in board, f"singular unquoted wildcard survived:\n{board}"
+    # Both repaired to plural
+    assert '(layers "*.Cu")' in board
+    assert '(layers *.Cu)' in board
+
+
+def test_singular_wildcard_repair_does_not_touch_concrete_layers(tmp_path: Path):
+    """`(layer "F.Cu")` (concrete) must NOT be turned into `(layers …)`."""
+    lib_dir, _ = _kicad_mod_with_singular_wildcard(tmp_path)
+    pretty = lib_dir / "Wildcard_KSL.pretty"
+    mod = pretty / "Concrete.kicad_mod"
+    mod.write_text(
+        '(footprint "Concrete" (layer "F.Cu")\n'
+        '  (pad "1" smd rect (at 0 0) (size 0.5 0.5) (layers "F.Cu" "F.Mask" "F.Paste"))\n'
+        '  (fp_line (start 0 0) (end 1 0) (layer "F.SilkS") (width 0.1))\n'
+        ')\n',
+        encoding="utf-8",
+    )
+    out_png = tmp_path / "out.png"
+    captured: dict = {}
+    with patch("kibrary_sidecar.render_3d.subprocess.run",
+               side_effect=_kicad_cli_mock(captured)):
+        render_3d.render_footprint_3d_png(lib_dir, mod, out_png)
+    board = captured["board"]
+    # Concrete singular layers must survive untouched.
+    assert '(layer "F.Cu")' in board
+    assert '(layer "F.SilkS")' in board
+    assert '(layers "F.Cu")' not in board
+
+
+def test_repair_user_actual_failed_board():
+    """Real-world regression: run the wildcard repair against the user's
+    actual failed_board (saved as a fixture from their .cache/kibrary/debug
+    dump) and verify ALL `(layer "*.Cu")` singular forms are converted to
+    plural. Pre-fix this board fed to kicad-cli produces exit 3.
+    """
+    from kibrary_sidecar.render_3d import _SINGULAR_WILDCARD_LAYER_RE
+    fixture = Path(__file__).parent / "fixtures" / "ipex_singular_wildcard_failed_board.kicad_pcb"
+    text = fixture.read_text(encoding="utf-8")
+    # Pre-fix: 6 singular wildcard zones embedded in the user's footprint
+    pre = _SINGULAR_WILDCARD_LAYER_RE.findall(text)
+    assert len(pre) == 6, f"expected 6 wildcards, found {len(pre)}: {pre}"
+    fixed = _SINGULAR_WILDCARD_LAYER_RE.sub(r'(layers \1)', text)
+    post = _SINGULAR_WILDCARD_LAYER_RE.findall(fixed)
+    assert len(post) == 0, f"repair left {len(post)} wildcards: {post}"
+    # And the plural form is now present
+    assert '(layers "*.Cu")' in fixed

@@ -37,21 +37,35 @@ interface Wedge {
   label: string;
 }
 
-// Quadrant centres (12 o'clock = +Y per the architect spec).
-//   +Y: 315→45 (passes through 0)
-//   +X: 45→135
-//   −Y: 135→225
-//   −X: 225→315
+// Quadrant centres — wedge POSITION matches the screen direction the
+// chip actually moves, not the raw axis-letter the dial controls.
+//
+// Why the +Y wedge sits at the BOTTOM:
+//   • The viewer's camera at (0.12, 0.10, 0.12) looks down at the origin,
+//     so PCB +Y (≡ world +Z in kicad-cli's GLB output) projects toward
+//     the viewer — i.e. screen-DOWN-LEFT.  Clicking a wedge labelled
+//     "+Y" up at 12 o'clock would shove the chip the opposite way to
+//     where the wedge points (the user-reported "+X +Y don't match
+//     what I see" bug).
+//   • This also matches KiCad's PCB-editor convention where +Y is
+//     screen-south on a top-down plan view, so the dial reads the
+//     same way as the layout canvas users come from.
+//
+// X-axis maps cleanly: PCB +X = world +X ≈ screen-right at this
+// camera angle, so +X stays on the right.
+//
+// Z (height) is handled by the separate Model3DJogZ column — this
+// dial is X/Y only.
 const OUTER_WEDGES: Wedge[] = [
-  { a1: 315, a2: 45, axis: 'y', sign: '+', ring: 'outer', label: '+Y' },
+  { a1: 315, a2: 45, axis: 'y', sign: '-', ring: 'outer', label: '−Y' },
   { a1: 45,  a2: 135, axis: 'x', sign: '+', ring: 'outer', label: '+X' },
-  { a1: 135, a2: 225, axis: 'y', sign: '-', ring: 'outer', label: '−Y' },
+  { a1: 135, a2: 225, axis: 'y', sign: '+', ring: 'outer', label: '+Y' },
   { a1: 225, a2: 315, axis: 'x', sign: '-', ring: 'outer', label: '−X' },
 ];
 const INNER_WEDGES: Wedge[] = [
-  { a1: 315, a2: 45, axis: 'y', sign: '+', ring: 'inner', label: '↑' },
+  { a1: 315, a2: 45, axis: 'y', sign: '-', ring: 'inner', label: '↑' },
   { a1: 45,  a2: 135, axis: 'x', sign: '+', ring: 'inner', label: '→' },
-  { a1: 135, a2: 225, axis: 'y', sign: '-', ring: 'inner', label: '↓' },
+  { a1: 135, a2: 225, axis: 'y', sign: '+', ring: 'inner', label: '↓' },
   { a1: 225, a2: 315, axis: 'x', sign: '-', ring: 'inner', label: '←' },
 ];
 
@@ -93,8 +107,12 @@ export default function Model3DJogDial(props: Props) {
     let axis: 'x' | 'y' | null = null;
     let amount = 0;
     switch (e.key) {
-      case 'ArrowUp':    axis = 'y'; amount =  big; break;
-      case 'ArrowDown':  axis = 'y'; amount = -big; break;
+      // ArrowUp/Down sign-flipped to match the wedge layout above:
+      // pressing ↑ moves the chip toward screen-up, which (after the
+      // camera projection) is PCB −Y. Without the flip, the keyboard
+      // and the click targets would disagree.
+      case 'ArrowUp':    axis = 'y'; amount = -big; break;
+      case 'ArrowDown':  axis = 'y'; amount =  big; break;
       case 'ArrowRight': axis = 'x'; amount =  big; break;
       case 'ArrowLeft':  axis = 'x'; amount = -big; break;
     }

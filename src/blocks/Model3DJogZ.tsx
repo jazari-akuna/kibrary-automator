@@ -4,8 +4,8 @@
  * Pairs with Model3DJogDial (which handles X/Y) to give the user CNC-style
  * one-click ±0.1 mm and ±1 mm nudges along the Z axis.
  *
- * Wave 9-C: a tiny "0" reset disk sits between the +0.1 and −0.1 buttons
- * (data-testid `jog-z-reset`) so the user can zero just the Z axis without
+ * Wave 9-C: a tiny "RESET" disk sits between the +0.1 and −0.1 buttons
+ * (data-testid `jog-z-reset`) so the user can reset just the Z axis without
  * disturbing the X/Y offsets they may have already dialled in.
  */
 
@@ -32,12 +32,12 @@ export default function Model3DJogZ(props: Props) {
       <button
         data-testid="jog-z-reset"
         type="button"
-        aria-label="Reset Z offset to zero"
-        title="Reset Z to 0"
+        aria-label="Reset Z offset to original (saved) value"
+        title="Reset Z to original"
         onClick={() => props.onReset()}
-        class="my-0.5 w-7 h-7 rounded-full bg-zinc-800 hover:bg-zinc-700 text-white text-[10px] font-semibold border border-white/20 transition-colors flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-blue-400"
+        class="my-0.5 w-9 h-7 rounded-full bg-zinc-800 hover:bg-zinc-700 text-white text-[9px] font-semibold border border-white/20 transition-colors flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-blue-400"
       >
-        0
+        RESET
       </button>
       <button data-testid="jog-z-minus01" class={BTN_CLS} onClick={() => props.onJog(-0.1)}>
         −Z 0.1mm

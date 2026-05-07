@@ -9,11 +9,20 @@ mod watcher;
 
 use std::sync::Arc;
 use once_cell::sync::OnceCell;
-use tauri::{AppHandle, Manager};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 /// Global AppHandle — set once during `.setup()`, used by the sidecar reader
 /// task to emit Tauri events for incoming notifications.
 pub static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
+
+/// Latched once the user has confirmed "Discard" in the unsaved-edits prompt
+/// (or via the explicit quit_app command after the app handed control back).
+/// This breaks the otherwise-infinite loop where:
+///   1. user closes the window → Rust prevents close, asks frontend
+///   2. frontend confirms, calls app.exit(0) which fires CloseRequested again
+///   3. without this flag, step 1 would re-prevent → app never quits.
+pub static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
 // NOTE: do NOT mark this `#[tokio::main]`. Tauri owns the async runtime
 // (tauri::async_runtime — currently tokio under the hood), and `tauri::Builder::run()`
@@ -134,9 +143,25 @@ fn main() -> anyhow::Result<()> {
         .plugin(tauri_plugin_shell::init());
 
     builder
+        .on_window_event(|window, event| {
+            // Intercept the user's window-close request (X button, Cmd-Q,
+            // wm-delete) to give the frontend a chance to surface a
+            // "discard unsaved 3D position edits?" prompt. The Rust side
+            // doesn't know what's dirty; it just delegates to the webview.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if QUIT_CONFIRMED.load(Ordering::SeqCst) {
+                    // The frontend (or quit_app command) already cleared
+                    // the gate — let the close proceed normally.
+                    return;
+                }
+                api.prevent_close();
+                let _ = window.emit("app.close-requested", ());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::app_version,
             commands::quit_app,
+            commands::confirm_quit,
             commands::sidecar_ping,
             commands::sidecar_version,
             commands::sidecar_call,
