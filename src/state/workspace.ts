@@ -2,6 +2,7 @@ import { createSignal } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { refreshLcscIndex } from './lcscIndex';
+import { TAURI_EVENT_NAMES } from '~/utils/eventNames';
 
 export interface Workspace { root: string; settings: any; }
 
@@ -57,7 +58,7 @@ if (typeof window !== 'undefined') {
   bag.capturedProgress = bag.capturedProgress ?? ([] as any[]);
   bag.armProgressCapture = async () => {
     const { listen } = await import('@tauri-apps/api/event');
-    await listen('download.progress', (e: any) => {
+    await listen(TAURI_EVENT_NAMES.downloadProgress, (e: any) => {
       bag.capturedProgress.push(e.payload);
     });
   };

@@ -56,8 +56,8 @@ def test_run_batch_emits_progress_per_part(tmp_path: Path):
         )
     )
     types = [e["event"] for e in events]
-    assert types.count("download.progress") >= 3
-    assert "download.done" in types
+    assert types.count("download-progress") >= 3
+    assert "download-done" in types
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@ def test_run_batch_no_warnings_on_clean_download(tmp_path: Path):
 
 
 def test_run_batch_terminal_progress_event_carries_assets_and_warnings(tmp_path: Path):
-    """Frontend's queue listener uses download.progress's terminal event to
+    """Frontend's queue listener uses download-progress's terminal event to
     fill in per-row banners — pin the contract so a future refactor that
     drops the assets/warnings fields gets caught at unit-test time.
     """
@@ -177,7 +177,7 @@ def test_run_batch_terminal_progress_event_carries_assets_and_warnings(tmp_path:
     )
     terminal = next(
         e for e in events
-        if e["event"] == "download.progress" and e["params"].get("status") == "failed"
+        if e["event"] == "download-progress" and e["params"].get("status") == "failed"
     )
     p = terminal["params"]
     assert p["lcsc"] == "Cmissing"
@@ -248,7 +248,7 @@ def test_run_batch_no_emit(tmp_path: Path):
 
 
 def test_run_batch_empty(tmp_path: Path):
-    """Empty list should return empty dict and emit only 'download.done'."""
+    """Empty list should return empty dict and emit only 'download-done'."""
     events: list[dict] = []
 
     async def emit(ev: dict) -> None:
@@ -259,11 +259,11 @@ def test_run_batch_empty(tmp_path: Path):
     )
     assert results == {}
     assert len(events) == 1
-    assert events[0]["event"] == "download.done"
+    assert events[0]["event"] == "download-done"
 
 
 def test_done_event_contains_all_results(tmp_path: Path):
-    """download.done params.results should mirror the return value."""
+    """download-done params.results should mirror the return value."""
     events: list[dict] = []
 
     async def emit(ev: dict) -> None:
@@ -272,7 +272,7 @@ def test_done_event_contains_all_results(tmp_path: Path):
     results = asyncio.run(
         run_batch(["X1", "X2"], tmp_path, concurrency=2, emit=emit, dl=fake_dl())
     )
-    done = next(e for e in events if e["event"] == "download.done")
+    done = next(e for e in events if e["event"] == "download-done")
     assert done["params"]["results"] == results
 
 
@@ -309,4 +309,4 @@ def test_parts_download_handler(tmp_path: Path, monkeypatch):
     assert "results" in result
     assert set(result["results"].keys()) == {"C1", "C2"}
     types = [e["event"] for e in events]
-    assert "download.done" in types
+    assert "download-done" in types

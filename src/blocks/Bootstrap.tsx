@@ -13,6 +13,7 @@
 import { createSignal, Show, For, onCleanup } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { TAURI_EVENT_NAMES } from '~/utils/eventNames';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -147,7 +148,7 @@ export default function Bootstrap(props: Props) {
   // Subscribe to live progress events emitted by bootstrap_install_direct.
   // The unlisten handle is cleaned up when this component is unmounted.
   let unlistenProgress: (() => void) | undefined;
-  listen<BootstrapProgress>('bootstrap.progress', (event) => {
+  listen<BootstrapProgress>(TAURI_EVENT_NAMES.bootstrapProgress, (event) => {
     setStatusMsg(event.payload.message);
     setIsError(false);
   }).then((unlisten) => {

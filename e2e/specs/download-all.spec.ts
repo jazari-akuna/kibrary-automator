@@ -205,7 +205,7 @@ async function main() {
     );
 
     // 6. Click Download all.
-    log('arming download.progress capture');
+    log('arming download-progress capture');
     await execAsync(sid, `
       var done = arguments[arguments.length - 1];
       window.__kibraryTest.armProgressCapture()
@@ -266,7 +266,7 @@ async function main() {
         `${LCSC} status=ready (alpha.9 "Download all does nothing" symptom)`,
       );
     } catch (e) {
-      // Diagnostic: did download.progress events arrive at the webview at all?
+      // Diagnostic: did download-progress events arrive at the webview at all?
       const captured = await execScript(sid, `return JSON.stringify(window.__kibraryTest && window.__kibraryTest.capturedProgress);`);
       log(`DIAG capturedProgress=${captured}`);
       throw e;

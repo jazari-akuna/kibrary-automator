@@ -96,10 +96,65 @@ describe('SymbolPreview / OpenInExplorerButton wiring', () => {
 });
 
 describe('FootprintPreview / OpenInExplorerButton wiring', () => {
-  it('clicking ↗ on the footprint preview reveals <lib_dir>/<lib_name>.pretty/<comp>.kicad_mod', async () => {
+  it('clicking the Open button uses footprint_path returned by library.get_component (NOT componentName + .kicad_mod)', async () => {
+    // Regression: the previous implementation computed the path as
+    // <lib>/<lib>.pretty/<componentName>.kicad_mod. JLC2KiCadLib names
+    // symbols by MPN but writes footprint files under the package / land
+    // pattern (recorded in the symbol's Footprint property), so the
+    // sidecar resolves them via lib_scanner._find_footprint. We must use
+    // the sidecar-resolved path or we ENOENT in real workspaces.
     invokeMock.mockImplementation(async (_cmd: string, args: any) => {
       if (args?.method === 'library.render_footprint_svg') {
         return { svg: '<svg/>' };
+      }
+      if (args?.method === 'library.get_component') {
+        return {
+          properties: {},
+          footprint_path:
+            '/ws/Connector_KSL/Connector_KSL.pretty/CONN-SMD_100P-P0.40_10164227-1001A1RLF.kicad_mod',
+          model3d_path: null,
+        };
+      }
+      return undefined;
+    });
+
+    const { getByTestId } = render(() => (
+      <FootprintPreview
+        libDir="/ws/Connector_KSL"
+        componentName="10164227-1001A1RLF"
+      />
+    ));
+
+    // Two ticks: one for render_footprint_svg, one for get_component.
+    await tick();
+    await tick();
+    fireEvent.click(getByTestId('reveal-footprint-in-explorer'));
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'reveal_in_explorer',
+      {
+        // Note: the file basename is the package name, NOT the MPN
+        // componentName — that's the whole point of this regression spec.
+        path: '/ws/Connector_KSL/Connector_KSL.pretty/CONN-SMD_100P-P0.40_10164227-1001A1RLF.kicad_mod',
+      },
+    );
+  });
+
+  it('clicking the Open button on a same-stem case (component name == filename)', async () => {
+    // Hand-named libraries where component_name and filename agree —
+    // get_component still returns the absolute path; we trust it
+    // verbatim instead of re-deriving in JS.
+    invokeMock.mockImplementation(async (_cmd: string, args: any) => {
+      if (args?.method === 'library.render_footprint_svg') {
+        return { svg: '<svg/>' };
+      }
+      if (args?.method === 'library.get_component') {
+        return {
+          properties: {},
+          footprint_path:
+            '/ws/Resistors_KSL/Resistors_KSL.pretty/R_10k_0402.kicad_mod',
+          model3d_path: null,
+        };
       }
       return undefined;
     });
@@ -109,6 +164,7 @@ describe('FootprintPreview / OpenInExplorerButton wiring', () => {
     ));
 
     await tick();
+    await tick();
     fireEvent.click(getByTestId('reveal-footprint-in-explorer'));
 
     expect(invokeMock).toHaveBeenCalledWith(
@@ -116,6 +172,32 @@ describe('FootprintPreview / OpenInExplorerButton wiring', () => {
       {
         path: '/ws/Resistors_KSL/Resistors_KSL.pretty/R_10k_0402.kicad_mod',
       },
+    );
+  });
+
+  it('staging-mode footprint reveal includes the per-LCSC .pretty/ subdir', async () => {
+    // Regression: the previous string was
+    // `${stagingDir}/${lcsc}/${lcsc}.kicad_mod` — but JLC2KiCadLib
+    // stages footprints under <lcsc>/<lcsc>.pretty/<lcsc>.kicad_mod
+    // (matches the sidecar's files._resolve_kicad_mod). The omitted
+    // .pretty/ subdir always ENOENT'd in staging.
+    invokeMock.mockImplementation(async (_cmd: string, args: any) => {
+      if (args?.method === 'parts.render_footprint_svg') {
+        return { svg: '<svg/>' };
+      }
+      return undefined;
+    });
+
+    const { getByTestId } = render(() => (
+      <FootprintPreview stagingDir="/staging" lcsc="C25804" />
+    ));
+
+    await tick();
+    fireEvent.click(getByTestId('reveal-footprint-in-explorer'));
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'reveal_in_explorer',
+      { path: '/staging/C25804/C25804.pretty/C25804.kicad_mod' },
     );
   });
 });
@@ -148,7 +230,14 @@ describe('Model3DPreview / OpenInExplorerButton wiring', () => {
     );
   });
 
-  it('Model3DPreview ↗ button is disabled when file_exists is false (no spurious invoke)', async () => {
+  it('Model3DPreview ↗ button stays VISIBLE and clickable when file_exists===false', async () => {
+    // 26.5.7-alpha.5: previously the button was force-disabled (path=null)
+    // whenever the .kicad_mod's (model …) path no longer existed on disk.
+    // That made the button "disappear" visually next to the blue "View 3D"
+    // CTA — the user reported it as missing. Behaviour change: render the
+    // button anyway with model().resolved_path so the user can navigate to
+    // the parent .3dshapes dir; the Rust reveal_in_explorer surfaces a
+    // friendly toast if the path itself is gone.
     invokeMock.mockImplementation(async (_cmd: string, args: any) => {
       if (args?.method === 'library.get_3d_info') {
         return { info: fakeInfo({ file_exists: false }) };
@@ -156,29 +245,46 @@ describe('Model3DPreview / OpenInExplorerButton wiring', () => {
       return undefined;
     });
 
-    const { queryByTestId } = render(() => (
+    const { getByTestId } = render(() => (
       <Model3DPreview libDir="/ws/Resistors_KSL" componentName="R_10k_0402" />
     ));
 
     await tick();
     await tick();
 
-    // When file_exists === false, the 3D viewer falls back and the
-    // action row (View 3D / Replace / Open ↗) does not render. The
-    // button-not-found state is the correct guard — clicking it is
-    // not even possible. Either the button is absent, or if present
-    // it must be disabled. Both states satisfy "no invoke fires".
-    const btn = queryByTestId('reveal-3dmodel-in-explorer') as
-      | HTMLButtonElement
-      | null;
-    if (btn !== null) {
-      expect(btn.disabled).toBe(true);
-      fireEvent.click(btn);
-    }
-    // Either way: no invoke('reveal_in_explorer', ...) call.
-    const revealCalls = invokeMock.mock.calls.filter(
-      (c) => c[0] === 'reveal_in_explorer',
+    const btn = getByTestId('reveal-3dmodel-in-explorer') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    fireEvent.click(btn);
+
+    // Even with file_exists===false, the click forwards the resolved path —
+    // the Rust handler decides whether to spawn or toast-error.
+    expect(invokeMock).toHaveBeenCalledWith(
+      'reveal_in_explorer',
+      { path: '/ws/Resistors_KSL/Resistors_KSL.3dshapes/R_10k.step' },
     );
-    expect(revealCalls).toEqual([]);
+  });
+
+  it('Model3DPreview ↗ button always renders inside the action row (regression: was missing in alpha.4)', async () => {
+    // The button must be a sibling of "View 3D in KiCad" / "Replace 3D
+    // model…" — NOT nested inside the file_exists Show. If a future
+    // refactor accidentally moves it back inside the viewer-gate Show,
+    // this test fails with `view-3d-in-kicad` present but
+    // `reveal-3dmodel-in-explorer` absent.
+    invokeMock.mockImplementation(async (_cmd: string, args: any) => {
+      if (args?.method === 'library.get_3d_info') {
+        return { info: fakeInfo() };
+      }
+      return undefined;
+    });
+
+    const { getByTestId } = render(() => (
+      <Model3DPreview libDir="/ws/Resistors_KSL" componentName="R_10k_0402" />
+    ));
+
+    await tick();
+    await tick();
+
+    expect(getByTestId('view-3d-in-kicad')).toBeTruthy();
+    expect(getByTestId('reveal-3dmodel-in-explorer')).toBeTruthy();
   });
 });

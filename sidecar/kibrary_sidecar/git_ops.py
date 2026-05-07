@@ -125,10 +125,37 @@ def auto_commit(
     norm_paths = {p.replace("\\", "/") for p in paths}
     extra_dirty = dirty - norm_paths
     if extra_dirty:
-        log.warning(
-            "auto_commit: working tree is dirty outside target paths (%s), skipping",
-            sorted(extra_dirty),
-        )
+        # Classify the dirt: anything inside `.kibrary/` is scratch space
+        # (staging downloads, render caches, in-progress drops) — totally
+        # expected when a user has multiple parts queued. Files OUTSIDE
+        # `.kibrary/` are potentially user WIP we'd corrupt by committing
+        # over.
+        #
+        # Both classes still BLOCK the auto-commit (the safety property is
+        # "never sweep unrelated state into our automated commit"), but only
+        # the second class deserves a WARNING — the first is normal background
+        # activity and used to be a recurring "scary warning" the user
+        # couldn't silence. Note: the new `.kibrary/.gitignore` written by
+        # `workspace.open_workspace` should make scratch dirt invisible to
+        # git going forward; this branch handles legacy workspaces opened
+        # before that fix landed AND any unforeseen scratch-file leaks.
+        kibrary_dirt = {p for p in extra_dirty if _is_under_kibrary(p)}
+        external_dirt = extra_dirty - kibrary_dirt
+        if external_dirt:
+            log.warning(
+                "auto_commit: working tree is dirty outside target paths "
+                "(%s), skipping. Your other in-progress changes are safely "
+                "untouched. Commit or stash them, then re-trigger the "
+                "kibrary action to auto-commit this part.",
+                sorted(external_dirt),
+            )
+        else:
+            # All the dirt is kibrary scratch — log at debug only.
+            log.debug(
+                "auto_commit: skipping (kibrary scratch in flight: %s); "
+                "no user-facing files affected",
+                sorted(kibrary_dirt),
+            )
         return None
 
     # Stage the listed paths and commit.
@@ -148,6 +175,17 @@ def auto_commit(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_under_kibrary(rel_path: str) -> bool:
+    """Return True when *rel_path* (forward-slash, repo-relative) sits
+    inside the workspace's `.kibrary/` scratch directory.
+
+    Used by `auto_commit` to distinguish expected staging churn (which
+    should be silent) from unrelated user WIP (which deserves a warning).
+    """
+    p = rel_path.replace("\\", "/")
+    return p == ".kibrary" or p.startswith(".kibrary/")
 
 
 def _dirty_files(repo: git.Repo) -> set[str]:

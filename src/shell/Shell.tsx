@@ -40,19 +40,32 @@ export default function Shell() {
   });
 
   // Window-close guard: Rust intercepts CloseRequested, prevents the close,
-  // and emits 'app.close-requested'. We surface the unsaved-edits prompt;
+  // and emits 'app-close-requested'. We surface the unsaved-edits prompt;
   // when the user picks Discard (or there are no edits) we call confirm_quit
-  // which destroys the main window — Rust's destroy() bypasses CloseRequested
-  // so there's no risk of looping back into the prevent-close handler.
+  // which exits the app — `app.exit(0)` sets ControlFlow::Exit directly
+  // (with a std::process::exit fallback) so there's no risk of looping back
+  // into the prevent-close handler.
+  //
+  // Event name was 'app.close-requested' in 26.5.7 alpha.1 → alpha.4. Tauri
+  // 2's event-name validator only allows alphanumerics + `-` `/` `:` `_` —
+  // dotted names are rejected by `listen()` with "Event name must include
+  // only alphanumeric characters, `-`, `/`, `:` and `_`.". The Promise
+  // returned by listen() rejected silently (nothing in onMount() awaited
+  // its error path), so the close-handler chain was DEAD: Rust emitted to
+  // a name nothing was listening for, prevent_close() ran, and the user's
+  // X-click became permanently no-op. THIS is why all four prior alpha
+  // attempts at "fixing" the close-after-save behaviour did nothing —
+  // they patched code that was never reached. Renamed to the dash form.
   //
   // Re-entrancy guard (`closing`): if the user clicks the X button multiple
   // times in quick succession, the Tauri event re-emits each time. Without
   // this guard each click queues another `confirmDiscardIfDirty()` and
   // potentially another invoke('confirm_quit'). Stacking native `ask()`
   // dialogs and racing destroy() calls was the user-visible "after saving
-  // the app does not want to close anymore" bug in v26.5.7-alpha.1 — the
-  // first click's ask() dialog was already pending so subsequent clicks
-  // either piled more dialogs on top or no-op'd while the first awaited.
+  // the app does not want to close anymore" bug originally reported in
+  // 26.5.7-alpha.1 — the first click's ask() dialog was already pending so
+  // subsequent clicks either piled more dialogs on top or no-op'd while
+  // the first awaited.
   //
   // Registered via onMount so the listen() Promise resolves *after* mount
   // (not racing the Tauri event loop's first emit at startup).
@@ -60,7 +73,7 @@ export default function Shell() {
   let closing = false;
   onMount(async () => {
     try {
-      unlistenClose = await listen('app.close-requested', async () => {
+      unlistenClose = await listen('app-close-requested', async () => {
         if (closing) return;
         closing = true;
         try {

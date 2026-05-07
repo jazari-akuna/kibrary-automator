@@ -1,13 +1,19 @@
 /**
  * Queue state: tracks per-part download/commit lifecycle.
  *
- * Subscribes to the 'download.progress' Tauri event emitted by the sidecar
+ * Subscribes to the 'download-progress' Tauri event emitted by the sidecar
  * reader task (src-tauri/src/sidecar.rs) and updates item statuses reactively.
+ *
+ * NOTE — the event name was originally 'download.progress' but Tauri 2's
+ * runtime validator rejects names containing '.'; the dotted form silently
+ * failed to register on listen() and the queue UI never advanced past
+ * "downloading". See src/utils/eventNames.ts for the full root-cause writeup.
  */
 
 import { createSignal } from 'solid-js';
 import { listen } from '@tauri-apps/api/event';
 import type { RenderWarning, ComponentAssets } from '~/blocks/_renderWarnings';
+import { TAURI_EVENT_NAMES } from '~/utils/eventNames';
 
 export type QueueStatus =
   | 'queued'
@@ -65,7 +71,7 @@ export function setStatus(
 }
 
 /** Attach the structured per-asset payload to a queue row. Called once
- *  when the sidecar's terminal `download.progress` event arrives (or
+ *  when the sidecar's terminal `download-progress` event arrives (or
  *  directly from the Queue block after parts.download resolves) — the
  *  UI uses this to render "X not found" / "missing footprint" banners
  *  on the row instead of failing silently. */
@@ -98,7 +104,7 @@ export function pruneQueue(keep: QueueStatus[]): void {
   setItems((prev) => prev.filter((q) => keep.includes(q.status)));
 }
 
-// Subscribe to download.progress events from the Tauri backend.
+// Subscribe to download-progress events from the Tauri backend.
 listen<{
   lcsc: string;
   status: QueueStatus;
@@ -106,7 +112,7 @@ listen<{
   progress?: number;
   assets?: ComponentAssets;
   warnings?: RenderWarning[];
-}>('download.progress', (e) => {
+}>(TAURI_EVENT_NAMES.downloadProgress, (e) => {
   setStatus(e.payload.lcsc, e.payload.status, e.payload.error, e.payload.progress);
   // Terminal events (ready/failed) carry assets + warnings — propagate
   // them so the row's banner has the structured data it needs to format

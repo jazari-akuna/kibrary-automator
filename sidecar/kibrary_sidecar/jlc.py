@@ -208,6 +208,38 @@ def _download_via_subprocess(lcsc: str, target_dir: Path) -> tuple[bool, str | N
     return True, None
 
 
+def _purge_legacy_nested_junk(target_dir: Path) -> None:
+    """Remove pre-alpha.7 nested staging artefacts under *target_dir*.
+
+    Background: before commit 8b94633 (alpha.7), `_build_args` passed the
+    absolute staging path for `symbol_lib_dir` / `footprint_lib` / `model_dir`.
+    JLC2KiCadLib treats those as RELATIVE to `output_dir` and concatenates,
+    silently writing files at e.g.
+        <staging>/<lcsc>/<staging>/<lcsc>/<staging>/<lcsc>/foo.step
+    The path-nesting bug itself is fixed, but old workspaces still have those
+    nested directories on disk. They show up as untracked files in the user's
+    git repo and trip the "auto_commit: working tree dirty" warning.
+
+    Sweep on every re-stage: any top-level CHILD DIRECTORY of *target_dir*
+    that isn't a recognised artefact (``<lcsc>.pretty``, ``<lcsc>.3dshapes``,
+    ``<lcsc>.icons``) is treated as junk and removed. Top-level FILES are
+    untouched (preserves `<lcsc>.kicad_sym`, `meta.json`, `<lcsc>.icon.svg`).
+    """
+    if not target_dir.is_dir():
+        return
+    for child in target_dir.iterdir():
+        if not child.is_dir():
+            continue
+        if child.suffix in {".pretty", ".3dshapes", ".icons"}:
+            continue
+        # Anything else is leftover/nested junk from the old bug.
+        log.info("Removing legacy nested staging dir: %s", child)
+        try:
+            shutil.rmtree(child)
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            log.warning("Could not remove legacy nested dir %s: %s", child, exc)
+
+
 def download_one(
     lcsc: str,
     target_dir: Path,
@@ -229,6 +261,11 @@ def download_one(
       (ok, error_message_or_None)
     """
     target_dir.mkdir(parents=True, exist_ok=True)
+    # Self-heal pre-alpha.7 nested-staging junk left over by the legacy
+    # JLC2KiCadLib path-concat bug (commit 8b94633). Without this, those
+    # files persist forever and keep tripping the auto_commit dirty-tree
+    # check on the user's library repo.
+    _purge_legacy_nested_junk(target_dir)
 
     # Try the API path first. Capture ImportError separately so the CLI
     # fallback only kicks in if the package is genuinely unavailable.

@@ -110,4 +110,20 @@ describe('OpenInExplorerButton', () => {
     expect(parentClick).not.toHaveBeenCalled();
     expect(invokeMock).toHaveBeenCalledTimes(1);
   });
+
+  it('renders an inline SVG icon (file-with-arrow), NOT the bare ↗ Unicode glyph', () => {
+    // 26.5.7-alpha.5: replaced "↗" with a lucide-style file-output SVG so
+    // the button reads as "open this FILE" rather than a generic link.
+    // This spec guards against a regression to the Unicode glyph.
+    const { getByTestId } = render(() => (
+      <OpenInExplorerButton path="/x/y.kicad_sym" />
+    ));
+    const btn = getByTestId('open-in-explorer');
+    const icon = getByTestId('open-in-explorer-icon');
+    expect(icon.tagName.toLowerCase()).toBe('svg');
+    // Guard: the icon must be a child of the button.
+    expect(btn.contains(icon)).toBe(true);
+    // No stray "↗" glyph text inside the button.
+    expect(btn.textContent ?? '').not.toContain('↗');
+  });
 });

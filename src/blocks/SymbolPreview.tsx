@@ -5,6 +5,7 @@ import { currentWorkspace } from '~/state/workspace';
 import { pushToast } from '~/state/toasts';
 // 26.5.7-alpha.4 reveal-in-explorer:
 import OpenInExplorerButton from '~/blocks/OpenInExplorerButton';
+import { TAURI_EVENT_NAMES } from '~/utils/eventNames';
 
 /**
  * SymbolPreview — alpha.18: renders the symbol as an SVG returned by the
@@ -72,7 +73,7 @@ export default function SymbolPreview(props: Props) {
       ? `${props.libDir}/${props.libDir!.split('/').pop()}.kicad_sym`
       : `${props.stagingDir}/${props.lcsc}/${props.lcsc}.kicad_sym`;
   const matchKey = () => (isLibraryMode() ? props.componentName : props.lcsc);
-  const unlisten = listen<{ path: string; lcsc: string }>('staging.changed', (e) => {
+  const unlisten = listen<{ path: string; lcsc: string }>(TAURI_EVENT_NAMES.stagingChanged, (e) => {
     if (e.payload.path === symPath() || e.payload.lcsc === matchKey()) refetch();
   });
   onCleanup(() => { unlisten.then((fn) => fn()); });

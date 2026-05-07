@@ -40,7 +40,7 @@ interface MockOpts {
    *  instead of `null`. Tests can use it to drive the "update available" UI. */
   fakeUpdate?: { version: string } | null;
   /** Bugs 13-15: parts.download handler behaviour. 'throw' rejects the RPC,
-   *  'slow' simulates per-part download.progress events with a delay before
+   *  'slow' simulates per-part download-progress events with a delay before
    *  resolving. Default is the no-op handler (resolves with empty results).
    *
    *  'componentLoadFailed' (alpha.4 silent-failure regression): the sidecar
@@ -174,7 +174,7 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
     // Bugs 13-15: parts.download behaviour swappable via PARTS_DOWNLOAD_MODE.
     //  - 'ok'         → resolves with empty results (default)
     //  - 'throw'      → reject the RPC (simulates JLC2KiCadLib not bundled)
-    //  - 'slow'       → emit two download.progress events with a delay so
+    //  - 'slow'       → emit two download-progress events with a delay so
     //                   tests can observe the running button state
     //  - 'progress50' → emit a single 'downloading' event with progress=50
     //                   so tests can assert the per-row progress bar
@@ -213,7 +213,7 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
       }
       if (PARTS_DOWNLOAD_MODE === 'progress50') {
         for (const lcsc of lcscs) {
-          (window).__emitTauri('download.progress', {
+          (window).__emitTauri('download-progress', {
             lcsc, status: 'downloading', progress: 50,
           });
         }
@@ -223,14 +223,14 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
         return new Promise((resolve) => {
           setTimeout(() => {
             for (const lcsc of lcscs) {
-              (window).__emitTauri('download.progress', {
+              (window).__emitTauri('download-progress', {
                 lcsc, status: 'downloading', progress: 30,
               });
             }
           }, 100);
           setTimeout(() => {
             for (const lcsc of lcscs) {
-              (window).__emitTauri('download.progress', {
+              (window).__emitTauri('download-progress', {
                 lcsc, status: 'downloading', progress: 80,
               });
             }
@@ -816,7 +816,7 @@ test('bug 14 — Download all button shows progress text while running', async (
 //
 // Root cause (alpha.5): no per-row visual feedback existed beyond a status
 // badge. Fix: `QueueItem.progress` is plumbed through from the sidecar's
-// download.progress events to a thin progress bar rendered next to the
+// download-progress events to a thin progress bar rendered next to the
 // 'downloading' badge.
 // ---------------------------------------------------------------------------
 test('bug 15 — per-item progress bar appears for downloading items', async ({ page }) => {
@@ -834,7 +834,7 @@ test('bug 15 — per-item progress bar appears for downloading items', async ({ 
 
   await page.getByRole('button', { name: /download all/i }).click();
 
-  // The mock dispatches `download.progress` with progress=50 immediately,
+  // The mock dispatches `download-progress` with progress=50 immediately,
   // so the row's progressbar should appear with width: 50%.
   const row = page.locator('ul.font-mono li', { hasText: 'C25804' });
   const bar = row.getByRole('progressbar');

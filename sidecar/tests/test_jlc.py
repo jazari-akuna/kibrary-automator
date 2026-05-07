@@ -229,6 +229,85 @@ def test_jlc_resolves_or_returns_clear_error():
     assert result.endswith("JLC2KiCadLib")
 
 
+# ---------------------------------------------------------------------------
+# Legacy nested-junk cleanup
+#
+# Before commit 8b94633 (alpha.7) the staging dir got triply-nested copies
+# of the entire workspace path. The path-concat bug is fixed, but legacy
+# workspaces still have those nested directories on disk — they show up
+# untracked in the user's library git repo and trip the auto_commit
+# "working tree dirty outside target paths" warning.
+#
+# `download_one` now sweeps any non-artefact subdir at the top of the
+# staging part dir before re-downloading.
+# ---------------------------------------------------------------------------
+
+
+def test_download_one_purges_legacy_nested_workspace_dir(tmp_path: Path):
+    """Reproduces the user-reported triply-nested staging path. After
+    download_one runs, the offending nested chain must be gone."""
+    target = tmp_path / "C193707"
+    target.mkdir()
+    # Simulate the user's exact reported pattern:
+    # <staging>/<lcsc>/home/sagan/Projects/kicad-shared-libs/.kibrary/staging/C193707/...
+    nested = target / "home" / "sagan" / "Projects" / "kicad-shared-libs" / ".kibrary" / "staging" / "C193707"
+    nested.mkdir(parents=True)
+    (nested / "LGA-48_L7.0-W7.0-P0.50-BL-EP5.4.step").write_bytes(b"ISO-10303-21\n")
+    # Legitimate artefact dir — must be preserved.
+    (target / "C193707.pretty").mkdir()
+    (target / "C193707.pretty" / "LGA-48.kicad_mod").write_text("(footprint stub)")
+
+    # We don't need the network; mock the API call to a no-op so download_one
+    # runs the full lifecycle including the cleanup step.
+    fake_add = MagicMock(side_effect=_fake_add_component_factory("C193707", target))
+    with patch("JLC2KiCadLib.JLC2KiCadLib.add_component", fake_add):
+        download_one("C193707", target)
+
+    # The nested junk root is gone.
+    assert not (target / "home").exists(), (
+        "legacy nested 'home/' chain should have been purged"
+    )
+    # Real artefact dirs survive.
+    assert (target / "C193707.pretty").is_dir()
+
+
+def test_download_one_purge_keeps_known_artefact_files(tmp_path: Path):
+    """Top-level files (`<lcsc>.kicad_sym`, `meta.json`, `<lcsc>.icon.svg`)
+    must NOT be removed by the purge — they're the real outputs we want
+    to preserve across re-downloads."""
+    target = tmp_path / "C25804"
+    target.mkdir()
+    (target / "C25804.kicad_sym").write_text("(kicad_symbol_lib)")
+    (target / "meta.json").write_text("{}")
+    (target / "C25804.icon.svg").write_text("<svg/>")
+    (target / "C25804.pretty").mkdir()
+    (target / "C25804.3dshapes").mkdir()
+    (target / "C25804.icons").mkdir()
+    # And one piece of legacy junk
+    (target / "leftover_junk").mkdir()
+    (target / "leftover_junk" / "x.txt").write_text("x")
+
+    fake_add = MagicMock(side_effect=_fake_add_component_factory("C25804", target))
+    with patch("JLC2KiCadLib.JLC2KiCadLib.add_component", fake_add):
+        download_one("C25804", target)
+
+    # All known artefact paths still present
+    assert (target / "C25804.pretty").is_dir()
+    assert (target / "C25804.3dshapes").is_dir()
+    assert (target / "C25804.icons").is_dir()
+    assert (target / "meta.json").is_file()
+    assert (target / "C25804.icon.svg").is_file()
+    # Junk dir gone
+    assert not (target / "leftover_junk").exists()
+
+
+def test_purge_legacy_nested_junk_handles_missing_target():
+    """The cleanup must not raise when the target dir doesn't exist —
+    download_one creates it, but the helper itself is conservative."""
+    from kibrary_sidecar.jlc import _purge_legacy_nested_junk
+    _purge_legacy_nested_junk(Path("/nonexistent/path/12345"))  # must not raise
+
+
 def test_download_one_clear_error_when_neither_api_nor_cli_available(tmp_path: Path, monkeypatch):
     """
     If JLC2KiCadLib is not importable AND not on PATH, download_one

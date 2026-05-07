@@ -2,6 +2,27 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.7-alpha.5] — 2026-05-07
+
+### Fixed (the actual root cause this time)
+- **App still wouldn't close after Save (FIFTH attempt — the genuine fix).** Empirical investigation by launching the deployed alpha.4 binary under Xvfb + tauri-driver showed: `listen('app.close-requested', …)` returned a **rejected Promise** because Tauri 2's event-name validator rejects any name containing `.` (dot) — its regex is `/^[A-Za-z0-9_\-:/]+$/`. The frontend's surrounding `try { … } catch (e) { console.warn(e) }` swallowed the rejection, the listener **never registered**, and Rust's `prevent_close()` ran on every X-click against an absent JS handler. **All four prior alpha "fixes" patched code on a dead listener** and so couldn't move user-visible behaviour. Fix: rename emit + listen sides in lockstep to `app-close-requested` (dashes only). Verified by re-running the same probe against the rebuilt binary — `app.exit(0)` actually fires now and the process terminates.
+- **Same dotted-name bug silently broke 4 other features.** Surfaced by the close-handler probe — every one was unreachable in production:
+  - `download.progress` → `download-progress` (download progress UI was dead — `src/state/queue.ts`, `src/state/workspace.ts` listen sides; `sidecar/kibrary_sidecar/downloader.py` emit side)
+  - `download.done` → `download-done` (sidecar tests assertion path)
+  - `staging.changed` → `staging-changed` (file-watcher updates never reached the Symbol/FootprintPreview panes — `src-tauri/src/watcher.rs` emit side)
+  - `bootstrap.progress` → `bootstrap-progress` (bootstrap progress bar dead — `src-tauri/src/bootstrap.rs` × 3 emit sites)
+  All four routed through a new single source of truth: `src/utils/eventNames.ts` (TS), `src-tauri/src/event_names.rs` (Rust), `sidecar/kibrary_sidecar/event_names.py` (Python). New `eventNameValidity.test.ts` walks the WHOLE codebase asserting every emit/listen literal (TS, Rust, Python) passes Tauri 2's regex — any future dotted name fails CI.
+- **"Open in Explorer" gave wrong path for footprints.** TS code synthesised `<lib>/<lib>.pretty/<componentName>.kicad_mod`, but the file is named after the FOOTPRINT (e.g. `CONN-SMD_100P-P0.40_10164227-1001A1RLF.kicad_mod`), not the LCSC/component name. Fix: `FootprintPreview` now calls `library.get_component` (which already runs `lib_scanner._find_footprint`) and uses the absolute path verbatim.
+- **STEP file had no Open-in-Explorer button.** It was being passed `path={null}` whenever `model().file_exists === false` → button rendered disabled (40% opacity) → invisible next to the bright "View 3D" / "Replace" CTAs. Removed the `file_exists` gate; the button always renders with `model().resolved_path ?? model().model_path`.
+- **Open-in-Explorer icon now looks like a file.** Replaced "↗" Unicode glyph with a lucide `file-output` inline SVG (page outline + small exiting arrow).
+- **Triply-nested staging paths cleaned up.** User logs showed paths like `.kibrary/staging/C193707/<abs-host-path>/.kibrary/staging/C193707/<abs-host-path>/...`. Stale on-disk residue from a pre-alpha.7 JLC2KiCadLib path-concat bug (already fixed in commit 8b94633). Added `_purge_legacy_nested_junk` in `sidecar/kibrary_sidecar/jlc.py` that scrubs any non-artefact subdirectory under the staging part dir on every re-stage.
+- **Noisy `auto_commit: working tree is dirty outside target paths` warning** classified by location: `.kibrary/`-internal scratch is silent DEBUG; only external WIP keeps the WARNING (with reassuring "your other changes are untouched" copy). New `.kibrary/.gitignore` (idempotent) excludes `staging/` + `cache/` so partially-downloaded parts don't pollute the working tree.
+
+### Tests
+- vitest: **206 passing** (was 181; +25 across event-name-validity, dotted-rename round-trip, real-DOM closeListener, real-DOM dirtyAfterSave, OpenInExplorer fixes).
+- pytest: **345 passing** (was 336; +9 across staging-purge, gitignore writer, auto-commit classification).
+- New testing infrastructure: cross-language event-name constants + a whole-codebase regex walker that asserts every emit/listen literal is Tauri-2-valid.
+
 ## [26.5.7-alpha.4] — 2026-05-07
 
 ### Fixed

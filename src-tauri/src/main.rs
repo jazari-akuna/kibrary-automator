@@ -2,6 +2,7 @@
 
 mod bootstrap;
 mod embedded_secrets;
+mod event_names;
 mod protocol;
 mod sidecar;
 mod commands;
@@ -159,7 +160,17 @@ fn main() -> anyhow::Result<()> {
                     return;
                 }
                 api.prevent_close();
-                let _ = window.emit("app.close-requested", ());
+                // Tauri 2's event-name validator rejects names containing
+                // `.` — the allowed set is alphanumeric, `-`, `/`, `:`, `_`.
+                // The original `app.close-requested` was silently rejected
+                // by the frontend's `listen()` call (returning a rejected
+                // Promise that nothing awaited), so for the entire 26.5.7
+                // alpha line the close-handler chain was DEAD CODE: the
+                // listener never registered, the unsaved-edits prompt
+                // never appeared, and `prevent_close()` left the X-button
+                // permanently no-op'ing the close. Renamed to the
+                // dash-separated form so Tauri 2 accepts it.
+                let _ = window.emit(event_names::APP_CLOSE_REQUESTED, ());
             }
         })
         .invoke_handler(tauri::generate_handler![

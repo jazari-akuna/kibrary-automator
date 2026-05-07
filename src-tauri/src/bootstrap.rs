@@ -392,7 +392,12 @@ fn find_wheel(dir: &PathBuf) -> Result<PathBuf, String> {
     ))
 }
 
-/// Progress event payload emitted as `bootstrap.progress`.
+/// Progress event payload emitted as `bootstrap-progress`.
+///
+/// Originally `bootstrap.progress` — Tauri 2's runtime validator rejects
+/// names containing `.`, so the dotted form was silently dropped on emit
+/// and the frontend's progress UI stayed blank. See
+/// `src/utils/eventNames.ts` and `src-tauri/src/event_names.rs`.
 #[derive(Serialize, Clone)]
 struct BootstrapProgress {
     step: String,
@@ -435,7 +440,7 @@ fn run_blocking(mut cmd: Command) -> Result<String, String> {
 ///      skip the PATH scan.
 ///   7. Return a [`BootstrapResult`].
 ///
-/// Progress events (`bootstrap.progress`) are emitted at each step so the
+/// Progress events (`bootstrap-progress`) are emitted at each step so the
 /// frontend can show live status.
 ///
 /// # Platform notes
@@ -472,7 +477,7 @@ pub async fn bootstrap_install_direct(
 
     let emit_progress = |step: &str, message: &str| {
         let _ = app.emit(
-            "bootstrap.progress",
+            crate::event_names::BOOTSTRAP_PROGRESS,
             BootstrapProgress {
                 step: step.to_string(),
                 message: message.to_string(),
@@ -512,7 +517,7 @@ pub async fn bootstrap_install_direct(
 
         // -- 4. Install wheel -------------------------------------------------
         let _ = app_clone.emit(
-            "bootstrap.progress",
+            crate::event_names::BOOTSTRAP_PROGRESS,
             BootstrapProgress {
                 step: "installing".to_string(),
                 message: format!("Installing {} …", wheel_path_clone.display()),
@@ -532,7 +537,7 @@ pub async fn bootstrap_install_direct(
 
         // -- 5. Probe installed version ---------------------------------------
         let _ = app_clone.emit(
-            "bootstrap.progress",
+            crate::event_names::BOOTSTRAP_PROGRESS,
             BootstrapProgress {
                 step: "verifying".to_string(),
                 message: "Verifying installation…".to_string(),

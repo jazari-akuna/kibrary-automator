@@ -1,7 +1,12 @@
 //! Filesystem watcher for the staging directory.
 //!
 //! Task 28: watches a workspace's `.kibrary/staging/` directory for file
-//! modifications and emits a `staging.changed` Tauri event to the frontend.
+//! modifications and emits a `staging-changed` Tauri event to the frontend.
+//!
+//! NOTE — the event name was originally `staging.changed` but Tauri 2's
+//! event-name validator rejects names containing `.`, so the emit was
+//! silently dropped and the frontend never refreshed (see
+//! `src/utils/eventNames.ts` for the full root-cause writeup).
 //!
 //! The emitted payload is `{ path: String, lcsc: String }` where `lcsc` is
 //! the name of the immediate parent directory of the changed file (i.e. the
@@ -48,7 +53,7 @@ impl WatcherState {
 // Core watcher logic
 // ---------------------------------------------------------------------------
 
-/// Start watching `path` for file modifications, emitting `staging.changed`
+/// Start watching `path` for file modifications, emitting `staging-changed`
 /// events via the Tauri `app` handle.
 ///
 /// Returns a [`RecommendedWatcher`] that must be kept alive for as long as
@@ -83,7 +88,7 @@ pub fn start_watching(path: PathBuf, app: AppHandle) -> Result<RecommendedWatche
             };
 
             // Emit to the frontend (best-effort — ignore if window is closed).
-            let _ = app.emit("staging.changed", payload);
+            let _ = app.emit(crate::event_names::STAGING_CHANGED, payload);
         }
     })?;
 

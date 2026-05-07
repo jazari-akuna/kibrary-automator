@@ -500,16 +500,19 @@ export default function Model3DPreview(props: Props) {
               >
                 Replace 3D model…
               </button>
-              {/* 26.5.7-alpha.4 reveal-in-explorer: open the on-disk
-                  3D-model file in the host OS's native file manager.
-                  Disabled when the model file doesn't exist (file_exists
-                  is reported as false by the sidecar). */}
+              {/* 26.5.7-alpha.5 reveal-in-explorer:
+                  Always render the button when a model block exists.
+                  Previously we disabled it whenever file_exists===false,
+                  which the user reported as "no Open-in-Explorer button"
+                  on a model whose .kicad_mod points at a stale path —
+                  a disabled grey button visually disappears next to the
+                  blue "View 3D" / zinc "Replace" CTAs. Revealing the
+                  path is still useful in that case: the parent .3dshapes
+                  dir typically exists and the host file manager will
+                  surface it. The Rust `reveal_in_explorer` already
+                  toasts a friendly error when the path is missing. */}
               <OpenInExplorerButton
-                path={
-                  model().file_exists !== false
-                    ? model().resolved_path ?? model().model_path
-                    : null
-                }
+                path={model().resolved_path ?? model().model_path}
                 label="Open .step"
                 testid="reveal-3dmodel-in-explorer"
               />

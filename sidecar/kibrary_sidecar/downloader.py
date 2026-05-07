@@ -28,6 +28,7 @@ from kibrary_sidecar import jlc
 from kibrary_sidecar import icons
 from kibrary_sidecar import search_client
 from kibrary_sidecar import staging as staging_mod  # `staging` param shadows the module
+from kibrary_sidecar.event_names import DOWNLOAD_DONE, DOWNLOAD_PROGRESS
 
 
 def _missing_assets(assets: dict) -> list[str]:
@@ -69,9 +70,15 @@ async def run_batch(
     """
     Download *lcscs* into *staging/<lcsc>/* directories in parallel.
 
-    Emits ``download.progress`` notifications as each part starts,
-    progresses, and finishes, then a final ``download.done`` notification
+    Emits ``download-progress`` notifications as each part starts,
+    progresses, and finishes, then a final ``download-done`` notification
     with the full results dict.
+
+    NOTE — the event names were originally ``download.progress`` /
+    ``download.done`` but Tauri 2's runtime validator rejects names
+    containing ``.``, so the events were silently dropped on the Rust
+    forwarder side and the frontend's Queue progress UI never updated.
+    See ``kibrary_sidecar.event_names`` for the full root-cause writeup.
 
     Returns a dict mapping lcsc -> {"ok": bool, "error": str|None}.
     """
@@ -85,7 +92,7 @@ async def run_batch(
             if emit:
                 await emit(
                     {
-                        "event": "download.progress",
+                        "event": DOWNLOAD_PROGRESS,
                         "params": {
                             "lcsc": lcsc,
                             "status": "downloading",
@@ -102,7 +109,7 @@ async def run_batch(
                 fut = asyncio.run_coroutine_threadsafe(
                     emit(
                         {
-                            "event": "download.progress",
+                            "event": DOWNLOAD_PROGRESS,
                             "params": {
                                 "lcsc": lcsc,
                                 "status": "downloading",
@@ -197,7 +204,7 @@ async def run_batch(
             if emit:
                 await emit(
                     {
-                        "event": "download.progress",
+                        "event": DOWNLOAD_PROGRESS,
                         "params": {
                             "lcsc": lcsc,
                             "status": "ready" if ok else "failed",
@@ -211,7 +218,7 @@ async def run_batch(
 
     await asyncio.gather(*(worker(lcsc) for lcsc in lcscs))
     if emit:
-        await emit({"event": "download.done", "params": {"results": results}})
+        await emit({"event": DOWNLOAD_DONE, "params": {"results": results}})
     return results
 
 

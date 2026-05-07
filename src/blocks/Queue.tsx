@@ -61,7 +61,7 @@ async function downloadLcscs(lcscs: string[]): Promise<void> {
   try {
     // sidecar.parts_download returns { results: { <lcsc>: { ok, error } } }.
     // We use that as the source of truth for terminal status — relying on
-    // download.progress events alone is fragile (alpha.10 smoke caught a row
+    // download-progress events alone is fragile (alpha.10 smoke caught a row
     // stuck at "downloading" because the listen() registration race-lost to
     // the first emit).
     const resp = await invoke<{

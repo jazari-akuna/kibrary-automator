@@ -26,9 +26,9 @@ interface Props {
    */
   path: string | null | undefined;
   /**
-   * Optional override — when omitted, the button shows "Open" with a
-   * folder-arrow glyph. Pass a label like "Open .kicad_sym" if the
-   * surrounding context doesn't already make clear which file is
+   * Optional override — when omitted, the button shows "Open" next to
+   * the file-with-arrow icon. Pass a label like "Open .kicad_sym" if
+   * the surrounding context doesn't already make clear which file is
    * being revealed.
    */
   label?: string;
@@ -83,12 +83,29 @@ export default function OpenInExplorerButton(props: Props) {
       disabled={disabled()}
       onClick={handleClick}
     >
-      {/* Folder-with-arrow glyph — matches the existing "✎ Edit in KiCad"
-          glyph weight on the same row. We deliberately use a Unicode
-          symbol rather than an SVG icon set because the rest of the UI
-          (✎, 🗑) uses inline glyphs; introducing a single SVG here would
-          look heavier than the buttons it sits next to. */}
-      <span aria-hidden="true">↗</span>
+      {/* lucide-style "file-output" icon — a document with a small arrow
+          pointing out. The previous "↗" Unicode glyph read as a generic
+          link-arrow and didn't communicate "this is a file on disk".
+          The page-with-arrow shape matches the host-OS file-manager
+          metaphor users associate with reveal-in-explorer. Sized to
+          match the surrounding "✎ Edit in KiCad" glyph (~14px line). */}
+      <svg
+        data-testid="open-in-explorer-icon"
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        class="w-3.5 h-3.5"
+        aria-hidden="true"
+      >
+        <path d="M4 7V4a2 2 0 0 1 2-2h9l5 5v13a2 2 0 0 1-2 2h-7" />
+        <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+        <path d="M2 15h10" />
+        <path d="m9 18 3-3-3-3" />
+      </svg>
       <Show when={props.label}>{props.label}</Show>
       <Show when={!props.label}>Open</Show>
     </button>

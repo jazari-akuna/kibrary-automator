@@ -189,3 +189,98 @@ def test_auto_commit_returns_none_when_unsafe(tmp_path: Path):
     (tmp_path / "f.txt").write_text("data")
     result = auto_commit(tmp_path, "should not commit", ["f.txt"])
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# auto_commit: noisy "working tree dirty" warning classification
+#
+# Pre-fix the warning fired any time the workspace had ANY dirty file outside
+# the auto-commit's target paths — including in-flight downloads under
+# `.kibrary/staging/`. That's normal background activity (parts still being
+# downloaded) but the warning made users think something was broken.
+#
+# Post-fix the commit is still skipped (defensive: never sweep unrelated
+# state into the automated commit) but the LOG LEVEL now distinguishes
+# "expected scratch churn" from "potentially worrying user WIP".
+# ---------------------------------------------------------------------------
+
+
+def test_auto_commit_dirt_in_kibrary_only_logs_at_debug(tmp_path: Path, caplog):
+    """When the only dirt outside target paths is under `.kibrary/`, the
+    skip is logged at DEBUG, not WARNING — the user shouldn't see a scary
+    warning every time another part is mid-download."""
+    import logging
+    repo = _make_repo(tmp_path)
+    _initial_commit(repo, tmp_path)
+    # File we intend to commit
+    (tmp_path / "Resistors_KSL").mkdir()
+    (tmp_path / "Resistors_KSL" / "Resistors_KSL.kicad_sym").write_text("(kicad_symbol_lib)")
+    # Concurrent staging activity for a different part
+    staging = tmp_path / ".kibrary" / "staging" / "C25804"
+    staging.mkdir(parents=True)
+    (staging / "C25804.kicad_sym").write_text("(in flight)")
+
+    caplog.set_level(logging.DEBUG, logger="kibrary_sidecar.git_ops")
+    result = auto_commit(
+        tmp_path, "Add Resistors_KSL", ["Resistors_KSL/Resistors_KSL.kicad_sym"]
+    )
+    # Still skipped (defensive)
+    assert result is None
+    # But NOT a warning — DEBUG only
+    warnings = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING and r.name.startswith("kibrary_sidecar")
+    ]
+    assert warnings == [], (
+        f"expected no warnings for kibrary-internal dirt, got: "
+        f"{[r.getMessage() for r in warnings]}"
+    )
+
+
+def test_auto_commit_dirt_outside_kibrary_still_warns(tmp_path: Path, caplog):
+    """Dirt in tracked source files outside `.kibrary/` still produces a
+    WARNING — that's potentially user WIP that the commit would risk
+    sweeping up. Behavioural-equivalent to the pre-fix UX for that case."""
+    import logging
+    repo = _make_repo(tmp_path)
+    _initial_commit(repo, tmp_path)
+    # File we intend to commit
+    (tmp_path / "good.txt").write_text("good")
+    # Unrelated user-WIP file in repo root (not under .kibrary/)
+    (tmp_path / "user_wip.kicad_sch").write_text("user WIP — don't commit")
+
+    caplog.set_level(logging.DEBUG, logger="kibrary_sidecar.git_ops")
+    result = auto_commit(tmp_path, "should not commit", ["good.txt"])
+    assert result is None
+    # WARNING-level record SHOULD exist this time.
+    warning_msgs = [
+        r.getMessage() for r in caplog.records
+        if r.levelno >= logging.WARNING and "auto_commit" in r.getMessage()
+    ]
+    assert any("dirty outside target paths" in m for m in warning_msgs), warning_msgs
+
+
+def test_auto_commit_mixed_dirt_warns_only_on_external(tmp_path: Path, caplog):
+    """When dirt spans both `.kibrary/` AND a user file, the WARNING
+    mentions only the user file (the kibrary churn doesn't deserve
+    pollution of the warning text)."""
+    import logging
+    repo = _make_repo(tmp_path)
+    _initial_commit(repo, tmp_path)
+    (tmp_path / "good.txt").write_text("good")
+    # Both kinds of dirt
+    (tmp_path / "user_wip.txt").write_text("user WIP")
+    (tmp_path / ".kibrary").mkdir()
+    (tmp_path / ".kibrary" / "staging").mkdir()
+    (tmp_path / ".kibrary" / "staging" / "in_flight.txt").write_text("staging")
+
+    caplog.set_level(logging.DEBUG, logger="kibrary_sidecar.git_ops")
+    result = auto_commit(tmp_path, "should not commit", ["good.txt"])
+    assert result is None
+    warning_msgs = [
+        r.getMessage() for r in caplog.records
+        if r.levelno >= logging.WARNING and "auto_commit" in r.getMessage()
+    ]
+    # The warning should mention the user file, NOT the kibrary scratch.
+    assert any("user_wip.txt" in m for m in warning_msgs), warning_msgs
+    assert not any(".kibrary/staging" in m for m in warning_msgs), warning_msgs
