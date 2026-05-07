@@ -2,6 +2,22 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.7-alpha.3] — 2026-05-07
+
+### Fixed
+- **Position dial XY + rotation appeared inverted on click.** Empirical mapping verification (visual-verify against `synthetic_pcb_named` with the actual `kibrary-visual-verify:alpha.5` docker) confirmed the KiCad → world axis remap in `applyLiveDelta` was already correct; the bug was the dial **labels**. The wedge at 12 o'clock was labelled "−Y" because KiCad's PCB-Y projects to screen-down at the default camera angle — but users read "+Y" as standard math/3D convention (screen-up) and reported the dial as inverted. Fix: the wedge **labels** were swapped (top now reads "+Y", bottom "−Y", same for all rotation pairs). Click semantics + on-disk KiCad-coord storage are unchanged, so the save round-trip stays consistent. Hover-arrow direction code already mirrors the click delta via `kicadAxisToWorld`, so the ghost arrow / arc points exactly where the chip will move with no code change there. Three new visual-verify fixtures (`synthetic_jog_plus_x_label`, `synthetic_jog_plus_y_label`, `synthetic_rotate_plus_z_label`) assert chip world delta projects to the expected screen direction (positive `chipScreenUpRange` ⇒ chip appears to move up on screen) so a future label revert FAILS empirically.
+- **App still wouldn't close after Save** (alpha.2's `window.destroy()` fix didn't terminate the process). Root cause: in `tauri-runtime-wry` 2.10.1, `WindowMessage::Destroy` calls `on_window_close()` which only sets `WindowWrapper.inner = None` — it does not remove the wrapper from the `windows` map and does not set `ControlFlow::Exit`. The OS-level GTK window stays alive if the inner Arc has a clone (it usually does). Fix: `confirm_quit` now calls `app.exit(0)` (Tauri's `Message::RequestExit` → `ControlFlow::Exit` directly with a `std::process::exit(0)` fallback). New `closeHandlerRust.test.ts` greps the Rust source to lock the contract.
+
+### Added
+- **Viewport grows in HEIGHT too.** Wrapper went from `height: 320px` (fixed) → `min-height: 320px; height: 65vh` (grows with the window, never collapses below the floor). ResizeObserver picks up the new size on every window resize.
+- **Middle-mouse pan.** OrbitControls config now: LEFT = ROTATE, MIDDLE = PAN, RIGHT = PAN (right-click stays as PAN fallback). Standard CAD convention (KiCad / Blender / Fusion).
+- **Shift-click halves the step on every dial.** Outer XY wedges 1.0mm → 0.5mm; inner wedges 0.1mm → 0.05mm; Z column 1.0mm/0.1mm → 0.5mm/0.05mm; rotation wedges 90° → 45°. Keyboard ArrowKeys' Shift behaviour (UPSCALE 0.1 → 1.0) is preserved — documented as a deliberate keyboard/click asymmetry since users hold Shift for "fine" on the mouse and "coarse" on the keyboard.
+
+### Tests
+- vitest: **135 passing** (was 84; +51 across mouseButtons / viewportHeight / closeHandlerRust / dial-axis-mapping / dial-shift-half / rotate-half).
+- pytest: 326 passing (unchanged).
+- visual-verify: 6 fixtures pass (3 existing + 3 new screen-projection ones).
+
 ## [26.5.7-alpha.2] — 2026-05-07
 
 ### Fixed

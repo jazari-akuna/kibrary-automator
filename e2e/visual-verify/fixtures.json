@@ -62,6 +62,60 @@
         "maxRemovedMeshes": 0,
         "decalAlignmentMaxDelta": 0.0005
       }
+    },
+    {
+      "name": "synthetic_jog_plus_x_label",
+      "lib": "SyntheticPCB_KSL",
+      "footprint": "synthetic_pcb_named",
+      "action": "Click the wedge LABELLED '+X' (testid jog-outer-+x). Bug 1 (26.5.8) regression: chip must move toward screen-right (positive screenRight projection); the dial promised screen-relative motion.",
+      "expectedSubstrateName": "preview_PCB",
+      "jogButtonSelector": "[data-testid=\"jog-outer-+x\"]",
+      "assertOverrides": {
+        "substrateMaxDelta": 0.0001,
+        "chipYDeltaRange": null,
+        "chipYDeltaMinCount": 0,
+        "chipScreenRightRange": [0.0003, 0.002],
+        "chipXDeltaRange": [0.0005, 0.002],
+        "chipXDeltaMinCount": 1,
+        "maxAddedMeshes": 0,
+        "maxRemovedMeshes": 0,
+        "decalAlignmentMaxDelta": null
+      }
+    },
+    {
+      "name": "synthetic_jog_plus_y_label",
+      "lib": "SyntheticPCB_KSL",
+      "footprint": "synthetic_pcb_named",
+      "action": "Click the wedge LABELLED '+Y' (now at top of dial; testid jog-outer--y because internal sign is '-'). Bug 1 (26.5.8): chip must move toward screen-UP (positive screenUp projection). The fix swapped +Y and -Y labels so 'click +Y' delivers screen-up motion.",
+      "expectedSubstrateName": "preview_PCB",
+      "jogButtonSelector": "[data-testid=\"jog-outer--y\"]",
+      "assertOverrides": {
+        "substrateMaxDelta": 0.0001,
+        "chipYDeltaRange": null,
+        "chipYDeltaMinCount": 0,
+        "chipScreenUpRange": [0.0001, 0.001],
+        "chipZDeltaRange": [-0.002, -0.0005],
+        "chipZDeltaMinCount": 1,
+        "maxAddedMeshes": 0,
+        "maxRemovedMeshes": 0,
+        "decalAlignmentMaxDelta": null
+      }
+    },
+    {
+      "name": "synthetic_rotate_plus_z_label",
+      "lib": "SyntheticPCB_KSL",
+      "footprint": "synthetic_pcb_named",
+      "action": "Click the wedge LABELLED '+Z' rotation (testid rotate--z because internal sign='-'). Bug 2 (26.5.8): the +Z label must produce CLOCKWISE rotation on screen (KiCad-Z = -90° rotation, since right-hand-rule +90° around world+Y is counter-clockwise from above).",
+      "expectedSubstrateName": "preview_PCB",
+      "jogButtonSelector": "[data-testid=\"rotate--z\"]",
+      "assertOverrides": {
+        "substrateMaxDelta": 0.0001,
+        "chipYDeltaRange": null,
+        "chipYDeltaMinCount": 0,
+        "maxAddedMeshes": 0,
+        "maxRemovedMeshes": 0,
+        "decalAlignmentMaxDelta": null
+      }
     }
   ]
 }

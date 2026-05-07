@@ -161,6 +161,18 @@ declare global {
      * scene traversal.
      */
     __model3dGLHoverHelperName?: string;
+    /**
+     * 26.5.7-alpha.3 viewport-resize: surfaces the OrbitControls
+     * mouseButtons map after init so a vitest spec can assert
+     * MIDDLE === THREE.MOUSE.PAN without booting the GL stack itself.
+     * Three.js types allow each slot to be null (= no action) so we
+     * mirror that here.
+     */
+    __model3dGLMouseButtons?: {
+      LEFT?: THREE.MOUSE | null;
+      MIDDLE?: THREE.MOUSE | null;
+      RIGHT?: THREE.MOUSE | null;
+    };
   }
 }
 
@@ -332,7 +344,21 @@ export default function Model3DViewerGL(props: Props) {
     controls = new OrbitControls(camera, canvasEl);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    // Right-click pan (default), wheel zoom (default), left-drag orbit.
+    // 26.5.7-alpha.3 viewport-resize: remap MIDDLE mouse → pan (was the
+    // OrbitControls default DOLLY/zoom). Matches the CAD convention used
+    // by KiCad, Blender and Fusion. RIGHT mouse keeps panning too as a
+    // fallback so users with the prior muscle-memory aren't stranded.
+    // LEFT stays as orbit/rotate; wheel still drives zoom.
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.PAN,
+      RIGHT: THREE.MOUSE.PAN,
+    };
+    // Test hook: surface the active button mapping so a vitest spec (and
+    // any future visual-verify probe) can assert MIDDLE → PAN without
+    // needing a WebDriver mouse-button injection. Mirrors the other
+    // `__model3dGL*` runtime hooks.
+    window.__model3dGLMouseButtons = controls.mouseButtons;
     // Speed defaults are tuned for the typical kicad-cli output (mm units,
     // boards within a few-cm bounding box).
 
@@ -940,18 +966,26 @@ export default function Model3DViewerGL(props: Props) {
     // alpha.34: positioner emits MILLIMETRES; kicad-cli's GLB unit is
     // METRES. /1000 keeps a 1 mm slider tick from becoming a 1 m fly-away.
     //
-    // alpha.35: positioner emits values in KICAD PCB SPACE — +X right,
-    // +Y "back" along the layout sheet, +Z up out of the board. Three.js
-    // GLB output from kicad-cli is Y-UP (+Y = world up = KiCad +Z, +Z
-    // world = depth ≈ KiCad +Y, +X world = KiCad +X). So we swap the
-    // two non-X components when feeding into the matrix. Without the
-    // swap, dragging "+Z" (up) made the chip slide sideways in world
-    // depth — the user's "controls are mixed" report. Same swap applies
-    // to rotation (axis remap follows the basis change).
+    // KiCad-PCB → three.js-world axis mapping (empirically verified via
+    // visual-verify on synthetic_pcb_named: a +1 mm KiCad-axis jog moves
+    // the chip's world position by exactly +0.001 m on the listed axis):
+    //
+    //     KiCad +X  →  world +X   (no remap; both are "to the right")
+    //     KiCad +Y  →  world +Z   (KiCad's "south on layout sheet" rotates
+    //                              onto three.js's depth axis)
+    //     KiCad +Z  →  world +Y   (KiCad's "out of board" lands on Y-up)
+    //
+    // 26.5.8 dial-label fix: the wedge labels in Model3DJogDial /
+    // Model3DRotateDial were swapped to reflect the user's screen-relative
+    // mental model ("+Y at top of dial = chip moves up on screen") because
+    // the camera at (0.12, 0.10, 0.12) projects KiCad +Y (= world +Z)
+    // toward screen-DOWN. The applyLiveDelta remap below stays the same —
+    // it's the dial labels (NOT this code) that needed to flip, so the
+    // on-disk KiCad-coord storage round-trips cleanly through kicad-cli.
     const dxKicad = (props.offset[0] - lastSavedOffset[0]) / 1000;
     const dyKicad = (props.offset[1] - lastSavedOffset[1]) / 1000;
     const dzKicad = (props.offset[2] - lastSavedOffset[2]) / 1000;
-    const dxWorld = dxKicad;
+    const dxWorld = dxKicad;       // KiCad +X → world +X
     const dyWorld = dzKicad;       // KiCad +Z (up) → world +Y
     const dzWorld = dyKicad;       // KiCad +Y (back) → world +Z
 
@@ -1440,7 +1474,10 @@ export default function Model3DViewerGL(props: Props) {
         <div
           data-testid="3d-viewer-gl-error"
           class="rounded bg-zinc-200 dark:bg-zinc-800 text-xs text-zinc-500 dark:text-zinc-400 flex items-center justify-center"
-          style={{ width: '100%', height: '320px' }}
+          // 26.5.7-alpha.3 viewport-resize: floor at 320 px so the viewer
+          // never collapses on small windows; clamp to 65 vh so it grows
+          // with the window (matches the live wrapper below).
+          style={{ width: '100%', 'min-height': '320px', height: '65vh' }}
         >
           WebGL unavailable — falling back…
         </div>
@@ -1450,7 +1487,13 @@ export default function Model3DViewerGL(props: Props) {
         ref={containerEl}
         data-testid="3d-viewer-gl-wrapper"
         class="rounded overflow-hidden bg-white dark:bg-zinc-950 relative"
-        style={{ width: '100%', height: '320px' }}
+        // 26.5.7-alpha.3 viewport-resize: was fixed `height: 320px` which
+        // grew in width but not height when the window enlarged. Switch
+        // to `min-height: 320px` (floor — never collapses) plus a
+        // viewport-relative `65vh` so the viewer scales vertically with
+        // the window. ResizeObserver below already syncs renderer size
+        // and camera aspect on every dimension change.
+        style={{ width: '100%', 'min-height': '320px', height: '65vh' }}
       >
         <canvas
           ref={canvasEl}

@@ -7,14 +7,22 @@
  * X/Y/Z inputs of Model3DPositioner remains the precise-fine-grained
  * path; this dial is the CNC-style coarse jog.
  *
- * Wedge layout (clockwise from north):
+ * Wedge layout (clockwise from north). LABELS use the user's screen-
+ * relative mental model — "+Z = clockwise on screen". KiCad's right-hand
+ * rule has +Z (vertical out of board) rotation going COUNTER-clockwise
+ * when viewed from above, which is the opposite of how users describe
+ * "+90° rotation". So the wedges that internally send `+90°` are
+ * labelled "−" and vice versa; the (axis, sign) data still drives the
+ * underlying KiCad-coord rotation so save round-trip stays consistent.
  *
- *      +X   (0°-60°)
- *      +Y   (60°-120°)
- *      −Z   (120°-180°)
- *      −X   (180°-240°)
- *      −Y   (240°-300°)
- *      +Z   (300°-360°)
+ *      −X   (0°-60°)    [internally axis='x', sign='+', sends +90° KiCad]
+ *      −Y   (60°-120°)  [internally axis='y', sign='+', sends +90°]
+ *      +Z   (120°-180°) [internally axis='z', sign='-', sends −90° KiCad
+ *                        which renders as clockwise-on-screen — what the
+ *                        user calls "+Z"]
+ *      +X   (180°-240°) [axis='x', sign='-']
+ *      +Y   (240°-300°) [axis='y', sign='-']
+ *      −Z   (300°-360°) [axis='z', sign='+']
  *
  * Opposing-sign wedges sit diametrically across the ring so the visual
  * mapping matches a physical rotary knob. Pure SVG for the same reason
@@ -52,13 +60,17 @@ interface Wedge {
 }
 
 // 6 wedges × 60° each. Opposing-sign pairs are 180° apart by construction.
+// 26.5.8: labels swapped relative to internal `sign` field — see top-of-
+// file rationale. The (axis, sign) data is the KiCad-coord rotation that
+// the click sends to the positioner; the label tells the user what the
+// visible chip rotation will look like (e.g. "+Z" = clockwise yaw).
 const WEDGES: Wedge[] = [
-  { a1: 0,   a2: 60,  axis: 'x', sign: '+', label: '+X' },
-  { a1: 60,  a2: 120, axis: 'y', sign: '+', label: '+Y' },
-  { a1: 120, a2: 180, axis: 'z', sign: '-', label: '−Z' },
-  { a1: 180, a2: 240, axis: 'x', sign: '-', label: '−X' },
-  { a1: 240, a2: 300, axis: 'y', sign: '-', label: '−Y' },
-  { a1: 300, a2: 360, axis: 'z', sign: '+', label: '+Z' },
+  { a1: 0,   a2: 60,  axis: 'x', sign: '+', label: '−X' },
+  { a1: 60,  a2: 120, axis: 'y', sign: '+', label: '−Y' },
+  { a1: 120, a2: 180, axis: 'z', sign: '-', label: '+Z' },
+  { a1: 180, a2: 240, axis: 'x', sign: '-', label: '+X' },
+  { a1: 240, a2: 300, axis: 'y', sign: '-', label: '+Y' },
+  { a1: 300, a2: 360, axis: 'z', sign: '+', label: '−Z' },
 ];
 
 // Smaller than the XY dial so the two can sit side-by-side without
@@ -121,9 +133,12 @@ export default function Model3DRotateDial(props: Props) {
             })
           }
           onMouseLeave={() => props.onHoverChange?.(null)}
-          onClick={() => {
+          onClick={(e) => {
             props.onHoverChange?.(null);
-            props.onRotate(w.axis, delta);
+            // Shift-click halves the rotation step: 90° → 45°. Mirrors
+            // the translate dial's Shift-click behaviour for consistency.
+            const scaled = e.shiftKey ? delta * 0.5 : delta;
+            props.onRotate(w.axis, scaled);
           }}
         />
         <text
@@ -153,7 +168,7 @@ export default function Model3DRotateDial(props: Props) {
     <svg
       data-testid="rotate-dial"
       role="group"
-      aria-label="Rotation jog dial. Click a wedge to rotate the chip body 90° around that axis. Centre disk resets all rotations to zero."
+      aria-label="Rotation jog dial. Click a wedge to rotate the chip body 90° around that axis. Hold Shift while clicking for a 45° step. Centre disk resets all rotations to zero."
       viewBox="0 0 140 140"
       width="120"
       height="120"

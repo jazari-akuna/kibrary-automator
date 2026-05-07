@@ -139,6 +139,27 @@ export interface AssertOverrides {
   chipYDeltaRange?: [number, number] | null;
   /** If set, fail unless at least this many chip nodes meet chipYDeltaRange. */
   chipYDeltaMinCount?: number;
+  /**
+   * 26.5.8 — alongside the legacy chipY range, fixtures can pin chip-X
+   * or chip-Z world-space deltas. Used by `synthetic_jog_plus_x`
+   * (assert chip moves in world +X) and `synthetic_jog_plus_y` (assert
+   * world +Z, since KiCad +Y → world +Z). Set to null to skip.
+   */
+  chipXDeltaRange?: [number, number] | null;
+  chipXDeltaMinCount?: number;
+  chipZDeltaRange?: [number, number] | null;
+  chipZDeltaMinCount?: number;
+  /**
+   * 26.5.8 screen-projection assertion. The dial wedges promise screen-
+   * relative motion ("+Y wedge → chip moves screen-up"). Project each
+   * chip's world delta onto the camera basis (camera fixed at
+   * (0.12, 0.10, 0.12) looking at origin) and require at least one chip
+   * to move with screenRight delta in this range (positive ⇒ chip
+   * appears to move toward screen-right). Set to null to skip.
+   */
+  chipScreenRightRange?: [number, number] | null;
+  /** Same idea for screen-up; positive ⇒ chip appears to move up on screen. */
+  chipScreenUpRange?: [number, number] | null;
   /** Tolerance for "mesh count changed" — usually 0 (no add/remove allowed). */
   maxAddedMeshes?: number;
   maxRemovedMeshes?: number;
@@ -159,6 +180,12 @@ export const DEFAULT_OVERRIDES: Required<AssertOverrides> = {
   substrateMaxDelta: 1e-4,
   chipYDeltaRange: [0.0005, 0.002],
   chipYDeltaMinCount: 1,
+  chipXDeltaRange: null,
+  chipXDeltaMinCount: 1,
+  chipZDeltaRange: null,
+  chipZDeltaMinCount: 1,
+  chipScreenRightRange: null,
+  chipScreenUpRange: null,
   maxAddedMeshes: 0,
   maxRemovedMeshes: 0,
   decalAlignmentMaxDelta: 5e-4,
@@ -260,6 +287,79 @@ export function runAssertions(
       );
     }
   }
+
+  // 26.5.8 — chip X / Z world-axis range checks. Same shape as the
+  // legacy chipYDeltaRange. We surface a `chipsInAxisRange` map for the
+  // report.
+  function checkAxisRange(
+    label: 'X' | 'Y' | 'Z',
+    range: [number, number] | null,
+    minCount: number,
+    pickDelta: (d: { x: number; y: number; z: number }) => number,
+  ): { count: number; biggest: number } {
+    if (!range) return { count: 0, biggest: 0 };
+    const [lo, hi] = range;
+    let count = 0;
+    let biggest = 0;
+    for (const m of diff.matched) {
+      if (!m.inChipNodes) continue;
+      const d = pickDelta(m.positionDelta);
+      if (Math.abs(d) > Math.abs(biggest)) biggest = d;
+      if (d >= lo && d <= hi) count++;
+    }
+    if (count < minCount) {
+      fail.push(
+        `expected at least ${minCount} chip node(s) with ${label}-delta in [${lo}, ${hi}] m; ` +
+          `found ${count}. Biggest observed chip ${label}-delta: ${biggest.toExponential(3)} m. ` +
+          `Bug 1 (26.5.8) regression: dial wedge label disagrees with chip world-axis motion.`,
+      );
+    }
+    return { count, biggest };
+  }
+  const xRes = checkAxisRange('X', t.chipXDeltaRange, t.chipXDeltaMinCount, (d) => d.x);
+  const zRes = checkAxisRange('Z', t.chipZDeltaRange, t.chipZDeltaMinCount, (d) => d.z);
+
+  // 26.5.8 screen-projection check. Camera basis fixed at the static
+  // viewer pose: eye (0.12, 0.10, 0.12), target origin, up (0,1,0).
+  // screenRight ≈ (0.7071, 0, -0.7071); screenUp ≈ (-0.359, 0.862, -0.359).
+  const SCREEN_RIGHT = { x: 0.7071067811865475, y: 0, z: -0.7071067811865475 };
+  const SCREEN_UP    = { x: -0.358979079308869, y: 0.8615497903412858, z: -0.358979079308869 };
+  function dot3(a: { x: number; y: number; z: number }, b: typeof SCREEN_RIGHT): number {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+  }
+  function checkScreenRange(
+    label: 'screenRight' | 'screenUp',
+    range: [number, number] | null,
+    basis: typeof SCREEN_RIGHT,
+  ): number {
+    if (!range) return 0;
+    const [lo, hi] = range;
+    let any = false;
+    let biggest = 0;
+    for (const m of diff.matched) {
+      if (!m.inChipNodes) continue;
+      const proj = dot3(m.positionDelta, basis);
+      if (Math.abs(proj) > Math.abs(biggest)) biggest = proj;
+      if (proj >= lo && proj <= hi) any = true;
+    }
+    if (!any) {
+      fail.push(
+        `expected at least one chip node with ${label} delta in [${lo}, ${hi}] m; ` +
+          `biggest observed: ${biggest.toExponential(3)} m. ` +
+          `Bug 1 (26.5.8): the dial promised screen-relative motion but the ` +
+          `chip moved opposite (or not at all) along ${label}.`,
+      );
+    }
+    return biggest;
+  }
+  const screenRightBiggest = checkScreenRange(
+    'screenRight',
+    t.chipScreenRightRange,
+    SCREEN_RIGHT,
+  );
+  const screenUpBiggest = checkScreenRange('screenUp', t.chipScreenUpRange, SCREEN_UP);
+  // Side-effect: silence "unused var" if the verdict consumer ignores them.
+  void xRes; void zRes; void screenRightBiggest; void screenUpBiggest;
 
   // At least one chip node should have moved within the expected Y range.
   let chipsInRange = 0;

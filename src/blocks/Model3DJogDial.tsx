@@ -36,6 +36,19 @@ interface Props {
   onHoverChange?: (preview: HoverPreview | null) => void;
 }
 
+/**
+ * 26.5.8 shift-modifier semantics for translation step:
+ *   • CLICK on a wedge with Shift held → HALF-step (outer 1mm → 0.5mm,
+ *     inner 0.1mm → 0.05mm). Mouse-driven precision nudge.
+ *   • Keyboard ArrowKeys with Shift held → UPSCALE (0.1mm → 1.0mm). The
+ *     keyboard convention predates the dial and matches CAD/3D-app idioms
+ *     where Shift-arrow is "big jump"; we keep that to avoid muscle-memory
+ *     breakage. The intentional asymmetry is intentional — clicks already
+ *     have two ring sizes (outer/inner) for coarse vs fine; Shift halves
+ *     the chosen ring. Keyboard has only one default step, so Shift acts
+ *     as the multiplier instead.
+ */
+
 const CX = 90;
 const CY = 90;
 
@@ -56,32 +69,45 @@ interface Wedge {
 }
 
 // Quadrant centres — wedge POSITION matches the screen direction the
-// chip actually moves, not the raw axis-letter the dial controls.
+// chip actually moves, AND the LABEL matches the user's screen-relative
+// mental model (+Y at top = "click here to move chip up on screen").
 //
-// Why the +Y wedge sits at the BOTTOM:
-//   • The viewer's camera at (0.12, 0.10, 0.12) looks down at the origin,
-//     so PCB +Y (≡ world +Z in kicad-cli's GLB output) projects toward
-//     the viewer — i.e. screen-DOWN-LEFT.  Clicking a wedge labelled
-//     "+Y" up at 12 o'clock would shove the chip the opposite way to
-//     where the wedge points (the user-reported "+X +Y don't match
-//     what I see" bug).
-//   • This also matches KiCad's PCB-editor convention where +Y is
-//     screen-south on a top-down plan view, so the dial reads the
-//     same way as the layout canvas users come from.
+// User mental-model fix (26.5.8): the wedge labels follow standard math
+// convention — +Y means UP-on-screen, not KiCad's "+Y is south on the
+// layout sheet" convention. The labels were previously KiCad-axis names
+// which collided with users' (R, G, B = +X, +Y, +Z = right, up, depth)
+// expectation — they read "+Y" at the bottom and reported the dial as
+// "all inverted". Empirically (visual-verify):
+//   KiCad +X → world +X → screen-RIGHT  (wedge labelled "+X" at 3 o'clock ✓)
+//   KiCad +Y → world +Z → screen-LEFT-DOWN (so KiCad-+Y is "screen-down");
+//                         we relabel BOTTOM as "−Y" and TOP as "+Y", but
+//                         keep the (axis, sign) data intact so the chip
+//                         continues to translate in the screen direction
+//                         the wedge POSITION already implies. Effectively
+//                         label-swap only — click semantics + on-disk
+//                         storage unchanged, save round-trip preserved.
+//   KiCad +Z → world +Y (handled by Model3DJogZ; vertical axis aligns
+//                         with screen-up at this camera angle, so the
+//                         Z label was never inverted).
 //
-// X-axis maps cleanly: PCB +X = world +X ≈ screen-right at this
-// camera angle, so +X stays on the right.
+// X-axis: PCB +X = world +X ≈ screen-right at this camera angle, so the
+// "+X" label stays on the right.
 //
-// Z (height) is handled by the separate Model3DJogZ column — this
-// dial is X/Y only.
+// Z (height) is handled by the separate Model3DJogZ column — this dial
+// is X/Y only.
 const OUTER_WEDGES: Wedge[] = [
-  { a1: 315, a2: 45, axis: 'y', sign: '-', ring: 'outer', label: '−Y' },
+  // top → user reads "+Y"; click sends KiCad-Y −delta (which renders as
+  // screen-up via world −Z projection). Save round-trip ends up at the
+  // same on-screen position as the live preview.
+  { a1: 315, a2: 45,  axis: 'y', sign: '-', ring: 'outer', label: '+Y' },
   { a1: 45,  a2: 135, axis: 'x', sign: '+', ring: 'outer', label: '+X' },
-  { a1: 135, a2: 225, axis: 'y', sign: '+', ring: 'outer', label: '+Y' },
+  // bottom → "−Y"; click sends KiCad-Y +delta (renders screen-down).
+  { a1: 135, a2: 225, axis: 'y', sign: '+', ring: 'outer', label: '−Y' },
   { a1: 225, a2: 315, axis: 'x', sign: '-', ring: 'outer', label: '−X' },
 ];
 const INNER_WEDGES: Wedge[] = [
-  { a1: 315, a2: 45, axis: 'y', sign: '-', ring: 'inner', label: '↑' },
+  // Inner ring uses arrow icons that match screen direction directly.
+  { a1: 315, a2: 45,  axis: 'y', sign: '-', ring: 'inner', label: '↑' },
   { a1: 45,  a2: 135, axis: 'x', sign: '+', ring: 'inner', label: '→' },
   { a1: 135, a2: 225, axis: 'y', sign: '+', ring: 'inner', label: '↓' },
   { a1: 225, a2: 315, axis: 'x', sign: '-', ring: 'inner', label: '←' },
@@ -121,6 +147,9 @@ function midAngle(a1: number, a2: number): number {
 
 export default function Model3DJogDial(props: Props) {
   const handleKey = (e: KeyboardEvent) => {
+    // Keyboard convention: Shift UPSCALES (0.1 → 1.0). This intentionally
+    // diverges from the click handler (where Shift HALVES) — see the
+    // shift-modifier semantics block at the top of the file.
     const big = e.shiftKey ? 1.0 : 0.1;
     let axis: 'x' | 'y' | null = null;
     let amount = 0;
@@ -173,12 +202,18 @@ export default function Model3DJogDial(props: Props) {
             })
           }
           onMouseLeave={() => props.onHoverChange?.(null)}
-          onClick={() => {
+          onClick={(e) => {
             // Click consumes the hover (the part is about to actually move
             // — the ghost arrow has done its job and would otherwise linger
             // on top of the now-moved chip).
             props.onHoverChange?.(null);
-            props.onJog(w.axis, delta);
+            // Shift-click HALVES the step for mouse-driven precision nudge
+            // (see file-level shift-modifier comment). 1.0mm → 0.5mm,
+            // 0.1mm → 0.05mm. Keyboard Shift+Arrow is the opposite — it
+            // upscales — because keys have one default step where clicks
+            // already have two ring sizes for coarse vs fine.
+            const scaled = e.shiftKey ? delta * 0.5 : delta;
+            props.onJog(w.axis, scaled);
           }}
         />
         <text
@@ -211,7 +246,7 @@ export default function Model3DJogDial(props: Props) {
       data-testid="jog-dial"
       tabIndex={0}
       role="group"
-      aria-label="XY offset jog dial. Click outer wedges for ±1mm steps, inner wedges for ±0.1mm. Arrow keys for inner steps, Shift+Arrow for outer. Click centre to reset."
+      aria-label="XY offset jog dial. Click outer wedges for ±1mm steps, inner wedges for ±0.1mm. Hold Shift while clicking to halve the step (0.5mm or 0.05mm). Arrow keys for inner steps, Shift+Arrow for outer. Click centre to reset."
       onKeyDown={handleKey}
       viewBox="0 0 180 180"
       width="160"

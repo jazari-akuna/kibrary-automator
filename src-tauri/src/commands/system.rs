@@ -31,24 +31,39 @@ pub fn quit_app(app: tauri::AppHandle) {
 }
 
 /// Frontend acks the unsaved-edits prompt (or "no edits, just close").
-/// Force-destroys the main window via `window.destroy()` — which, unlike
-/// `window.close()`, does NOT re-emit the `CloseRequested` event so the
-/// frontend cannot accidentally loop back into the prevent-close handler.
+/// Triggers a guaranteed app-level exit via `app.exit(0)` — which fires
+/// `RunEvent::ExitRequested` and, if anything goes wrong, falls back to
+/// `std::process::exit(0)` (see tauri::App::exit).
 ///
-/// We also set `QUIT_CONFIRMED` as defense-in-depth: if some other window
-/// triggers CloseRequested between this command running and the destroy
-/// actually landing on the event loop, the latch lets it through.
+/// Why not `window.close()` or `window.destroy()`?
 ///
-/// The bug this fixes (v26.5.7-alpha.1): the previous `window.close()`
-/// implementation re-fired CloseRequested, relying on the latch to break
-/// the loop. On some Linux WMs the latch ordering with the GTK event loop
-/// resulted in the close being prevented anyway — the user reported "after
-/// saving the app does not want to close anymore". `destroy()` sidesteps
-/// the re-emission entirely and is the documented pattern for force-close.
+/// • `window.close()` re-emits `CloseRequested`, which our `prevent_close`
+///   handler intercepts again — the latch is meant to break that loop, but
+///   on Linux/GTK the ordering between the atomic store and the event-loop
+///   dispatch was racy and the user saw "the app does not want to close
+///   anymore" (regressed in v26.5.7-alpha.1).
+///
+/// • `window.destroy()` sends `WindowMessage::Destroy` to tauri-runtime-wry,
+///   which calls `on_window_close()` — that only sets the runtime's
+///   `WindowWrapper.inner = None`, it does NOT remove the wrapper from the
+///   `windows` map and it does NOT set `ControlFlow::Exit`. The OS-level
+///   GTK window is only torn down when the inner Arc actually drops, which
+///   may be deferred indefinitely if the webview holds a clone. In that
+///   case the process keeps running with a zombie window — "no prompts,
+///   needs to be killed" (user-reported regression in v26.5.7-alpha.2).
+///
+/// `app.exit(0)` sends `Message::RequestExit` which sets
+/// `ControlFlow::Exit` directly, and the std::process::exit fallback is
+/// guaranteed to terminate even if the runtime is wedged.
+///
+/// `QUIT_CONFIRMED` is kept as defense-in-depth: if anything emits
+/// `CloseRequested` between this command running and the exit propagating,
+/// the prevent-close handler in main.rs lets that close through unprompted.
 #[tauri::command]
-pub fn confirm_quit(window: tauri::Window) -> Result<(), String> {
+pub fn confirm_quit(app: tauri::AppHandle) -> Result<(), String> {
     QUIT_CONFIRMED.store(true, Ordering::SeqCst);
-    window.destroy().map_err(|e| e.to_string())
+    app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]

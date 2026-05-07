@@ -130,3 +130,118 @@ describe('Wave 9-C / rotation pulse — ±90° jogs, axis dispatch, modulo wrap'
     expect(r).toEqual([0, 0, 0]);
   });
 });
+
+// --- 26.5.8 RotateDial label & Shift-modifier contract ---------------------
+
+/**
+ * Mirror of src/blocks/Model3DRotateDial.tsx WEDGES + onClick handler.
+ * The dial labels the wedges with screen-relative semantics ("+Z =
+ * clockwise on screen"), but the click sends KiCad-coord rotation
+ * (right-hand rule) so save round-trip stays consistent. Keep this
+ * lock-step with the prod table — a label drift in the source breaks
+ * both prod and this spec.
+ */
+const ROTATE_WEDGES_LABEL_TO_DELTA: Array<{
+  label: string;
+  axis: 'x' | 'y' | 'z';
+  deltaUnscaled: number;
+}> = [
+  // Reading order matches the prod source's clockwise-from-north walk so
+  // a side-by-side diff of WEDGES vs this table is trivial.
+  { label: '−X', axis: 'x', deltaUnscaled:  90 },
+  { label: '−Y', axis: 'y', deltaUnscaled:  90 },
+  { label: '+Z', axis: 'z', deltaUnscaled: -90 },
+  { label: '+X', axis: 'x', deltaUnscaled: -90 },
+  { label: '+Y', axis: 'y', deltaUnscaled: -90 },
+  { label: '−Z', axis: 'z', deltaUnscaled:  90 },
+];
+
+function rotateClick(label: string, shift: boolean): { axis: 'x' | 'y' | 'z'; delta: number } {
+  const w = ROTATE_WEDGES_LABEL_TO_DELTA.find((x) => x.label === label);
+  if (!w) throw new Error(`unknown rotate label: ${label}`);
+  return { axis: w.axis, delta: shift ? w.deltaUnscaled * 0.5 : w.deltaUnscaled };
+}
+
+describe('Model3DRotateDial / wedge-label contract (screen-relative)', () => {
+  it('exactly six wedges (one per axis sign)', () => {
+    expect(ROTATE_WEDGES_LABEL_TO_DELTA).toHaveLength(6);
+    const labels = ROTATE_WEDGES_LABEL_TO_DELTA.map((w) => w.label).sort();
+    expect(labels).toEqual(['+X', '+Y', '+Z', '−X', '−Y', '−Z']);
+  });
+
+  it('clicking "+Z" sends KiCad-Z −90° (the rotation that renders clockwise on screen)', () => {
+    expect(rotateClick('+Z', false)).toEqual({ axis: 'z', delta: -90 });
+  });
+
+  it('clicking "−Z" sends KiCad-Z +90° (counter-clockwise on screen)', () => {
+    expect(rotateClick('−Z', false)).toEqual({ axis: 'z', delta: 90 });
+  });
+
+  it('+X / −X labels send opposite KiCad-X rotation deltas', () => {
+    expect(rotateClick('+X', false).delta).toBe(-90);
+    expect(rotateClick('−X', false).delta).toBe(90);
+  });
+
+  it('+Y / −Y labels send opposite KiCad-Y rotation deltas', () => {
+    expect(rotateClick('+Y', false).delta).toBe(-90);
+    expect(rotateClick('−Y', false).delta).toBe(90);
+  });
+});
+
+describe('Model3DRotateDial / Shift modifier on CLICK halves the rotation step', () => {
+  it('Shift+click "+Z" sends −45° (half of −90)', () => {
+    expect(rotateClick('+Z', true)).toEqual({ axis: 'z', delta: -45 });
+  });
+
+  it('Shift+click "+X" sends −45°', () => {
+    expect(rotateClick('+X', true)).toEqual({ axis: 'x', delta: -45 });
+  });
+
+  it('Shift+click "−Y" sends +45° (half of +90)', () => {
+    expect(rotateClick('−Y', true)).toEqual({ axis: 'y', delta: 45 });
+  });
+
+  it('plain click without Shift uses the unscaled ±90° step', () => {
+    for (const w of ROTATE_WEDGES_LABEL_TO_DELTA) {
+      expect(Math.abs(rotateClick(w.label, false).delta)).toBe(90);
+    }
+  });
+});
+
+// --- 26.5.8 JogZ Shift-modifier contract -----------------------------------
+
+/**
+ * Mirror of src/blocks/Model3DJogZ.tsx — each of the 4 jog buttons
+ * (+1mm, +0.1mm, −0.1mm, −1mm) halves its step on Shift+click. The
+ * RESET centre disk is unaffected (it dispatches an absolute zero
+ * pulse, not a delta).
+ */
+function jogZClick(button: 'plus1' | 'plus01' | 'minus01' | 'minus1', shift: boolean): number {
+  const base = { plus1: 1.0, plus01: 0.1, minus01: -0.1, minus1: -1.0 }[button];
+  return shift ? base * 0.5 : base;
+}
+
+describe('Model3DJogZ / Shift modifier on CLICK halves the Z step', () => {
+  it('Shift+click +Z 1mm sends 0.5mm', () => {
+    expect(jogZClick('plus1', true)).toBe(0.5);
+  });
+
+  it('Shift+click +Z 0.1mm sends 0.05mm', () => {
+    expect(jogZClick('plus01', true)).toBe(0.05);
+  });
+
+  it('Shift+click −Z 0.1mm sends −0.05mm', () => {
+    expect(jogZClick('minus01', true)).toBe(-0.05);
+  });
+
+  it('Shift+click −Z 1mm sends −0.5mm', () => {
+    expect(jogZClick('minus1', true)).toBe(-0.5);
+  });
+
+  it('plain click without Shift uses the unscaled step', () => {
+    expect(jogZClick('plus1', false)).toBe(1.0);
+    expect(jogZClick('plus01', false)).toBe(0.1);
+    expect(jogZClick('minus01', false)).toBe(-0.1);
+    expect(jogZClick('minus1', false)).toBe(-1.0);
+  });
+});
