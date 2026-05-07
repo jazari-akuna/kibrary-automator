@@ -110,6 +110,55 @@ describe('Model3DViewerGL / formatWarning', () => {
     expect(out).toContain('model_not_found');
     expect(out).not.toContain('undefined');
   });
+
+  // -------------------------------------------------------------------------
+  // C6037812-class component-load failures (sidecar emits these from
+  // parts.download when easyeda.com has no design data for an LCSC).
+  // -------------------------------------------------------------------------
+
+  it('formats a component_load_failed warning with the LCSC and reason', () => {
+    const w: RenderWarning = {
+      kind: 'component_load_failed',
+      lcsc: 'C6037812',
+      missing: ['symbol', 'footprint', '3D model'],
+      assets: { symbol: false, footprint: false, model_3d: false },
+      reason: "Component 'C6037812' not found in source library",
+    };
+
+    const out = formatWarning(w);
+
+    expect(out).toContain('C6037812');
+    expect(out).toContain('not found');
+    // Reason text is forwarded so the user sees the source-library hint.
+    expect(out).toMatch(/source library|not found/i);
+  });
+
+  it('formats a component_load_partial warning listing missing assets', () => {
+    const w: RenderWarning = {
+      kind: 'component_load_partial',
+      lcsc: 'Cpartial',
+      missing: ['symbol', '3D model'],
+      assets: { symbol: false, footprint: true, model_3d: false },
+    };
+
+    const out = formatWarning(w);
+
+    expect(out).toContain('Cpartial');
+    expect(out).toContain('symbol');
+    expect(out).toContain('3D model');
+    // Footprint landed on disk — must NOT show up in the missing list.
+    expect(out).not.toMatch(/missing[^\n]*footprint/);
+  });
+
+  it('handles a component_load_failed warning without an LCSC field', () => {
+    const w: RenderWarning = { kind: 'component_load_failed' };
+    const out = formatWarning(w);
+    // Without an LCSC, the formatter falls back to a placeholder so the
+    // banner stays readable; reason defaults to a generic string.
+    expect(out).toContain('unknown LCSC');
+    expect(out).toContain('not found');
+    expect(out).not.toContain('undefined');
+  });
 });
 
 describe('Model3DViewerGL / overlay-render decision contract', () => {

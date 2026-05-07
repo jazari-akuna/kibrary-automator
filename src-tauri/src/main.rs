@@ -170,6 +170,7 @@ fn main() -> anyhow::Result<()> {
             commands::sidecar_version,
             commands::sidecar_call,
             commands::workspace_open,
+            commands::reveal_in_explorer,
             watcher::watch_workspace,
             bootstrap::bootstrap_status,
             bootstrap::bootstrap_install_direct,

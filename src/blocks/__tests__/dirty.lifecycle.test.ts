@@ -101,10 +101,15 @@ function buildPipeline(initialInfo: Info | null) {
     setLiveScale(posScale());
   });
 
-  // --- Preview dirty-tracking effect (Model3DPreview.tsx lines 127–144) ---
+  // --- Preview dirty-tracking effect (Model3DPreview.tsx) ---
+  // 26.5.7-alpha.4: the production effect no longer tracks savedRev() —
+  // tracking it caused a race where a synchronous bump in onSaved fired
+  // the effect with the old info() baseline + new live values, briefly
+  // re-asserting dirty=true between Save and refetch resolving (the
+  // user-visible "after save the app does not want to close" symptom).
+  // We mirror that change here so the test's pipeline matches production.
   createEffect(() => {
     const m = info();
-    savedRev();
     if (!m) {
       setIsDirty(false);
       return;

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   queueItems,
   setStatus,
+  setAssetInfo,
   pruneQueue,
   clearQueue,
   dequeue,
@@ -10,6 +11,7 @@ import {
 import { currentWorkspace } from '~/state/workspace';
 import { pushToast } from '~/state/toasts';
 import { collapseSearchPane } from '~/state/searchPane';
+import { formatWarning, type RenderWarning, type ComponentAssets } from '~/blocks/_renderWarnings';
 
 function statusClass(status: string): string {
   switch (status) {
@@ -62,7 +64,17 @@ async function downloadLcscs(lcscs: string[]): Promise<void> {
     // download.progress events alone is fragile (alpha.10 smoke caught a row
     // stuck at "downloading" because the listen() registration race-lost to
     // the first emit).
-    const resp = await invoke<{ results: Record<string, { ok: boolean; error: string | null }> }>('sidecar_call', {
+    const resp = await invoke<{
+      results: Record<
+        string,
+        {
+          ok: boolean;
+          error: string | null;
+          assets?: ComponentAssets;
+          warnings?: RenderWarning[];
+        }
+      >;
+    }>('sidecar_call', {
       method: 'parts.download',
       params: {
         lcscs,
@@ -79,6 +91,11 @@ async function downloadLcscs(lcscs: string[]): Promise<void> {
       } else {
         setStatus(lcsc, 'failed', r?.error ?? 'unknown error');
       }
+      // Always propagate the structured payload — even for ok=true rows
+      // we want to surface partial-asset warnings (e.g. "footprint
+      // committed but no 3D model"). The empty list short-circuits the
+      // banner render, so this is cheap.
+      setAssetInfo(lcsc, r?.assets, r?.warnings);
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -133,6 +150,15 @@ export default function Queue() {
 
   const hasTerminal = () =>
     queueItems().some((q) => q.status === 'committed' || q.status === 'failed');
+
+  // Aggregate the structured warnings into a single banner that fronts
+  // the queue. Pre-fix, a "C6037812 not found" failure surfaced only as
+  // a tiny `failed` pill on the row (which the user reasonably read as
+  // a network blip, not "this LCSC has no design data anywhere").
+  // Banner counts both hard failures and partial-asset warnings so the
+  // user always sees a top-of-queue summary they can't miss.
+  const warningRows = () =>
+    queueItems().filter((q) => (q.warnings?.length ?? 0) > 0);
 
   return (
     <div class="space-y-2">
@@ -195,6 +221,35 @@ export default function Queue() {
         </div>
       </div>
 
+      {/* Structured warning banner — surfaces "X not found" / "Y missing
+          footprint" failures the user previously had to dig out of the
+          tiny `failed` pill. Aggregates across rows so the queue gets a
+          single top-level summary instead of one banner per row. */}
+      <Show when={warningRows().length > 0}>
+        <div
+          data-testid="queue-warning-banner"
+          class="rounded border border-red-700 bg-red-900/40 px-3 py-2 text-xs text-red-200 space-y-1"
+          role="alert"
+        >
+          <p class="font-semibold">
+            {warningRows().length} part{warningRows().length === 1 ? '' : 's'} could not be loaded:
+          </p>
+          <ul class="list-disc pl-5 space-y-0.5">
+            <For each={warningRows()}>
+              {(row) => (
+                <For each={row.warnings ?? []}>
+                  {(w) => (
+                    <li data-testid="queue-warning-item" data-lcsc={row.lcsc}>
+                      {formatWarning(w)}
+                    </li>
+                  )}
+                </For>
+              )}
+            </For>
+          </ul>
+        </div>
+      </Show>
+
       {/* Queue rows */}
       <Show
         when={queueItems().length > 0}
@@ -237,6 +292,16 @@ export default function Queue() {
                 <Show when={q.error}>
                   <span class="text-xs text-red-400 truncate max-w-xs" title={q.error}>
                     {q.error}
+                  </span>
+                </Show>
+                <Show when={(q.warnings?.length ?? 0) > 0}>
+                  <span
+                    data-testid="queue-row-warning-icon"
+                    class="text-amber-400 cursor-help"
+                    aria-label="Component load warning"
+                    title={(q.warnings ?? []).map((w) => formatWarning(w)).join('\n')}
+                  >
+                    ⚠
                   </span>
                 </Show>
                 <button

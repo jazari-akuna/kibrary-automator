@@ -26,6 +26,7 @@ import { refreshLcscIndex } from '~/state/lcscIndex';
 import { setRoom } from '~/state/room';
 import { setSelectedLib, setSelectedComponent } from '~/state/librariesRoom';
 import LibPicker from '~/components/LibPicker';
+import { formatWarning } from '~/blocks/_renderWarnings';
 
 interface PartMeta {
   lcsc: string;
@@ -296,9 +297,32 @@ export default function ReviewBulkAssign() {
                   by keying on position; only the accessed values update.
                 */}
                 <Index each={rows()}>
-                  {(row) => (
+                  {(row) => {
+                    // Locate the underlying queue row so we can surface
+                    // its structured warnings (the C6037812 case lands
+                    // here as `assets={symbol:false, footprint:false,
+                    // model_3d:false}` with a `component_load_failed`
+                    // warning attached to the queue item).
+                    const queueRow = () =>
+                      queueItems().find((q) => q.lcsc === row().lcsc);
+                    const rowWarnings = () => queueRow()?.warnings ?? [];
+                    return (
                     <tr class="border-b border-zinc-800 align-middle" data-testid="bulk-row" data-lcsc={row().lcsc}>
-                      <td class="py-1.5 pr-3 font-mono">{row().lcsc}</td>
+                      <td class="py-1.5 pr-3 font-mono">
+                        <span class="inline-flex items-center gap-1.5">
+                          {row().lcsc}
+                          <Show when={rowWarnings().length > 0}>
+                            <span
+                              data-testid="bulk-row-warning-icon"
+                              class="text-amber-400 cursor-help"
+                              aria-label="Component load warning"
+                              title={rowWarnings().map((w) => formatWarning(w)).join('\n')}
+                            >
+                              ⚠
+                            </span>
+                          </Show>
+                        </span>
+                      </td>
                       <td class="py-1.5 pr-3 text-zinc-300 max-w-xs truncate" title={row().description}>
                         {row().description || <span class="text-zinc-600 italic">—</span>}
                       </td>
@@ -360,7 +384,8 @@ export default function ReviewBulkAssign() {
                         </button>
                       </td>
                     </tr>
-                  )}
+                    );
+                  }}
                 </Index>
               </tbody>
             </table>

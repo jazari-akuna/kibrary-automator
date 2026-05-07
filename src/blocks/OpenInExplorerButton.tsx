@@ -1,0 +1,96 @@
+// 26.5.7-alpha.4 reveal-in-explorer:
+//
+// Reusable "Open in Explorer" button — invokes the `reveal_in_explorer`
+// Tauri command, which opens the host OS's native file manager with the
+// given file SELECTED (not just the parent directory open).
+//
+// Used by SymbolPreview / FootprintPreview / Model3DPreview to surface
+// each component-file's on-disk location to the user without leaving
+// kibrary. The OS-native file manager is the right tool for "I want to
+// inspect / move / share this file" workflows that the in-app pickers
+// don't cover.
+//
+// The button is a small icon-only element (matches the SymbolPreview /
+// FootprintPreview "Edit in KiCad" buttons in size/weight) so it can
+// sit next to those without dominating the card header.
+
+import { createSignal, onMount, Show } from 'solid-js';
+import { invoke } from '@tauri-apps/api/core';
+import { pushToast } from '~/state/toasts';
+
+interface Props {
+  /**
+   * Absolute on-disk path to reveal. The Rust command canonicalises this
+   * before spawning, so symlinks / relative-segments are normalised; a
+   * path that doesn't exist returns Err and the toast surfaces it.
+   */
+  path: string | null | undefined;
+  /**
+   * Optional override — when omitted, the button shows "Open" with a
+   * folder-arrow glyph. Pass a label like "Open .kicad_sym" if the
+   * surrounding context doesn't already make clear which file is
+   * being revealed.
+   */
+  label?: string;
+  /** Test hook so unit tests can find the button without a string match. */
+  testid?: string;
+}
+
+/**
+ * Resolve the host OS for the tooltip text. Falls back to the Linux
+ * tooltip on any unrecognised platform — that's the most generic phrasing
+ * ("Show in file manager"). We use `navigator.userAgent` rather than the
+ * Tauri `os` plugin because:
+ *   1. The plugin call is async — wiring it through createResource for a
+ *      tooltip is overkill.
+ *   2. `navigator.userAgent` is reliable enough: WebKitGTK identifies as
+ *      Linux, WKWebView as Mac, WebView2 as Windows.
+ */
+function detectOSTooltip(): string {
+  if (typeof navigator === 'undefined') return 'Show in file manager';
+  const ua = navigator.userAgent || '';
+  if (/Mac|iPhone|iPod|iPad/i.test(ua)) return 'Open in Explorer';
+  if (/Windows/i.test(ua)) return 'Open in File Explorer';
+  return 'Show in file manager';
+}
+
+export default function OpenInExplorerButton(props: Props) {
+  const [tooltip, setTooltip] = createSignal('Show in file manager');
+
+  onMount(() => {
+    setTooltip(detectOSTooltip());
+  });
+
+  const disabled = () => !props.path;
+
+  const handleClick = async (e: MouseEvent) => {
+    e.stopPropagation();
+    const p = props.path;
+    if (!p) return;
+    try {
+      await invoke('reveal_in_explorer', { path: p });
+    } catch (err: unknown) {
+      const reason = err instanceof Error ? err.message : String(err);
+      pushToast({ kind: 'error', message: `Open in Explorer failed: ${reason}` });
+    }
+  };
+
+  return (
+    <button
+      data-testid={props.testid ?? 'open-in-explorer'}
+      class="text-xs px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
+      title={tooltip()}
+      disabled={disabled()}
+      onClick={handleClick}
+    >
+      {/* Folder-with-arrow glyph — matches the existing "✎ Edit in KiCad"
+          glyph weight on the same row. We deliberately use a Unicode
+          symbol rather than an SVG icon set because the rest of the UI
+          (✎, 🗑) uses inline glyphs; introducing a single SVG here would
+          look heavier than the buttons it sits next to. */}
+      <span aria-hidden="true">↗</span>
+      <Show when={props.label}>{props.label}</Show>
+      <Show when={!props.label}>Open</Show>
+    </button>
+  );
+}

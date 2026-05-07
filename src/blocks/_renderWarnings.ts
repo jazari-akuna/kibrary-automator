@@ -20,6 +20,12 @@
  * silently swallow a future warning kind.
  */
 
+export interface ComponentAssets {
+  symbol: boolean;
+  footprint: boolean;
+  model_3d: boolean;
+}
+
 export type RenderWarning =
   | {
       kind: 'model_not_found';
@@ -32,6 +38,25 @@ export type RenderWarning =
   | {
       kind: 'tessellation_failed';
       node_name?: string;
+    }
+  | {
+      // C6037812-class: easyeda.com had no design data for this LCSC,
+      // download produced ZERO files. Surfaces in the Queue + bulk-assign
+      // UI so the user sees "X not found" instead of a silent failure.
+      kind: 'component_load_failed';
+      lcsc?: string;
+      missing?: string[];
+      assets?: ComponentAssets;
+      reason?: string;
+    }
+  | {
+      // Download succeeded but at least one of symbol/footprint/3D is
+      // absent (rare — JLC normally returns the full trio, but we've
+      // seen footprint-only or 3D-only responses for newer parts).
+      kind: 'component_load_partial';
+      lcsc?: string;
+      missing?: string[];
+      assets?: ComponentAssets;
     }
   | { kind: string; [k: string]: unknown };
 
@@ -46,6 +71,17 @@ export function formatWarning(w: RenderWarning): string {
   if (w.kind === 'tessellation_failed') {
     const node = w.node_name || '(unnamed)';
     return `tessellation_failed: kicad-cli skipped node '${node}' (assembly STEP without pre-computed triangulation)`;
+  }
+  if (w.kind === 'component_load_failed') {
+    const lcsc = (w as { lcsc?: string }).lcsc || '(unknown LCSC)';
+    const reason = (w as { reason?: string }).reason || 'no data in source library';
+    return `${lcsc}: not found — ${reason}`;
+  }
+  if (w.kind === 'component_load_partial') {
+    const lcsc = (w as { lcsc?: string }).lcsc || '(unknown LCSC)';
+    const missing = (w as { missing?: string[] }).missing || [];
+    const list = missing.length ? missing.join(', ') : 'unknown asset';
+    return `${lcsc}: missing ${list} — partial download`;
   }
   // Unknown kind — dump everything except `kind` itself.
   const { kind, ...rest } = w as Record<string, unknown> & { kind: string };

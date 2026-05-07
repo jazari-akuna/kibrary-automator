@@ -263,3 +263,64 @@ def test_commit_returns_valid_existing_path(tmp_path: Path):
     assert isinstance(result, Path)
     assert result.exists()
     assert result.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# Test 6: C6037812-class regression — commit refuses an empty staging dir
+# ---------------------------------------------------------------------------
+
+def test_commit_rejects_empty_staging_dir(tmp_path: Path):
+    """Pre-fix, ``commit_to_library`` happily produced an empty
+    ``<target_lib>/`` containing only metadata.json + repository.json
+    when the staging dir had neither a .kicad_sym nor a .kicad_mod.
+    Post-fix, it raises ValueError with a useful message so the UI can
+    surface "X not found" instead of pretending the commit succeeded.
+    """
+    lcsc = "C6037812"
+    staging_part = tmp_path / "staging" / lcsc
+    staging_part.mkdir(parents=True)
+    # Note: no .kicad_sym, no .pretty, no .3dshapes — exactly what the
+    # downloader leaves behind after a silent easyeda 'success: False'.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(ValueError) as excinfo:
+        commit_to_library(
+            workspace=workspace,
+            lcsc=lcsc,
+            staging_part=staging_part,
+            target_lib="TestLib_KSL",
+            edits={},
+        )
+    msg = str(excinfo.value)
+    assert lcsc in msg
+    assert "no symbol or footprint" in msg.lower() or "no data" in msg.lower()
+    # Library directory must NOT have been created.
+    assert not (workspace / "TestLib_KSL").exists()
+
+
+def test_commit_accepts_footprint_only_drop(tmp_path: Path):
+    """The drag-drop pipeline supports footprint-only commits (well-formed
+    use case). The empty-staging guard must distinguish these from the
+    C6037812 'nothing on disk' case — having a single .kicad_mod is
+    enough to clear the gate.
+    """
+    lcsc = "FOOTPRINT_ONLY"
+    staging_part = tmp_path / "staging" / lcsc
+    pretty = staging_part / f"{lcsc}.pretty"
+    pretty.mkdir(parents=True)
+    (pretty / "FOO.kicad_mod").write_text(
+        '(footprint "FOO" (version 20211014) (generator pcbnew) (layer "F.Cu"))\n'
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = commit_to_library(
+        workspace=workspace,
+        lcsc=lcsc,
+        staging_part=staging_part,
+        target_lib="DropOnly_KSL",
+        edits={},
+    )
+    # Library directory created, footprint moved across.
+    assert (result / "DropOnly_KSL.pretty" / "FOO.kicad_mod").is_file()

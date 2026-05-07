@@ -41,8 +41,14 @@ interface MockOpts {
   fakeUpdate?: { version: string } | null;
   /** Bugs 13-15: parts.download handler behaviour. 'throw' rejects the RPC,
    *  'slow' simulates per-part download.progress events with a delay before
-   *  resolving. Default is the no-op handler (resolves with empty results). */
-  partsDownloadMode?: 'ok' | 'throw' | 'slow' | 'progress50';
+   *  resolving. Default is the no-op handler (resolves with empty results).
+   *
+   *  'componentLoadFailed' (alpha.4 silent-failure regression): the sidecar
+   *  resolves with an ok=False result whose `warnings` array contains a
+   *  ``component_load_failed`` entry — exactly what the post-fix sidecar
+   *  produces for an LCSC like C6037812 that has no design data on
+   *  easyeda.com. */
+  partsDownloadMode?: 'ok' | 'throw' | 'slow' | 'progress50' | 'componentLoadFailed';
   /** Bugs 11/12: extra per-test sidecar handlers. Each entry overrides the
    *  default handler for that method. The body is serialised verbatim — pass
    *  the raw source of a `function (params) { ... }` (or arrow). Keeping it as
@@ -179,6 +185,31 @@ function buildTauriInitScript(opts: MockOpts = {}): string {
 
       if (PARTS_DOWNLOAD_MODE === 'throw') {
         return Promise.reject(new Error("[Errno 2] No such file or directory: 'JLC2KiCadLib'"));
+      }
+      if (PARTS_DOWNLOAD_MODE === 'componentLoadFailed') {
+        // Mirror the post-fix sidecar shape: ok=false, structured assets
+        // (everything missing), one component_load_failed warning per row.
+        // The frontend's setAssetInfo() call then drives the queue's
+        // top-level red banner + per-row ⚠ icon.
+        const results = {};
+        for (const lcsc of lcscs) {
+          results[lcsc] = {
+            ok: false,
+            error: "Component '" + lcsc + "' not found in source library",
+            assets: { symbol: false, footprint: false, model_3d: false },
+            warnings: [
+              {
+                kind: 'component_load_failed',
+                lcsc,
+                missing: ['symbol', 'footprint', '3D model'],
+                assets: { symbol: false, footprint: false, model_3d: false },
+                reason: "Component '" + lcsc + "' not found in source library "
+                  + '(easyeda.com returned no symbol/footprint/3D)',
+              },
+            ],
+          };
+        }
+        return { results };
       }
       if (PARTS_DOWNLOAD_MODE === 'progress50') {
         for (const lcsc of lcscs) {
@@ -1363,4 +1394,59 @@ test('3d position values round-trip through Save → reload', async ({ page }) =
   await expect(page.locator('[data-testid="positioner-rotation-x"]')).toHaveValue(/^10$/);
   await expect(page.locator('[data-testid="positioner-rotation-y"]')).toHaveValue(/^90$/);
   await expect(page.locator('[data-testid="positioner-rotation-z"]')).toHaveValue(/^-45$/);
+});
+
+// ---------------------------------------------------------------------------
+// 26.5.4-alpha.4 — C6037812 silent-failure regression.
+//
+// User report: "When a component has no model available like C6037812 you
+// should show it and not fail silently. Not only step, everything is
+// missing."
+//
+// Root cause: JLC2KiCadLib's add_component() swallows easyeda.com's
+// `success: False` response — logs an error, returns `()`, leaves NO files
+// on disk. Pre-fix the downloader saw no exception and reported ok=True;
+// the user saw a "ready" pill but symbol/footprint/3D were all absent. A
+// subsequent commit would happily create an empty <target_lib>/ with only
+// metadata.json + repository.json.
+//
+// Post-fix: sidecar inspects the staging dir after add_component returns,
+// classifies the empty case as ok=False with a structured
+// `component_load_failed` warning, and the frontend renders a red banner
+// listing the affected LCSC + reason.
+// ---------------------------------------------------------------------------
+test('alpha.4 — C6037812 surfaces a "not found" banner instead of failing silently', async ({ page }) => {
+  await mountApp(page, { partsDownloadMode: 'componentLoadFailed' });
+
+  // Queue the bad LCSC.
+  await page.getByRole('button', { name: /^Add$/, exact: true }).click();
+  await page.waitForTimeout(200);
+  const textarea = page.locator('textarea').first();
+  await textarea.fill('C6037812');
+  await page.getByRole('button', { name: /^detect$/i }).click();
+  await page.waitForTimeout(200);
+  await page.getByRole('button', { name: /queue all/i }).click();
+  await page.waitForTimeout(200);
+
+  // Click Download all and let the (mocked) RPC settle.
+  await page.getByRole('button', { name: /download all/i }).click();
+  await page.waitForTimeout(500);
+
+  // Banner: red panel with the LCSC + "not found" message.
+  const banner = page.locator('[data-testid="queue-warning-banner"]');
+  await expect(banner).toBeVisible({ timeout: 3000 });
+  await expect(banner).toContainText('C6037812');
+  await expect(banner).toContainText(/not found|no design data|easyeda/i);
+
+  // Inline ⚠ icon on the row carries the same warning as a hover title.
+  const rowIcon = page
+    .locator('[data-testid="queue-row-warning-icon"]')
+    .first();
+  await expect(rowIcon).toBeVisible();
+  await expect(rowIcon).toHaveAttribute('title', /C6037812/);
+
+  // Row status flips to "failed" — the existing surface keeps working.
+  const queueList = page.locator('ul.font-mono').first();
+  await expect(queueList.locator('li', { hasText: 'C6037812' })
+    .locator('text=failed')).toBeVisible();
 });

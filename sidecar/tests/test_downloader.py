@@ -72,6 +72,118 @@ def test_run_batch_returns_results_dict(tmp_path: Path):
     for v in results.values():
         assert v["ok"] is True
         assert v["error"] is None
+        # Post-fix: every result also carries the structured assets snapshot
+        # and a (possibly empty) warnings list so the frontend can surface
+        # partial-asset failures (the C6037812 silent-failure root cause).
+        assert "assets" in v
+        assert "warnings" in v
+        assert isinstance(v["warnings"], list)
+
+
+def test_run_batch_emits_component_load_failed_warning_on_silent_failure(tmp_path: Path):
+    """C6037812 regression: a download that returns ok=False with no files
+    on disk must surface a structured ``component_load_failed`` warning so
+    the UI banner can render "X not found" instead of a bare ``failed``
+    pill.
+    """
+    async def silent_failing_dl(lcsc: str, target: Path) -> tuple[bool, str | None]:
+        # No files written — exactly the post-fix shape jlc.download_one
+        # returns when easyeda.com has no design data for an LCSC.
+        target.mkdir(parents=True, exist_ok=True)
+        return False, "Component 'C6037812' not found in source library"
+
+    results = asyncio.run(
+        run_batch(["C6037812"], tmp_path, concurrency=1, dl=silent_failing_dl)
+    )
+    row = results["C6037812"]
+    assert row["ok"] is False
+    assert row["assets"] == {"symbol": False, "footprint": False, "model_3d": False}
+    warnings = row["warnings"]
+    assert len(warnings) == 1
+    w = warnings[0]
+    assert w["kind"] == "component_load_failed"
+    assert w["lcsc"] == "C6037812"
+    assert "symbol" in w["missing"]
+    assert "footprint" in w["missing"]
+    assert "3D model" in w["missing"]
+    assert "not found" in (w["reason"] or "")
+
+
+def test_run_batch_emits_component_load_partial_when_assets_incomplete(tmp_path: Path):
+    """Footprint-only response: symbol+3D missing but ok=True. Surfaces an
+    amber 'partial' warning rather than a hard failure."""
+    async def partial_dl(lcsc: str, target: Path) -> tuple[bool, str | None]:
+        target.mkdir(parents=True, exist_ok=True)
+        # Drop only a footprint — no .kicad_sym, no .3dshapes.
+        pretty = target / f"{lcsc}.pretty"
+        pretty.mkdir()
+        (pretty / "FOO.kicad_mod").write_text("(footprint stub)")
+        return True, None
+
+    results = asyncio.run(
+        run_batch(["Cpartial"], tmp_path, concurrency=1, dl=partial_dl)
+    )
+    row = results["Cpartial"]
+    assert row["ok"] is True
+    assert row["assets"] == {"symbol": False, "footprint": True, "model_3d": False}
+    warnings = row["warnings"]
+    assert len(warnings) == 1
+    assert warnings[0]["kind"] == "component_load_partial"
+    assert "symbol" in warnings[0]["missing"]
+    assert "3D model" in warnings[0]["missing"]
+    assert "footprint" not in warnings[0]["missing"]
+
+
+def test_run_batch_no_warnings_on_clean_download(tmp_path: Path):
+    """A complete sym+footprint+3D download must produce an empty warnings
+    list (the banner is gated on length>0, so this is what keeps the UI
+    quiet on the happy path)."""
+    async def complete_dl(lcsc: str, target: Path) -> tuple[bool, str | None]:
+        target.mkdir(parents=True, exist_ok=True)
+        (target / f"{lcsc}.kicad_sym").write_text("(kicad_symbol_lib)")
+        pretty = target / f"{lcsc}.pretty"
+        pretty.mkdir()
+        (pretty / "FOO.kicad_mod").write_text("(footprint stub)")
+        shapes = target / f"{lcsc}.3dshapes"
+        shapes.mkdir()
+        (shapes / "FOO.step").write_bytes(b"ISO-10303-21\n")
+        return True, None
+
+    results = asyncio.run(
+        run_batch(["Ccomplete"], tmp_path, concurrency=1, dl=complete_dl)
+    )
+    row = results["Ccomplete"]
+    assert row["ok"] is True
+    assert row["assets"] == {"symbol": True, "footprint": True, "model_3d": True}
+    assert row["warnings"] == []
+
+
+def test_run_batch_terminal_progress_event_carries_assets_and_warnings(tmp_path: Path):
+    """Frontend's queue listener uses download.progress's terminal event to
+    fill in per-row banners — pin the contract so a future refactor that
+    drops the assets/warnings fields gets caught at unit-test time.
+    """
+    events: list[dict] = []
+
+    async def emit(ev: dict) -> None:
+        events.append(ev)
+
+    async def silent_failing_dl(lcsc: str, target: Path) -> tuple[bool, str | None]:
+        target.mkdir(parents=True, exist_ok=True)
+        return False, "not found"
+
+    asyncio.run(
+        run_batch(["Cmissing"], tmp_path, concurrency=1, emit=emit, dl=silent_failing_dl)
+    )
+    terminal = next(
+        e for e in events
+        if e["event"] == "download.progress" and e["params"].get("status") == "failed"
+    )
+    p = terminal["params"]
+    assert p["lcsc"] == "Cmissing"
+    assert "assets" in p
+    assert "warnings" in p
+    assert p["warnings"] and p["warnings"][0]["kind"] == "component_load_failed"
 
 
 def test_run_batch_failed_part(tmp_path: Path):
@@ -80,6 +192,10 @@ def test_run_batch_failed_part(tmp_path: Path):
     )
     assert results["C99"]["ok"] is False
     assert results["C99"]["error"] == "intentional failure"
+    # Failed rows always carry a component_load_failed warning so the UI
+    # banner has a structured payload to format (see queue-warning-banner).
+    assert results["C99"]["warnings"]
+    assert results["C99"]["warnings"][0]["kind"] == "component_load_failed"
 
 
 def test_run_batch_concurrency_cap(tmp_path: Path):

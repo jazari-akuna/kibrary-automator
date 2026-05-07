@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { currentWorkspace } from '~/state/workspace';
 import { pushToast } from '~/state/toasts';
+// 26.5.7-alpha.4 reveal-in-explorer:
+import OpenInExplorerButton from '~/blocks/OpenInExplorerButton';
 
 /**
  * FootprintPreview — alpha.18: renders kicad-cli-exported SVG inside an
@@ -64,10 +66,33 @@ export default function FootprintPreview(props: Props) {
     return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
   };
 
+  // 26.5.7-alpha.4 reveal-in-explorer:
+  // Per-component .kicad_mod lives at <lib_dir>/<lib_name>.pretty/<component>.kicad_mod
+  // (committed library) or <staging>/<lcsc>/<lcsc>.kicad_mod (staging).
+  const revealPath = () => {
+    if (isLibraryMode()) {
+      const dir = props.libDir;
+      const name = props.componentName;
+      if (!dir || !name) return null;
+      const libName = dir.split('/').pop();
+      return `${dir}/${libName}.pretty/${name}.kicad_mod`;
+    }
+    if (props.stagingDir && props.lcsc) {
+      return `${props.stagingDir}/${props.lcsc}/${props.lcsc}.kicad_mod`;
+    }
+    return null;
+  };
+
   return (
     <div class="flex flex-col gap-2">
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-zinc-300">Footprint Preview</span>
+        <div class="flex items-center gap-2">
+        {/* 26.5.7-alpha.4 reveal-in-explorer: */}
+        <OpenInExplorerButton
+          path={revealPath()}
+          testid="reveal-footprint-in-explorer"
+        />
         <button
           data-testid="edit-footprint-in-kicad"
           class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
@@ -107,6 +132,7 @@ export default function FootprintPreview(props: Props) {
         >
           ✎ Edit in KiCad
         </button>
+        </div>
       </div>
 
       <Show

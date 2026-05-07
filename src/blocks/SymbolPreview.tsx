@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { currentWorkspace } from '~/state/workspace';
 import { pushToast } from '~/state/toasts';
+// 26.5.7-alpha.4 reveal-in-explorer:
+import OpenInExplorerButton from '~/blocks/OpenInExplorerButton';
 
 /**
  * SymbolPreview — alpha.18: renders the symbol as an SVG returned by the
@@ -84,10 +86,33 @@ export default function SymbolPreview(props: Props) {
     return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
   };
 
+  // 26.5.7-alpha.4 reveal-in-explorer:
+  // The committed-library symbol file lives at <lib_dir>/<lib_name>.kicad_sym.
+  // For staging mode the path is <staging>/<lcsc>/<lcsc>.kicad_sym (matches
+  // the same convention SymbolPreview already uses for the watcher refetch).
+  const revealPath = () => {
+    if (isLibraryMode()) {
+      const dir = props.libDir;
+      if (!dir) return null;
+      const libName = dir.split('/').pop();
+      return `${dir}/${libName}.kicad_sym`;
+    }
+    if (props.stagingDir && props.lcsc) {
+      return `${props.stagingDir}/${props.lcsc}/${props.lcsc}.kicad_sym`;
+    }
+    return null;
+  };
+
   return (
     <div class="flex flex-col gap-2">
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium text-zinc-300">Symbol Preview</span>
+        <div class="flex items-center gap-2">
+        {/* 26.5.7-alpha.4 reveal-in-explorer: */}
+        <OpenInExplorerButton
+          path={revealPath()}
+          testid="reveal-symbol-in-explorer"
+        />
         <button
           data-testid="edit-symbol-in-kicad"
           class="text-xs px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
@@ -138,6 +163,7 @@ export default function SymbolPreview(props: Props) {
         >
           ✎ Edit in KiCad
         </button>
+        </div>
       </div>
 
       <Show

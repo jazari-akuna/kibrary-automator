@@ -211,7 +211,8 @@ export default function Model3DViewer(props: Props) {
       onWheel={handleWheel}
       style={{
         width: '100%',
-        height: '240px',
+        'min-height': '320px',
+        height: '65vh',
         'max-width': 'none',
         cursor: dragStart() ? 'grabbing' : 'grab',
         'user-select': 'none',

@@ -104,6 +104,32 @@ def _move_3d_models_to_3dshapes(target_dir: Path, lcsc: str) -> None:
         log.debug("moved 3D models from %s into %s", pretty_dir, shapes_dir)
 
 
+def assets_present(target_dir: Path, lcsc: str) -> dict:
+    """Return a dict describing which downloaded assets actually exist on disk.
+
+    Used both as a post-condition check after JLC2KiCadLib runs (catches the
+    "easyeda returned success=False, package logged an error and returned
+    quietly" silent-failure path) and as the structured payload the
+    frontend uses to render per-asset banners ("symbol committed but
+    footprint+STEP missing", etc.).
+
+    Keys:
+      * ``symbol``    — bool: ``<target>/<lcsc>.kicad_sym`` exists.
+      * ``footprint`` — bool: at least one ``.kicad_mod`` under
+                        ``<target>/<lcsc>.pretty/``.
+      * ``model_3d``  — bool: at least one ``.step`` or ``.wrl`` under
+                        ``<target>/<lcsc>.3dshapes/``.
+    """
+    sym = (target_dir / f"{lcsc}.kicad_sym").is_file()
+    pretty = target_dir / f"{lcsc}.pretty"
+    fp = pretty.is_dir() and any(pretty.glob("*.kicad_mod"))
+    shapes = target_dir / f"{lcsc}.3dshapes"
+    model_3d = shapes.is_dir() and (
+        any(shapes.glob("*.step")) or any(shapes.glob("*.wrl"))
+    )
+    return {"symbol": bool(sym), "footprint": bool(fp), "model_3d": bool(model_3d)}
+
+
 def _download_via_api(lcsc: str, target_dir: Path, progress: ProgressFn = None) -> tuple[bool, str | None]:
     """
     Drive JLC2KiCadLib via its public Python API.
@@ -143,6 +169,22 @@ def _download_via_api(lcsc: str, target_dir: Path, progress: ProgressFn = None) 
             progress(70)
         except Exception:  # pragma: no cover
             log.debug("progress(70) callback raised; ignoring", exc_info=True)
+
+    # Post-condition: JLC2KiCadLib's add_component swallows the
+    # easyeda.com `success: False` response — it logs an error and
+    # returns ``()`` quietly, leaving us with NO files on disk and no
+    # exception to catch. Detect that here so callers see a structured
+    # failure rather than ``ok=True`` with an empty staging dir
+    # (root cause of the "C6037812 fails silently — symbol, footprint,
+    # 3D all missing" report).
+    assets = assets_present(target_dir, lcsc)
+    if not (assets["symbol"] or assets["footprint"] or assets["model_3d"]):
+        return False, (
+            f"Component {lcsc!r} not found in source library "
+            "(easyeda.com returned no symbol/footprint/3D — likely a typo "
+            "or LCSC code that exists in JLCPCB's catalogue but has no "
+            "EasyEDA design data). Try a different LCSC code."
+        )
 
     return True, None
 

@@ -30,6 +30,8 @@ import Model3DJogDial from '~/blocks/Model3DJogDial';
 import type { HoverPreview } from '~/blocks/Model3DJogDial';
 import Model3DJogZ from '~/blocks/Model3DJogZ';
 import Model3DRotateDial from '~/blocks/Model3DRotateDial';
+// 26.5.7-alpha.4 reveal-in-explorer:
+import OpenInExplorerButton from '~/blocks/OpenInExplorerButton';
 
 type Triple = [number, number, number];
 
@@ -148,13 +150,20 @@ export default function Model3DPreview(props: Props) {
   });
 
   // Drive the global "unsaved edits" flag. The baseline is the most recent
-  // info() snapshot (which is refetched after a successful save, so saving
-  // collapses the diff back to zero). savedRev() is read so that a manual
-  // refetch+rev-bump from the positioner forces this effect to re-evaluate
-  // even if info() is byref-identical.
+  // info() snapshot (refetched after a successful save, so saving collapses
+  // the diff back to zero).
+  //
+  // 26.5.7-alpha.4 race-window fix: the previous version of this effect
+  // also read savedRev(), which made it re-fire BEFORE the createResource
+  // refetch had landed. The user-visible bug: clicking Save→X would still
+  // pop the unsaved-edits dialog because the bump-savedRev branch ran
+  // synchronously, the effect saw the OLD info() with NEW liveOffset, and
+  // re-asserted dirty=true between the explicit setIsDirty(false) clear in
+  // onSaved and refetch resolving. The Save success path now drives dirty
+  // to false directly + lets the effect recompute when info() actually
+  // updates (which is the only honest baseline change).
   createEffect(() => {
     const m = info();
-    savedRev();
     if (!m) {
       setIsDirty(false);
       return;
@@ -439,6 +448,21 @@ export default function Model3DPreview(props: Props) {
                 forceRotation={forceRotation()}
                 onForceRotationConsumed={() => setForceRotation(null)}
                 onSaved={() => {
+                  // Belt-and-braces: clear the global dirty flag IMMEDIATELY.
+                  // The createEffect below this also re-runs when refetch()
+                  // resolves and savedRev() ticks, but refetch is async; if
+                  // the user clicks X (window-close) in the brief window
+                  // between this onSaved firing and createResource resolving
+                  // its new info(), the close handler reads isDirty()=true
+                  // and pops the unsaved-edits dialog despite the save
+                  // having succeeded. That's the user-visible "after Save
+                  // the app does not want to close anymore" symptom called
+                  // out in the candid review of v26.5.7-alpha.3.
+                  //
+                  // The downstream effect remains the source of truth (it
+                  // recomputes from the new baseline once the refetch lands),
+                  // so this preemptive clear is purely a race-window guard.
+                  setIsDirty(false);
                   refetch();
                   setSavedRev((n) => n + 1);
                 }}
@@ -476,6 +500,19 @@ export default function Model3DPreview(props: Props) {
               >
                 Replace 3D model…
               </button>
+              {/* 26.5.7-alpha.4 reveal-in-explorer: open the on-disk
+                  3D-model file in the host OS's native file manager.
+                  Disabled when the model file doesn't exist (file_exists
+                  is reported as false by the sidecar). */}
+              <OpenInExplorerButton
+                path={
+                  model().file_exists !== false
+                    ? model().resolved_path ?? model().model_path
+                    : null
+                }
+                label="Open .step"
+                testid="reveal-3dmodel-in-explorer"
+              />
             </div>
           </div>
         )}

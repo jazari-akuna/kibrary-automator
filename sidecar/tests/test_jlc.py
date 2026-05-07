@@ -7,6 +7,7 @@ from kibrary_sidecar.jlc import (
     _resolve_binary,
     _build_args,
     _move_3d_models_to_3dshapes,
+    assets_present,
 )
 
 
@@ -37,16 +38,36 @@ def test_download_via_subprocess_returns_failure_on_nonzero_exit(tmp_path: Path)
 # In-process API path (the path PyInstaller bundles use in production)
 # ---------------------------------------------------------------------------
 
+def _fake_add_component_factory(lcsc: str, target_dir: Path):
+    """Return a stub for JLC2KiCadLib.add_component that mirrors the
+    real package's on-disk side-effects (a .kicad_sym + a .pretty/*.kicad_mod).
+
+    Required by the post-condition check added in jlc.py — without this,
+    ``download_one`` correctly classifies the empty staging dir as
+    ``component_load_failed`` and returns ``ok=False``. Tests that just
+    want to check the integration plumbing pass this in via the mock's
+    ``side_effect``.
+    """
+    def _side_effect(_component_id, _args):  # pragma: no cover — invoked by mock
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / f"{lcsc}.kicad_sym").write_text("(kicad_symbol_lib)")
+        pretty = target_dir / f"{lcsc}.pretty"
+        pretty.mkdir(exist_ok=True)
+        (pretty / "FOO.kicad_mod").write_text("(footprint stub)")
+    return _side_effect
+
+
 def test_download_one_uses_python_api_when_importable(tmp_path: Path):
     """
     download_one() must drive JLC2KiCadLib via add_component(), not via
     subprocess, when the package is importable. This is the prod path.
     """
-    fake_add = MagicMock()
+    target = tmp_path / "C25804"
+    fake_add = MagicMock(side_effect=_fake_add_component_factory("C25804", target))
     # Pretend the package is importable AND record the call.
     with patch("JLC2KiCadLib.JLC2KiCadLib.add_component", fake_add), \
          patch("kibrary_sidecar.jlc.subprocess.run") as run:
-        ok, err = download_one("C25804", tmp_path / "C25804")
+        ok, err = download_one("C25804", target)
     assert ok is True, err
     assert err is None
     # Critical: subprocess must NOT have been called.
@@ -64,12 +85,76 @@ def test_download_one_emits_progress_callbacks(tmp_path: Path):
     def progress(pct: int) -> None:
         seen.append(pct)
 
-    with patch("JLC2KiCadLib.JLC2KiCadLib.add_component", MagicMock()):
-        ok, err = download_one("C1", tmp_path / "C1", progress=progress)
+    target = tmp_path / "C1"
+    fake_add = MagicMock(side_effect=_fake_add_component_factory("C1", target))
+    with patch("JLC2KiCadLib.JLC2KiCadLib.add_component", fake_add):
+        ok, err = download_one("C1", target, progress=progress)
 
     assert ok is True, err
     assert 10 in seen
     assert 70 in seen
+
+
+def test_download_one_detects_missing_assets_after_silent_failure(tmp_path: Path):
+    """C6037812-class regression: JLC2KiCadLib's add_component logs an error
+    and quietly returns ``()`` when easyeda.com responds with
+    ``success: False`` (component not in catalogue). Pre-fix, download_one
+    saw no exception and returned ``ok=True`` with an empty staging dir.
+    Post-fix, it inspects the on-disk output and reports a structured
+    'not found' failure so the UI can surface it.
+    """
+    target = tmp_path / "C6037812"
+
+    # add_component does nothing — mirrors the exact silent-failure
+    # path the package takes on a `success: False` response.
+    def _silent_no_op(_component_id, _args):  # pragma: no cover — passthrough
+        return ()
+
+    with patch("JLC2KiCadLib.JLC2KiCadLib.add_component", _silent_no_op):
+        ok, err = download_one("C6037812", target)
+
+    assert ok is False, f"expected silent failure to be detected, got ok={ok} err={err}"
+    assert err is not None
+    assert "C6037812" in err
+    assert "not found" in err.lower()
+    # Staging dir is created by download_one, but no real assets land in it.
+    assert not (target / "C6037812.kicad_sym").exists()
+    assert not (target / "C6037812.pretty").exists()
+
+
+def test_assets_present_true_when_all_files_exist(tmp_path: Path):
+    target = tmp_path / "C25804"
+    target.mkdir()
+    (target / "C25804.kicad_sym").write_text("(kicad_symbol_lib (version 20211014))")
+    pretty = target / "C25804.pretty"
+    pretty.mkdir()
+    (pretty / "R0603.kicad_mod").write_text("(footprint stuff)")
+    shapes = target / "C25804.3dshapes"
+    shapes.mkdir()
+    (shapes / "R0603.step").write_bytes(b"ISO-10303-21\n")
+
+    assets = assets_present(target, "C25804")
+    assert assets == {"symbol": True, "footprint": True, "model_3d": True}
+
+
+def test_assets_present_false_when_directory_empty(tmp_path: Path):
+    target = tmp_path / "C6037812"
+    target.mkdir()
+    assets = assets_present(target, "C6037812")
+    assert assets == {"symbol": False, "footprint": False, "model_3d": False}
+
+
+def test_assets_present_partial_when_only_symbol_landed(tmp_path: Path):
+    """Footprint-less response (rare but observed): symbol exists, .pretty
+    is empty / missing. Detector must flag footprint+3D as absent without
+    crashing on the missing dir."""
+    target = tmp_path / "Cpartial"
+    target.mkdir()
+    (target / "Cpartial.kicad_sym").write_text("(kicad_symbol_lib)")
+    assets = assets_present(target, "Cpartial")
+    assert assets["symbol"] is True
+    assert assets["footprint"] is False
+    assert assets["model_3d"] is False
 
 
 def test_download_one_returns_clear_error_on_api_exception(tmp_path: Path):

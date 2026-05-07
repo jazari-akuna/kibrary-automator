@@ -56,7 +56,31 @@ def commit_to_library(
     -------
     Path
         The library directory ``<workspace>/<target_lib>/``.
+
+    Raises
+    ------
+    ValueError
+        When the staging directory contains neither a ``.kicad_sym`` nor a
+        ``.kicad_mod``. This catches the C6037812-class silent-failure
+        case where the user clicks "Save all" on a part that downloaded
+        nothing — pre-fix the commit happily produced an empty
+        ``<target_lib>/`` with only metadata.json/repository.json on
+        disk, leaving the user with the impression the part had been
+        added when in fact the symbol/footprint were never fetched.
     """
+    src_sym = staging_part / f"{lcsc}.kicad_sym"
+    src_pretty = staging_part / f"{lcsc}.pretty"
+    has_sym = src_sym.is_file()
+    has_fp = src_pretty.is_dir() and any(src_pretty.glob("*.kicad_mod"))
+    if not (has_sym or has_fp):
+        raise ValueError(
+            f"Cannot commit {lcsc!r}: staging directory contains no symbol "
+            f"or footprint files (looked for {src_sym.name} and "
+            f"{src_pretty.name}/*.kicad_mod under {staging_part}). "
+            "The component likely has no data in the source library — "
+            "remove it from the queue or pick a different LCSC code."
+        )
+
     lib_dir = workspace / target_lib
     if lib_dir.exists():
         _merge_into(

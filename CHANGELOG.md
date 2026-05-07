@@ -2,6 +2,23 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.7-alpha.4] — 2026-05-07
+
+### Fixed
+- **App still wouldn't close after Save (third attempt — actual root cause this time).** A candid review identified that the alpha.1 / alpha.2 / alpha.3 fixes were all theatre — every test asserted on source text, none drove a real DOM event or measured runtime behaviour. Real-DOM testing infrastructure added (`@solidjs/testing-library` + `userEvent` + Playwright against the actual Vite-built bundle), and a race-window test surfaced the genuine bug: in `Model3DPreview.tsx`, the `createEffect` driving `setIsDirty` tracked `savedRev()` as a dependency, so when the Save handler bumped `savedRev` synchronously the effect re-fired BEFORE `info()`'s `refetch()` had resolved — re-asserting `isDirty=true` against the OLD baseline + NEW live values, leaving the close handler stuck at the dialog. Fix: removed `savedRev` from the dirty-effect's tracked deps + added an explicit `setIsDirty(false)` at the top of the `onSaved` handler (defence-in-depth: the disk write is what defines "saved", not a React-style render-cycle tick).
+- **PNG fallback viewer was hardcoded to 240 px high.** The WebGL2-unavailable code path in `Model3DViewer.tsx` (older WebKitGTK without WebGL2) ignored the alpha.3 viewport-grow fix and still rendered a tiny pane. Fixed to match the GL viewer: `min-height: 320px; height: 65vh`.
+
+### Added
+- **Structured surfaces for "component has nothing available" failures** (the user's `C6037812` case). Four silent-failure paths plugged in `sidecar/kibrary_sidecar/{jlc,downloader,library}.py`: `_download_via_api` returned `(True, None)` even when easyeda.com produced ZERO files; `run_batch` propagated `ok=True` regardless of file existence; `library._create_new` happily wrote an empty workspace dir; `download.progress` events carried no per-asset detail. Two new structured warning kinds (`component_load_failed` for "everything missing", `component_load_partial` for "ok=true with one asset absent") surface in `src/blocks/_renderWarnings.ts`. UI: red banner at the top of the Queue pane listing every failed/partial row, ⚠ inline icon on each row, ⚠ next to the LCSC cell in `ReviewBulkAssign`. End-to-end Playwright spec covers the full "queue C6037812 → Download all → red banner visible" flow.
+- **Open in Explorer** action on every component file (symbol / footprint / 3D model). Cross-OS Tauri Rust command in `src-tauri/src/commands/reveal.rs`: macOS `open -R`, Windows `explorer.exe /select,…`, Linux tries `org.freedesktop.FileManager1.ShowItems` D-Bus call (Nautilus/Dolphin/Nemo/Caja/Thunar) with `xdg-open <parent>` fallback. Path always canonicalised first to reject `../../etc/passwd` traversal. New `OpenInExplorerButton.tsx` rendered next to the existing "Edit in KiCad" buttons in `SymbolPreview` / `FootprintPreview` / `Model3DPreview`.
+
+### Tests
+- vitest: **181 passing** (was 135; +46 across real-DOM dial/jogz/dirty-after-save, queue warnings, openInExplorer button, reveal Rust integration).
+- pytest: 336 passing (was 326; +10 across jlc / downloader / library silent-failure plugs).
+- New testing infrastructure: `@solidjs/testing-library`, `@testing-library/jest-dom`, `@testing-library/user-event`, jsdom.
+- New Playwright specs: `viewportAndMouse.spec.ts` (real Chromium drives `page.mouse.down({button:'middle'})` + window-resize → measures bbox), `regressions.spec.ts::alpha.4` (queue load-fail end-to-end).
+- Pre-release verification gap acknowledged: per the candid review, future fixes should be exercised against the actual `.deb` under Xvfb before shipping. The new real-DOM tests close most of the gap; the remaining hold is webkit2gtk-specific behaviour that can only be verified against the deployed Tauri shell.
+
 ## [26.5.7-alpha.3] — 2026-05-07
 
 ### Fixed

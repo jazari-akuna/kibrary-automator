@@ -7,6 +7,7 @@
 
 import { createSignal } from 'solid-js';
 import { listen } from '@tauri-apps/api/event';
+import type { RenderWarning, ComponentAssets } from '~/blocks/_renderWarnings';
 
 export type QueueStatus =
   | 'queued'
@@ -23,6 +24,13 @@ export interface QueueItem {
   error?: string;
   /** 0–100 download progress; only meaningful while status === 'downloading'. */
   progress?: number;
+  /** Per-asset existence flags from the sidecar (post-fix for the
+   *  C6037812 silent-failure bug). Only set after a download attempt. */
+  assets?: ComponentAssets;
+  /** Structured warnings emitted by parts.download — empty when the part
+   *  downloaded cleanly. The UI uses these to render the "not found" /
+   *  "partially missing" banners next to a row. */
+  warnings?: RenderWarning[];
 }
 
 const [items, setItems] = createSignal<QueueItem[]>([]);
@@ -56,6 +64,25 @@ export function setStatus(
   });
 }
 
+/** Attach the structured per-asset payload to a queue row. Called once
+ *  when the sidecar's terminal `download.progress` event arrives (or
+ *  directly from the Queue block after parts.download resolves) — the
+ *  UI uses this to render "X not found" / "missing footprint" banners
+ *  on the row instead of failing silently. */
+export function setAssetInfo(
+  lcsc: string,
+  assets: ComponentAssets | undefined,
+  warnings: RenderWarning[] | undefined,
+): void {
+  setItems((prev) => {
+    const idx = prev.findIndex((q) => q.lcsc === lcsc);
+    if (idx === -1) return prev;
+    const next = [...prev];
+    next[idx] = { ...next[idx], assets, warnings };
+    return next;
+  });
+}
+
 /** Remove all items from the queue. */
 export function clearQueue(): void {
   setItems([]);
@@ -72,7 +99,19 @@ export function pruneQueue(keep: QueueStatus[]): void {
 }
 
 // Subscribe to download.progress events from the Tauri backend.
-listen<{ lcsc: string; status: QueueStatus; error?: string; progress?: number }>(
-  'download.progress',
-  (e) => setStatus(e.payload.lcsc, e.payload.status, e.payload.error, e.payload.progress),
-);
+listen<{
+  lcsc: string;
+  status: QueueStatus;
+  error?: string;
+  progress?: number;
+  assets?: ComponentAssets;
+  warnings?: RenderWarning[];
+}>('download.progress', (e) => {
+  setStatus(e.payload.lcsc, e.payload.status, e.payload.error, e.payload.progress);
+  // Terminal events (ready/failed) carry assets + warnings — propagate
+  // them so the row's banner has the structured data it needs to format
+  // a useful message instead of just "failed".
+  if (e.payload.assets || e.payload.warnings) {
+    setAssetInfo(e.payload.lcsc, e.payload.assets, e.payload.warnings);
+  }
+});

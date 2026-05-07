@@ -29,6 +29,20 @@ from kibrary_sidecar import icons
 from kibrary_sidecar import search_client
 from kibrary_sidecar import staging as staging_mod  # `staging` param shadows the module
 
+
+def _missing_assets(assets: dict) -> list[str]:
+    """Return human-readable names of assets the downloader expected but
+    didn't find. Used to derive partial-failure warnings (e.g. symbol
+    committed but no footprint)."""
+    missing = []
+    if not assets.get("symbol"):
+        missing.append("symbol")
+    if not assets.get("footprint"):
+        missing.append("footprint")
+    if not assets.get("model_3d"):
+        missing.append("3D model")
+    return missing
+
 log = logging.getLogger(__name__)
 
 EmitFn = Callable[[dict], Awaitable[None]]
@@ -110,7 +124,39 @@ async def run_batch(
                 ok, err = await dl_fn(lcsc, staging / lcsc, progress=_on_progress)
             except TypeError:
                 ok, err = await dl_fn(lcsc, staging / lcsc)
-            results[lcsc] = {"ok": ok, "error": err}
+            # Inspect what actually landed on disk. Even on ok=True some
+            # assets might still be absent (e.g. easyeda has a symbol but
+            # no 3D model for a given LCSC) — the frontend uses this to
+            # surface "footprint missing" amber warnings instead of
+            # silently presenting an incomplete part as fully-downloaded.
+            assets = jlc.assets_present(staging / lcsc, lcsc)
+            missing = _missing_assets(assets)
+            warnings = []
+            if ok and missing:
+                warnings.append(
+                    {
+                        "kind": "component_load_partial",
+                        "lcsc": lcsc,
+                        "missing": missing,
+                        "assets": assets,
+                    }
+                )
+            elif not ok:
+                warnings.append(
+                    {
+                        "kind": "component_load_failed",
+                        "lcsc": lcsc,
+                        "missing": missing or ["symbol", "footprint", "3D model"],
+                        "assets": assets,
+                        "reason": err or "unknown error",
+                    }
+                )
+            results[lcsc] = {
+                "ok": ok,
+                "error": err,
+                "assets": assets,
+                "warnings": warnings,
+            }
 
             # Best-effort icon render — never fails the download
             if ok:
@@ -157,6 +203,8 @@ async def run_batch(
                             "status": "ready" if ok else "failed",
                             "progress": 100,
                             "error": err,
+                            "assets": assets,
+                            "warnings": warnings,
                         },
                     }
                 )
