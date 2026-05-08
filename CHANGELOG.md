@@ -2,6 +2,11 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.8-alpha.4] — 2026-05-08
+
+### Reverted
+- **Reverts 26.5.8-alpha.3 in full.** Same regression as alpha.1: live-preview chip moves the wrong direction when clicking +Y on the user's real desktop binary, despite the in-Docker visual-verify reporting screen-up motion AND 0 m drift between live and baked. The Docker tauri-driver / WebKitGTK render is producing a screen-direction projection that does not match what the user sees in their actual session — this is a tooling-level divergence I haven't yet identified the cause of, and shipping the same fix again was wrong. Restoring alpha.2 behaviour: dial direction works correctly on screen; save→reload still has the original direction-flipping bug. Next investigation step is to capture screenshots directly from the user's desktop binary (or discover why Docker WebKit renders the camera projection differently from desktop WebKit) before any further fix attempt.
+
 ## [26.5.8-alpha.2] — 2026-05-08
 
 ### Reverted
