@@ -3,30 +3,23 @@
  *
  * BUG (26.5.7): the user reported that clicking the dial wedge labelled
  * "+Y" did NOT move the rendered chip toward the top of the 3D viewport.
- * Cause: the viewer's camera at (0.12, 0.10, 0.12) projects KiCad +Y
- * toward screen-down at this angle, so a "+Y"-at-12-o'clock implementation
- * made the click target and the chip's actual screen direction disagree.
+ * Cause: the viewer's camera at (0.12, 0.10, 0.12) projects PCB +Y
+ * (≡ world +Z in kicad-cli's GLB output) toward screen-down-left, so the
+ * "+Y" label-at-12-o'clock implementation made the click target and the
+ * chip's actual screen direction disagree.
  *
  * FIX (26.5.8 alpha.3): swap the LABEL strings on the +Y / −Y wedges so
- * the user's screen-relative mental model holds.
- *
- * FOLLOW-ON FIX (26.5.7-alpha.6 save+reload-equality): the alpha.5
- * applyLiveDelta used `dzWorld = +dyKicad` (KiCad +Y → world +Z),
- * but kicad-cli's BAKED render uses `dzWorld = -dyKicad` (verified
- * empirically — see /tmp/empirical_kicad/empirical.py reproducible
- * recipe). The user reported "after Save → reload, the offset goes the
- * wrong way" because applyLiveDelta and the on-disk → kicad-cli pipeline
- * disagreed on the sign of KiCad +Y. Alpha.6 flips applyLiveDelta to
- * match kicad-cli's bake AND flips the dial wedge `sign` field so the
- * label-driven user behaviour is preserved end-to-end (live preview AND
- * post-save reload now agree). The visible label is unchanged ("+Y" still
- * sits at 12 o'clock); only the (axis, sign) → (positioner-Y delta) map
- * flipped sign on the Y axis.
+ * the user's screen-relative mental model holds — wedge LABELLED "+Y" at
+ * 12 o'clock now sends KiCad-Y ‑delta, which empirically renders as
+ * screen-up (the position the wedge sits at). The internal (axis, sign)
+ * data is unchanged so save round-trip through kicad-cli stays
+ * consistent. Inner-ring arrow icons (↑ → ↓ ←) already matched screen
+ * direction visually and didn't need a swap.
  *
  * This unit spec freezes:
  *  • the position → (axis, sign) contract — what KiCad-coord delta a
  *    click on each cardinal sends — so the camera projection stays
- *    aligned with the dial layout AND with kicad-cli's bake.
+ *    aligned with the dial layout.
  *  • the LABEL contract — "+Y" must be at the top, "−Y" at the bottom —
  *    so a future refactor can't silently re-revert the user-mental-model
  *    fix.
@@ -36,7 +29,7 @@
  *
  * Companion to the visual-verify fixtures (run via
  * `scripts/visual-verify.sh`) which assert the world-space delta in the
- * rendered scene AND the live-vs-baked equality.
+ * rendered scene.
  */
 import { describe, it, expect } from 'vitest';
 
@@ -50,10 +43,6 @@ interface JoggerCalls {
  * src/blocks/Model3DJogDial.tsx OUTER_WEDGES + INNER_WEDGES and the
  * keyboard handler. If the prod table moves, this map must move with
  * it. Keep them in lock-step.
- *
- * 26.5.7-alpha.6 sign-flip: the Y-axis amount sign was reversed across
- * the table (top: -step → +step, bottom: +step → -step) when
- * applyLiveDelta started using kicad-cli's empirical mapping.
  */
 const DIAL_OUTER_STEP = 1.0;
 const DIAL_INNER_STEP = 0.1;
@@ -64,9 +53,9 @@ function wedgeClick(
 ): JoggerCalls {
   const step = ring === 'outer' ? DIAL_OUTER_STEP : DIAL_INNER_STEP;
   switch (position) {
-    case 'top':    return { axis: 'y', amount:  step };  // alpha.6: was -step
+    case 'top':    return { axis: 'y', amount: -step };
     case 'right':  return { axis: 'x', amount:  step };
-    case 'bottom': return { axis: 'y', amount: -step };  // alpha.6: was +step
+    case 'bottom': return { axis: 'y', amount:  step };
     case 'left':   return { axis: 'x', amount: -step };
   }
 }
@@ -77,22 +66,22 @@ function arrowKey(
 ): JoggerCalls {
   const step = shift ? 1.0 : 0.1;
   switch (key) {
-    case 'ArrowUp':    return { axis: 'y', amount:  step };  // alpha.6: was -step
-    case 'ArrowDown':  return { axis: 'y', amount: -step };  // alpha.6: was +step
+    case 'ArrowUp':    return { axis: 'y', amount: -step };
+    case 'ArrowDown':  return { axis: 'y', amount:  step };
     case 'ArrowRight': return { axis: 'x', amount:  step };
     case 'ArrowLeft':  return { axis: 'x', amount: -step };
   }
 }
 
 describe('Model3DJogDial / wedge → (axis, sign) mapping', () => {
-  it('top wedge sends KiCad +Y so chip moves toward screen-up [alpha.6: KiCad +Y → world −Z]', () => {
-    expect(wedgeClick('outer', 'top')).toEqual({ axis: 'y', amount:  1.0 });
-    expect(wedgeClick('inner', 'top')).toEqual({ axis: 'y', amount:  0.1 });
+  it('top wedge sends PCB −Y so chip moves toward screen-up', () => {
+    expect(wedgeClick('outer', 'top')).toEqual({ axis: 'y', amount: -1.0 });
+    expect(wedgeClick('inner', 'top')).toEqual({ axis: 'y', amount: -0.1 });
   });
 
-  it('bottom wedge sends KiCad −Y so chip moves toward screen-down', () => {
-    expect(wedgeClick('outer', 'bottom')).toEqual({ axis: 'y', amount: -1.0 });
-    expect(wedgeClick('inner', 'bottom')).toEqual({ axis: 'y', amount: -0.1 });
+  it('bottom wedge sends PCB +Y so chip moves toward screen-down', () => {
+    expect(wedgeClick('outer', 'bottom')).toEqual({ axis: 'y', amount: 1.0 });
+    expect(wedgeClick('inner', 'bottom')).toEqual({ axis: 'y', amount: 0.1 });
   });
 
   it('right wedge sends PCB +X so chip moves toward screen-right', () => {
@@ -115,7 +104,7 @@ describe('Model3DJogDial / wedge → (axis, sign) mapping', () => {
 });
 
 describe('Model3DJogDial / arrow-key handler stays in lock-step with wedges', () => {
-  it('ArrowUp matches the top wedge sign (screen-up = positive KiCad +Y under alpha.6 mapping)', () => {
+  it('ArrowUp matches the top wedge sign (screen-up = PCB −Y)', () => {
     const key = arrowKey('ArrowUp', false);
     const wedge = wedgeClick('inner', 'top');
     expect(Math.sign(key.amount)).toBe(Math.sign(wedge.amount));
@@ -201,14 +190,18 @@ describe('Model3DJogDial / camera projection sanity (Model3DViewerGL.tsx camera)
     expect(Math.abs(up)).toBeLessThan(Math.abs(right));
   });
 
-  it('world −Z projects toward screen-up (this is where alpha.6 KiCad +Y → world −Z lands)', () => {
-    const { up } = screenProjection([0, 0, -1]);
-    expect(up).toBeGreaterThan(0);
+  it('world +Z (= PCB +Y) projects to screen-LEFT-down — i.e. NOT toward 12 o\'clock', () => {
+    const { right, up } = screenProjection([0, 0, 1]);
+    expect(right).toBeLessThan(0); // screen-left
+    expect(up).toBeLessThan(0);    // screen-down
+    // This is the entire reason the +Y wedge sits at the bottom of the
+    // dial: putting it at 12 o'clock would have it point opposite to
+    // where the chip actually moves.
   });
 
-  it('world +Z projects toward screen-DOWN (justifies KiCad −Y → world +Z = screen-down)', () => {
-    const { up } = screenProjection([0, 0, 1]);
-    expect(up).toBeLessThan(0);
+  it('world −Z (= PCB −Y) projects toward screen-up (justifies top wedge sending −Y)', () => {
+    const { up } = screenProjection([0, 0, -1]);
+    expect(up).toBeGreaterThan(0);
   });
 
   it('world +X projects screen-right (justifies +X wedge label on right)', () => {
@@ -255,19 +248,19 @@ describe('Model3DJogDial / wedge-label contract (screen-relative)', () => {
   });
 
   // Cross-check: clicking the wedge LABELED "+Y" produces a screen-up
-  // motion. Under alpha.6 mapping, that's KiCad +Y delta (NOT −Y), because
-  // applyLiveDelta now sends KiCad +Y → world −Z which projects onto
-  // screen-up (the +0.359 dot product with screenUp basis).
-  it('clicking the "+Y"-labelled wedge sends KiCad +Y delta (screen-up under alpha.6)', () => {
+  // motion (i.e. KiCad −Y delta, which the camera renders as screen-up).
+  // If the label drifts off the (axis, sign) data the test fails before
+  // any visual-verify run can flag the regression.
+  it('clicking the "+Y"-labelled wedge sends KiCad −Y delta (screen-up motion)', () => {
     const click = wedgeClick('outer', 'top');
     expect(OUTER_LABEL_AT_POSITION.top).toBe('+Y');
-    expect(click).toEqual({ axis: 'y', amount: 1.0 });
+    expect(click).toEqual({ axis: 'y', amount: -1.0 });
   });
 
-  it('clicking the "−Y"-labelled wedge sends KiCad −Y delta (screen-down under alpha.6)', () => {
+  it('clicking the "−Y"-labelled wedge sends KiCad +Y delta (screen-down motion)', () => {
     const click = wedgeClick('outer', 'bottom');
     expect(OUTER_LABEL_AT_POSITION.bottom).toBe('−Y');
-    expect(click).toEqual({ axis: 'y', amount: -1.0 });
+    expect(click).toEqual({ axis: 'y', amount: 1.0 });
   });
 });
 
@@ -296,16 +289,16 @@ describe('Model3DJogDial / Shift modifier on CLICK halves the step', () => {
     expect(wedgeClickWithShift('outer', 'right', true)).toEqual({ axis: 'x', amount: 0.5 });
   });
 
-  it('Shift+click outer −Y sends -0.5mm (half of -1.0) under alpha.6 mapping', () => {
-    expect(wedgeClickWithShift('outer', 'bottom', true)).toEqual({ axis: 'y', amount: -0.5 });
+  it('Shift+click outer −Y sends +0.5mm (half of +1.0)', () => {
+    expect(wedgeClickWithShift('outer', 'bottom', true)).toEqual({ axis: 'y', amount: 0.5 });
   });
 
   it('Shift+click inner +X sends 0.05mm (half of 0.1)', () => {
     expect(wedgeClickWithShift('inner', 'right', true)).toEqual({ axis: 'x', amount: 0.05 });
   });
 
-  it('Shift+click inner top (label "↑") sends +0.05mm (half of +0.1) under alpha.6', () => {
-    expect(wedgeClickWithShift('inner', 'top', true)).toEqual({ axis: 'y', amount: 0.05 });
+  it('Shift+click inner +Y (top) sends −0.05mm (half of −0.1)', () => {
+    expect(wedgeClickWithShift('inner', 'top', true)).toEqual({ axis: 'y', amount: -0.05 });
   });
 
   it('plain click without shift uses the unscaled ring step', () => {
@@ -315,12 +308,12 @@ describe('Model3DJogDial / Shift modifier on CLICK halves the step', () => {
 });
 
 describe('Model3DJogDial / Shift modifier on ARROW KEYS still upscales (kept for muscle memory)', () => {
-  it('Shift+ArrowUp sends +1.0mm under alpha.6 (was -1.0 in alpha.5; sign flipped along with applyLiveDelta)', () => {
-    expect(arrowKey('ArrowUp', true)).toEqual({ axis: 'y', amount: 1.0 });
+  it('Shift+ArrowUp sends 1.0mm (NOT 0.05mm) — keyboard upscales, click halves', () => {
+    expect(arrowKey('ArrowUp', true)).toEqual({ axis: 'y', amount: -1.0 });
   });
 
-  it('plain ArrowUp sends +0.1mm under alpha.6 (the inner-ring step)', () => {
-    expect(arrowKey('ArrowUp', false)).toEqual({ axis: 'y', amount: 0.1 });
+  it('plain ArrowUp sends 0.1mm (the inner-ring step)', () => {
+    expect(arrowKey('ArrowUp', false)).toEqual({ axis: 'y', amount: -0.1 });
   });
 
   it('keyboard Shift and click Shift produce DIFFERENT magnitudes (asymmetry by design)', () => {

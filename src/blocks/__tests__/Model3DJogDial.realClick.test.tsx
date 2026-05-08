@@ -10,17 +10,14 @@
  * <path> wedges, and asserts onJog was called with the expected
  * (axis, amount).
  *
- * What we are pinning (post-26.5.7-alpha.6 contract):
+ * What we are pinning (post-26.5.8 contract):
  *   The wedge visually LABELLED "+Y" sits at 12 o'clock and a user
- *   click on it must produce screen-up motion. The alpha.6 save+reload-
- *   equality fix changed applyLiveDelta from `dzWorld = +dyKicad` to
- *   `dzWorld = -dyKicad` (matching kicad-cli's empirically-verified
- *   bake interpretation), so the wedge sign was flipped to keep
- *   "click +Y → screen-up" working. Click "+Y" now sends ('y', +1.0)
- *   (was ('y', -1.0) under alpha.5). The label-and-handler pairing is
- *   what the user actually sees and clicks; freezing it as a single
- *   contract guarantees a future refactor can't desync the text glyph
- *   from the dispatched delta without failing this spec.
+ *   click on it must produce screen-up motion. Empirically the camera
+ *   at (0.12, 0.10, 0.12) maps that screen-up motion to KiCad-Y −delta,
+ *   so onJog must be called with ('y', -1.0). The label-and-handler
+ *   pairing is what the user actually sees and clicks; freezing it as
+ *   a single contract guarantees a future refactor can't desync the
+ *   text glyph from the dispatched delta without failing this spec.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@solidjs/testing-library';
@@ -51,23 +48,23 @@ function pathForLabel(container: HTMLElement, label: string): SVGPathElement {
 }
 
 describe('Model3DJogDial / real DOM click → onJog (label-driven)', () => {
-  it('clicking the visually-LABELLED "+Y" wedge calls onJog("y", +1.0) [alpha.6: sign flipped]', () => {
+  it('clicking the visually-LABELLED "+Y" wedge calls onJog("y", -1.0)', () => {
     const onJog = vi.fn();
     const { container } = render(() => (
       <Model3DJogDial onJog={onJog} onReset={() => {}} />
     ));
     fireEvent.click(pathForLabel(container, '+Y'));
     expect(onJog).toHaveBeenCalledTimes(1);
-    expect(onJog).toHaveBeenCalledWith('y', 1.0);
+    expect(onJog).toHaveBeenCalledWith('y', -1.0);
   });
 
-  it('clicking the visually-LABELLED "−Y" wedge calls onJog("y", -1.0) [alpha.6: sign flipped]', () => {
+  it('clicking the visually-LABELLED "−Y" wedge calls onJog("y", +1.0)', () => {
     const onJog = vi.fn();
     const { container } = render(() => (
       <Model3DJogDial onJog={onJog} onReset={() => {}} />
     ));
     fireEvent.click(pathForLabel(container, '−Y'));
-    expect(onJog).toHaveBeenCalledWith('y', -1.0);
+    expect(onJog).toHaveBeenCalledWith('y', 1.0);
   });
 
   it('clicking the visually-LABELLED "+X" wedge calls onJog("x", +1.0)', () => {

@@ -64,21 +64,13 @@ interface Wedge {
 // file rationale. The (axis, sign) data is the KiCad-coord rotation that
 // the click sends to the positioner; the label tells the user what the
 // visible chip rotation will look like (e.g. "+Z" = clockwise yaw).
-//
-// 26.5.7-alpha.6 save+reload-equality fix: applyLiveDelta now matches
-// kicad-cli's bake interpretation, where KiCad +X rotate → world −X
-// rotate and KiCad +Z rotate → world −Y rotate. To preserve the dial-label
-// promise ("+Z = clockwise yaw on screen"), the X-rotate and Z-rotate
-// wedge `sign` fields were flipped vs alpha.5 (label "+Z" now sends
-// sign='+'). Live preview and post-Save reload now match within 50 µm —
-// see the synthetic_save_reload_equality_rotate_z visual-verify fixture.
 const WEDGES: Wedge[] = [
-  { a1: 0,   a2: 60,  axis: 'x', sign: '-', label: '−X' },
+  { a1: 0,   a2: 60,  axis: 'x', sign: '+', label: '−X' },
   { a1: 60,  a2: 120, axis: 'y', sign: '+', label: '−Y' },
-  { a1: 120, a2: 180, axis: 'z', sign: '+', label: '+Z' },
-  { a1: 180, a2: 240, axis: 'x', sign: '+', label: '+X' },
+  { a1: 120, a2: 180, axis: 'z', sign: '-', label: '+Z' },
+  { a1: 180, a2: 240, axis: 'x', sign: '-', label: '+X' },
   { a1: 240, a2: 300, axis: 'y', sign: '-', label: '+Y' },
-  { a1: 300, a2: 360, axis: 'z', sign: '-', label: '−Z' },
+  { a1: 300, a2: 360, axis: 'z', sign: '+', label: '−Z' },
 ];
 
 // Smaller than the XY dial so the two can sit side-by-side without

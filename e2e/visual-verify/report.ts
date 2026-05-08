@@ -41,18 +41,6 @@ export interface ReportInputs {
   /** Open warnings the runner wants surfaced (e.g. "fell back to direct
    *  signal injection because jogButtonSelector wasn't found"). */
   warnings?: string[];
-  /**
-   * 26.5.7-alpha.6 save+reload artefacts. Present when the fixture was
-   * declared with `saveAfterAction: true`; the BAKED snapshot is taken
-   * after the post-Save GLB reload completes. The chip-equality check
-   * pairs LIVE (= AFTER) chips with BAKED chips by name and reports the
-   * biggest axis-delta + per-chip drift reasons.
-   */
-  baked?: SceneSnapshot | null;
-  bakedPng?: Buffer | null;
-  bakedViewerPng?: Buffer | null;
-  liveBakedFailReasons?: string[];
-  liveBakedBiggest?: number;
 }
 
 export function writeReport(outDir: string, inputs: ReportInputs): string {
@@ -64,13 +52,6 @@ export function writeReport(outDir: string, inputs: ReportInputs): string {
   }
   if (inputs.afterViewerPng) {
     writeFileSync(join(outDir, 'after-viewer.png'), inputs.afterViewerPng);
-  }
-  if (inputs.bakedPng) writeFileSync(join(outDir, 'baked.png'), inputs.bakedPng);
-  if (inputs.bakedViewerPng) {
-    writeFileSync(join(outDir, 'baked-viewer.png'), inputs.bakedViewerPng);
-  }
-  if (inputs.baked) {
-    writeFileSync(join(outDir, 'baked.json'), JSON.stringify(inputs.baked, null, 2));
   }
   writeFileSync(join(outDir, 'before.json'), JSON.stringify(inputs.before, null, 2));
   writeFileSync(join(outDir, 'after.json'), JSON.stringify(inputs.after, null, 2));
@@ -153,57 +134,14 @@ function renderMarkdown(i: ReportInputs): string {
     '',
     renderSubstrateBbox(i.before, i.after),
     '',
-    '## Save+reload (live vs baked)',
-    '',
-    renderLiveBaked(i),
-    '',
     '## Artefacts',
     '',
     '- **`before-viewer.png` / `after-viewer.png`** — cropped to the 3D viewer pane (read these for visual QA)',
     '- `before.png` / `after.png` — full-window WebDriver screenshots (forensics: "was the wrong pane on top?")',
-    '- `baked.png` / `baked-viewer.png` / `baked.json` — present iff `saveAfterAction: true` (post-save reload state)',
     '- `before.json` / `after.json` — full SceneSnapshot',
     '- `diff.json` — DiffRecord (per-mesh deltas)',
     '',
   ].join('\n');
-}
-
-/** 26.5.7-alpha.6 — live vs baked chip-equality summary. Empty section
- *  ("not run") when the fixture didn't request a save+reload. */
-function renderLiveBaked(i: ReportInputs): string {
-  if (!i.baked) return '_not run — fixture did not set `saveAfterAction: true`._';
-  const biggest = i.liveBakedBiggest ?? 0;
-  const reasons = i.liveBakedFailReasons ?? [];
-  const lines: string[] = [
-    `- **biggest axis-delta** (LIVE → BAKED chip world position): ${biggest.toExponential(3)} m`,
-    `- **failures**: ${reasons.length === 0 ? '_none — live and baked agree within threshold._' : ''}`,
-  ];
-  for (const r of reasons) lines.push(`  - ${r}`);
-  // Per-chip table — pair by name for readability.
-  const liveChips = (i.after.meshes ?? []).filter((m) => m.inChipNodes);
-  const bakedByName = new Map<string, typeof liveChips[number]>();
-  for (const m of (i.baked.meshes ?? [])) if (m.inChipNodes) bakedByName.set(m.name, m);
-  if (liveChips.length > 0) {
-    lines.push('');
-    lines.push('| chip | live xyz (m) | baked xyz (m) | Δx | Δy | Δz |');
-    lines.push('|------|-------------:|--------------:|----:|----:|----:|');
-    for (const lm of liveChips) {
-      const bm = bakedByName.get(lm.name);
-      if (!bm) {
-        lines.push(`| \`${escapeMd(lm.name)}\` | (live only) | — | — | — | — |`);
-        continue;
-      }
-      const dx = bm.worldPosition.x - lm.worldPosition.x;
-      const dy = bm.worldPosition.y - lm.worldPosition.y;
-      const dz = bm.worldPosition.z - lm.worldPosition.z;
-      const xyz = (p: { x: number; y: number; z: number }) =>
-        `(${fmt(p.x)}, ${fmt(p.y)}, ${fmt(p.z)})`;
-      lines.push(
-        `| \`${escapeMd(lm.name)}\` | ${xyz(lm.worldPosition)} | ${xyz(bm.worldPosition)} | ${fmt(dx)} | ${fmt(dy)} | ${fmt(dz)} |`,
-      );
-    }
-  }
-  return lines.join('\n');
 }
 
 /** Pretty-print the (opaque) classifier-debug payload from each snapshot.
