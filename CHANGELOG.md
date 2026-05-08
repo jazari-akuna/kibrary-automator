@@ -2,6 +2,11 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.8-alpha.2] — 2026-05-08
+
+### Reverted
+- **Reverts 26.5.8-alpha.1 in full.** That alpha shipped a "fix" for save→reload offset direction that, on the live binary, made BOTH the save round-trip AND the dial-arrow alignment worse, not better. The visual-verify harness reported 0 m drift between live and baked because both ended up at the same wrong screen position — passing the equality test while still moving the wrong way relative to the user-visible arrows. User-reported regression: "the part is not moving according to the shown arrows". Reverting alpha.1 restores the alpha.5 behaviour: dial arrows match screen movement (confirmed by the user). The save→reload direction bug from alpha.5 is still open and will be fixed in a separate, more carefully-investigated alpha.
+
 ## [26.5.7-alpha.5] — 2026-05-07
 
 ### Fixed (the actual root cause this time)
