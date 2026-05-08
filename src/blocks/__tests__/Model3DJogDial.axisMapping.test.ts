@@ -52,14 +52,10 @@ function wedgeClick(
   position: 'top' | 'right' | 'bottom' | 'left',
 ): JoggerCalls {
   const step = ring === 'outer' ? DIAL_OUTER_STEP : DIAL_INNER_STEP;
-  // 26.5.8-alpha.3: Y signs flipped (was top=-step, bottom=+step). The
-  // applyLiveDelta mapping was corrected to KiCad +Y → world −Z (matches
-  // kicad-cli bake), so the wedge sign was flipped to keep "+Y/↑" still
-  // moving the chip toward screen-up under the corrected mapping.
   switch (position) {
-    case 'top':    return { axis: 'y', amount:  step };
+    case 'top':    return { axis: 'y', amount: -step };
     case 'right':  return { axis: 'x', amount:  step };
-    case 'bottom': return { axis: 'y', amount: -step };
+    case 'bottom': return { axis: 'y', amount:  step };
     case 'left':   return { axis: 'x', amount: -step };
   }
 }
@@ -70,22 +66,22 @@ function arrowKey(
 ): JoggerCalls {
   const step = shift ? 1.0 : 0.1;
   switch (key) {
-    case 'ArrowUp':    return { axis: 'y', amount:  step };
-    case 'ArrowDown':  return { axis: 'y', amount: -step };
+    case 'ArrowUp':    return { axis: 'y', amount: -step };
+    case 'ArrowDown':  return { axis: 'y', amount:  step };
     case 'ArrowRight': return { axis: 'x', amount:  step };
     case 'ArrowLeft':  return { axis: 'x', amount: -step };
   }
 }
 
 describe('Model3DJogDial / wedge → (axis, sign) mapping', () => {
-  it('top wedge sends PCB +Y so chip moves toward screen-up (under corrected applyLiveDelta KiCad+Y → world −Z)', () => {
-    expect(wedgeClick('outer', 'top')).toEqual({ axis: 'y', amount:  1.0 });
-    expect(wedgeClick('inner', 'top')).toEqual({ axis: 'y', amount:  0.1 });
+  it('top wedge sends PCB −Y so chip moves toward screen-up', () => {
+    expect(wedgeClick('outer', 'top')).toEqual({ axis: 'y', amount: -1.0 });
+    expect(wedgeClick('inner', 'top')).toEqual({ axis: 'y', amount: -0.1 });
   });
 
-  it('bottom wedge sends PCB −Y so chip moves toward screen-down', () => {
-    expect(wedgeClick('outer', 'bottom')).toEqual({ axis: 'y', amount: -1.0 });
-    expect(wedgeClick('inner', 'bottom')).toEqual({ axis: 'y', amount: -0.1 });
+  it('bottom wedge sends PCB +Y so chip moves toward screen-down', () => {
+    expect(wedgeClick('outer', 'bottom')).toEqual({ axis: 'y', amount: 1.0 });
+    expect(wedgeClick('inner', 'bottom')).toEqual({ axis: 'y', amount: 0.1 });
   });
 
   it('right wedge sends PCB +X so chip moves toward screen-right', () => {
@@ -251,22 +247,20 @@ describe('Model3DJogDial / wedge-label contract (screen-relative)', () => {
     expect(OUTER_LABEL_AT_POSITION.left).toBe('−X');
   });
 
-  // 26.5.8-alpha.3: clicking the wedge LABELED "+Y" sends KiCad +Y delta
-  // (positive). Under the corrected applyLiveDelta `dzWorld = -dyKicad`,
-  // a +Y delta produces world −Z motion which the camera projects toward
-  // screen-up — same user-visible direction as alpha.5, but now the on-disk
-  // value matches kicad-cli's bake direction so save round-trip preserves
-  // chip position exactly.
-  it('clicking the "+Y"-labelled wedge sends KiCad +Y delta (screen-up motion)', () => {
+  // Cross-check: clicking the wedge LABELED "+Y" produces a screen-up
+  // motion (i.e. KiCad −Y delta, which the camera renders as screen-up).
+  // If the label drifts off the (axis, sign) data the test fails before
+  // any visual-verify run can flag the regression.
+  it('clicking the "+Y"-labelled wedge sends KiCad −Y delta (screen-up motion)', () => {
     const click = wedgeClick('outer', 'top');
     expect(OUTER_LABEL_AT_POSITION.top).toBe('+Y');
-    expect(click).toEqual({ axis: 'y', amount:  1.0 });
+    expect(click).toEqual({ axis: 'y', amount: -1.0 });
   });
 
-  it('clicking the "−Y"-labelled wedge sends KiCad −Y delta (screen-down motion)', () => {
+  it('clicking the "−Y"-labelled wedge sends KiCad +Y delta (screen-down motion)', () => {
     const click = wedgeClick('outer', 'bottom');
     expect(OUTER_LABEL_AT_POSITION.bottom).toBe('−Y');
-    expect(click).toEqual({ axis: 'y', amount: -1.0 });
+    expect(click).toEqual({ axis: 'y', amount: 1.0 });
   });
 });
 
@@ -295,16 +289,16 @@ describe('Model3DJogDial / Shift modifier on CLICK halves the step', () => {
     expect(wedgeClickWithShift('outer', 'right', true)).toEqual({ axis: 'x', amount: 0.5 });
   });
 
-  it('Shift+click outer −Y sends -0.5mm (half of −1.0)', () => {
-    expect(wedgeClickWithShift('outer', 'bottom', true)).toEqual({ axis: 'y', amount: -0.5 });
+  it('Shift+click outer −Y sends +0.5mm (half of +1.0)', () => {
+    expect(wedgeClickWithShift('outer', 'bottom', true)).toEqual({ axis: 'y', amount: 0.5 });
   });
 
   it('Shift+click inner +X sends 0.05mm (half of 0.1)', () => {
     expect(wedgeClickWithShift('inner', 'right', true)).toEqual({ axis: 'x', amount: 0.05 });
   });
 
-  it('Shift+click inner +Y (top) sends +0.05mm (half of +0.1)', () => {
-    expect(wedgeClickWithShift('inner', 'top', true)).toEqual({ axis: 'y', amount:  0.05 });
+  it('Shift+click inner +Y (top) sends −0.05mm (half of −0.1)', () => {
+    expect(wedgeClickWithShift('inner', 'top', true)).toEqual({ axis: 'y', amount: -0.05 });
   });
 
   it('plain click without shift uses the unscaled ring step', () => {
@@ -314,12 +308,12 @@ describe('Model3DJogDial / Shift modifier on CLICK halves the step', () => {
 });
 
 describe('Model3DJogDial / Shift modifier on ARROW KEYS still upscales (kept for muscle memory)', () => {
-  it('Shift+ArrowUp sends +1.0mm (NOT 0.05mm) — keyboard upscales, click halves', () => {
-    expect(arrowKey('ArrowUp', true)).toEqual({ axis: 'y', amount:  1.0 });
+  it('Shift+ArrowUp sends 1.0mm (NOT 0.05mm) — keyboard upscales, click halves', () => {
+    expect(arrowKey('ArrowUp', true)).toEqual({ axis: 'y', amount: -1.0 });
   });
 
-  it('plain ArrowUp sends +0.1mm (the inner-ring step)', () => {
-    expect(arrowKey('ArrowUp', false)).toEqual({ axis: 'y', amount:  0.1 });
+  it('plain ArrowUp sends 0.1mm (the inner-ring step)', () => {
+    expect(arrowKey('ArrowUp', false)).toEqual({ axis: 'y', amount: -0.1 });
   });
 
   it('keyboard Shift and click Shift produce DIFFERENT magnitudes (asymmetry by design)', () => {

@@ -2,12 +2,6 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
-## [26.5.8-alpha.3] — 2026-05-08
-
-### Fixed
-- **Save→reload direction bug (translation Y).** User report: "clicking +Y in alpha.2 makes the arrow go up and the part go up. However if I make the step go +Y, and save, it reloads and shows the step having moved in the direction of -Y." The live preview's `applyLiveDelta` mapped KiCad +Y → world +Z, but kicad-cli's bake mapping is KiCad +Y → world **−Z** (verified empirically inside the visual-verify Docker image). The two interpretations were sign-flipped on the Z axis only, so the chip would render correctly during live editing but jump 2× the offset distance in the opposite direction the moment the file round-tripped through `kicad-cli pcb export glb`. Surgical fix: corrected `applyLiveDelta`'s `dzWorld = -dyKicad` (was `+dyKicad`); flipped the matching wedge `sign` fields on the Y wedges of `Model3DJogDial.tsx` (top "+Y/↑" now sends `'y'+1.0`, bottom "−Y/↓" now sends `'y'-1.0`) and the corresponding ArrowUp/Down keys; flipped `kicadAxisToWorld`'s Y branch for the hover-arrow helper. Net effect on the user-visible LIVE preview: identical to alpha.5/alpha.2 (top arrow ↑ still moves chip toward screen-up). Net effect on the SAVE round-trip: chip now stays exactly where the user placed it. **Locked in by a `synthetic_save_reload_equality_y` visual-verify fixture** that clicks Save, waits for the GLB to fully reload (`__model3dGLLoadCount` strictly increments), captures a third "BAKED" snapshot, and asserts each chip-node's world position drift between LIVE and BAKED ≤ 50 µm. Pre-fix: 2 mm drift on Z. Post-fix: **0 m drift**, every chip exactly where the live preview placed it.
-- **Did NOT touch rotation X/Z.** Alpha.1 also flipped the rotate dial's X-rotate and Z-rotate signs based on the same empirical mapping; reverted as part of alpha.2. Rotation is left unchanged in alpha.3 — if a similar bug exists for rotation it will be addressed in a separate alpha after independent visual confirmation. The user only reported the translation Y direction; this alpha fixes only that.
-
 ## [26.5.8-alpha.2] — 2026-05-08
 
 ### Reverted

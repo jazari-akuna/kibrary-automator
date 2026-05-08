@@ -86,9 +86,9 @@
       "name": "synthetic_jog_plus_y_label",
       "lib": "SyntheticPCB_KSL",
       "footprint": "synthetic_pcb_named",
-      "action": "Click the wedge LABELLED '+Y' (now at top of dial; alpha.6 testid is jog-outer-+y because the wedge sign was flipped to align with the corrected applyLiveDelta KiCad+Y → world −Z mapping). Chip must move toward screen-UP (positive screenUp projection).",
+      "action": "Click the wedge LABELLED '+Y' (now at top of dial; testid jog-outer--y because internal sign is '-'). Bug 1 (26.5.8): chip must move toward screen-UP (positive screenUp projection). The fix swapped +Y and -Y labels so 'click +Y' delivers screen-up motion.",
       "expectedSubstrateName": "preview_PCB",
-      "jogButtonSelector": "[data-testid=\"jog-outer-+y\"]",
+      "jogButtonSelector": "[data-testid=\"jog-outer--y\"]",
       "assertOverrides": {
         "substrateMaxDelta": 0.0001,
         "chipYDeltaRange": null,
@@ -99,26 +99,6 @@
         "maxAddedMeshes": 0,
         "maxRemovedMeshes": 0,
         "decalAlignmentMaxDelta": null
-      }
-    },
-    {
-      "name": "synthetic_save_reload_equality_y",
-      "lib": "SyntheticPCB_KSL",
-      "footprint": "synthetic_pcb_named",
-      "action": "Click '+Y' wedge (alpha.6 testid jog-outer-+y); LIVE chip world position must match BAKED (after Save → GLB reload) within 50 µm. Pre-fix: ~2 mm axis-flipped drift on world Z because applyLiveDelta used `dzWorld = +dyKicad` while kicad-cli's bake uses `dzWorld = -dyKicad`.",
-      "expectedSubstrateName": "preview_PCB",
-      "jogButtonSelector": "[data-testid=\"jog-outer-+y\"]",
-      "saveAfterAction": true,
-      "assertOverrides": {
-        "substrateMaxDelta": 0.0001,
-        "chipYDeltaRange": null,
-        "chipYDeltaMinCount": 0,
-        "chipZDeltaRange": [-0.002, -0.0005],
-        "chipZDeltaMinCount": 1,
-        "maxAddedMeshes": 0,
-        "maxRemovedMeshes": 0,
-        "decalAlignmentMaxDelta": null,
-        "liveVsBakedMaxDelta": 0.00005
       }
     },
     {
