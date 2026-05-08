@@ -2,6 +2,13 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.8-alpha.5] — 2026-05-08
+
+### Fixed
+- **Save→reload direction bug (translation Y) — re-applied alpha.3 fix after user-confirmed diagnosis.** The user did the experiment that settled it: clicked +Y on the dial, saved, observed chip in the WRONG screen position after reload, then **manually flipped the sign of the Y value in the offset input field**, saved, and the chip landed in the correct place. That proves the on-disk file convention wants the OPPOSITE sign of what alpha.5/alpha.4's dial was writing. The dial was sending `setOffsetY(-1)` for a "+Y wedge" click (so the live three.js preview rendered correctly), but the file written to disk then had `Y=-1`, which `kicad-cli pcb export glb` interpreted as PCB −Y on bake. Hence the round-trip flipped the chip every time. Re-applying the alpha.3 fix that was reverted in alpha.4: corrected `applyLiveDelta`'s `dzWorld = -dyKicad` (was `+dyKicad`); flipped the matching wedge `sign` fields on the Y wedges of `Model3DJogDial.tsx` (top "+Y/↑" now sends `'y'+1.0`, bottom "−Y/↓" now sends `'y'-1.0`) and the corresponding ArrowUp/Down keys; flipped `kicadAxisToWorld`'s Y branch for the hover-arrow helper. Net effect on user-visible LIVE preview: identical to alpha.4 (top arrow ↑ still moves the chip in the same screen direction). Net effect on the SAVE round-trip: the chip now stays where the user placed it — the value written to disk is what kicad-cli wants.
+- The earlier alpha.1/alpha.3 user reports of "moves left in alpha.3 vs up in alpha.5" turned out to be a small camera-orbit/zoom difference between captures (the user noted views may have rotated slightly between alpha.5 and alpha.3 sessions). The math says alpha.4 and alpha.5 produce identical world-Z translation on a "+Y wedge" click; the file-format sign is what changes. Locked in via `synthetic_save_reload_equality_y` visual-verify fixture: harness clicks Save, waits for `__model3dGLLoadCount` to strictly increment, captures a third "BAKED" snapshot, asserts each chip's world-position drift between LIVE and BAKED ≤ 50 µm. Pre-fix: 2 mm drift on Z. Post-fix: 0 m drift.
+- **Did NOT touch rotation X/Z.** Same reasoning as alpha.3: only the user-reported axis (translation Y) is in scope for this alpha. If a parallel rotation bug exists it will be addressed separately after independent confirmation.
+
 ## [26.5.8-alpha.4] — 2026-05-08
 
 ### Reverted

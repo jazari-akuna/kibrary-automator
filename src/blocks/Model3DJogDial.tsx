@@ -96,20 +96,21 @@ interface Wedge {
 // Z (height) is handled by the separate Model3DJogZ column — this dial
 // is X/Y only.
 const OUTER_WEDGES: Wedge[] = [
-  // top → user reads "+Y"; click sends KiCad-Y −delta (which renders as
-  // screen-up via world −Z projection). Save round-trip ends up at the
-  // same on-screen position as the live preview.
-  { a1: 315, a2: 45,  axis: 'y', sign: '-', ring: 'outer', label: '+Y' },
+  // 26.5.8-alpha.3 save-round-trip fix:
+  // applyLiveDelta now maps KiCad +Y → world −Z (NOT +Z). To keep the
+  // top wedge "+Y / ↑" still moving the chip toward screen-up under the
+  // corrected mapping, top wedge sign must be '+' (so click sends KiCad-Y
+  // +delta → world −Z = screen-up); bottom wedge sign is '-'.
+  { a1: 315, a2: 45,  axis: 'y', sign: '+', ring: 'outer', label: '+Y' },
   { a1: 45,  a2: 135, axis: 'x', sign: '+', ring: 'outer', label: '+X' },
-  // bottom → "−Y"; click sends KiCad-Y +delta (renders screen-down).
-  { a1: 135, a2: 225, axis: 'y', sign: '+', ring: 'outer', label: '−Y' },
+  { a1: 135, a2: 225, axis: 'y', sign: '-', ring: 'outer', label: '−Y' },
   { a1: 225, a2: 315, axis: 'x', sign: '-', ring: 'outer', label: '−X' },
 ];
 const INNER_WEDGES: Wedge[] = [
   // Inner ring uses arrow icons that match screen direction directly.
-  { a1: 315, a2: 45,  axis: 'y', sign: '-', ring: 'inner', label: '↑' },
+  { a1: 315, a2: 45,  axis: 'y', sign: '+', ring: 'inner', label: '↑' },
   { a1: 45,  a2: 135, axis: 'x', sign: '+', ring: 'inner', label: '→' },
-  { a1: 135, a2: 225, axis: 'y', sign: '+', ring: 'inner', label: '↓' },
+  { a1: 135, a2: 225, axis: 'y', sign: '-', ring: 'inner', label: '↓' },
   { a1: 225, a2: 315, axis: 'x', sign: '-', ring: 'inner', label: '←' },
 ];
 
@@ -154,12 +155,11 @@ export default function Model3DJogDial(props: Props) {
     let axis: 'x' | 'y' | null = null;
     let amount = 0;
     switch (e.key) {
-      // ArrowUp/Down sign-flipped to match the wedge layout above:
-      // pressing ↑ moves the chip toward screen-up, which (after the
-      // camera projection) is PCB −Y. Without the flip, the keyboard
-      // and the click targets would disagree.
-      case 'ArrowUp':    axis = 'y'; amount = -big; break;
-      case 'ArrowDown':  axis = 'y'; amount =  big; break;
+      // 26.5.8-alpha.3: ArrowUp emits PCB-Y +delta (under corrected
+      // applyLiveDelta mapping `dzWorld = −dyKicad`, +delta yields world
+      // −Z = screen-up). Both directions sign-flipped from alpha.2.
+      case 'ArrowUp':    axis = 'y'; amount =  big; break;
+      case 'ArrowDown':  axis = 'y'; amount = -big; break;
       case 'ArrowRight': axis = 'x'; amount =  big; break;
       case 'ArrowLeft':  axis = 'x'; amount = -big; break;
     }

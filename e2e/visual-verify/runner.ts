@@ -38,7 +38,14 @@ import {
   waitFor,
 } from '../lib/webdriver.ts';
 import { buildSnapshotScript, type SceneSnapshot } from './snapshot-scene.ts';
-import { computeDiff, runAssertions, type AssertOverrides, type FixtureLike } from './assert.ts';
+import {
+  compareLiveVsBaked,
+  computeDiff,
+  DEFAULT_OVERRIDES,
+  runAssertions,
+  type AssertOverrides,
+  type FixtureLike,
+} from './assert.ts';
 import { writeReport } from './report.ts';
 
 interface Fixture extends FixtureLike {
@@ -54,6 +61,20 @@ interface Fixture extends FixtureLike {
   jogButtonSelector: string;
   /** Optional: assertion overrides (substrate tolerance, chip range, …). */
   assertOverrides?: AssertOverrides;
+  /**
+   * 26.5.7-alpha.6 — when true, after capturing the live (post-jog) snapshot
+   * the runner clicks the positioner Save button, waits for the GLB to
+   * reload (loadCount increment), and captures a third "baked" snapshot.
+   * Asserts that each chip-node's world position in the baked snapshot
+   * matches its live-snapshot position within `liveVsBakedMaxDelta` (default
+   * 5e-5 m = 50 µm).
+   *
+   * This is the regression test for the user-reported "save direction
+   * inverted" bug: live preview moved chip in direction A, but post-save
+   * reload re-rendered it at direction −A because applyLiveDelta's KiCad→
+   * world axis remap diverged from kicad-cli's bake interpretation.
+   */
+  saveAfterAction?: boolean;
 }
 
 interface FixturesFile {
@@ -438,6 +459,48 @@ async function performAction(sid: string, fixture: Fixture): Promise<string[]> {
   return warnings;
 }
 
+/**
+ * 26.5.7-alpha.6 — drive the post-action Save and wait for the GLB reload.
+ *
+ * Sequence (mirrors what a user does):
+ *   1. Click [data-testid="positioner-save"] (Model3DPositioner.tsx).
+ *   2. Wait for Model3DPreview's onSaved → setSavedRev(n+1) → GLB refetch.
+ *      This shows up as __model3dGLLoadCount strictly incrementing.
+ *   3. Re-run waitForViewerReady so the new GLB has finished parsing AND
+ *      the new chipNodes are populated.
+ *   4. Re-zoom + 200ms settle + return.
+ *
+ * Returns the loadCount captured immediately before the Save click so the
+ * caller can spot a missed reload (no loadCount delta = save failed
+ * silently or the parent never refetched).
+ */
+async function clickSaveAndWaitForReload(sid: string): Promise<void> {
+  const initial = await snapshotInitialLoadCount(sid);
+  log(PREFIX, `pre-Save __model3dGLLoadCount = ${initial}`);
+  const eid = await findElement(sid, '[data-testid="positioner-save"]');
+  if (!eid) {
+    throw new Error(
+      `clickSaveAndWaitForReload: positioner-save button not found ` +
+        `(saveAfterAction requires the Model3DPositioner to be mounted).`,
+    );
+  }
+  await elClick(sid, eid);
+  log(PREFIX, 'clicked positioner-save; waiting for GLB reload');
+  await waitForViewerReady(sid, initial);
+  // Re-tighten the camera the way the BEFORE/LIVE snapshots had it. The
+  // re-render may have called frameCameraTo and zoomed back out.
+  await execScript(
+    sid,
+    `try {
+       if (window.__kibraryTest && typeof window.__kibraryTest.zoomToChip === 'function') {
+         window.__kibraryTest.zoomToChip(4);
+       }
+     } catch (e) { /* swallow */ }
+     return true;`,
+  );
+  await new Promise((r) => setTimeout(r, 200));
+}
+
 async function runFixture(
   sid: string,
   fixture: Fixture,
@@ -502,6 +565,46 @@ async function runFixture(
 
   const diff = computeDiff(before, after);
   const verdict = runAssertions(diff, fixture, before);
+
+  // 26.5.7-alpha.6 — save+reload chip-equality check.
+  let baked: SceneSnapshot | null = null;
+  let bakedPng: Buffer | null = null;
+  let bakedViewerPng: Buffer | null = null;
+  let liveBakedFailReasons: string[] = [];
+  let liveBakedBiggest = 0;
+  if (fixture.saveAfterAction) {
+    try {
+      await clickSaveAndWaitForReload(sid);
+      log(PREFIX, 'capturing BAKED (post-save reload) snapshot + screenshot');
+      baked = await captureSnapshot(sid);
+      bakedPng = await grabFullScreenshot(sid);
+      bakedViewerPng = await grabViewerScreenshot(sid);
+      const t: Required<AssertOverrides> = {
+        ...DEFAULT_OVERRIDES,
+        ...(fixture.assertOverrides ?? {}),
+      };
+      if (t.liveVsBakedMaxDelta !== null) {
+        const r = compareLiveVsBaked(after, baked, t.liveVsBakedMaxDelta);
+        liveBakedFailReasons = r.failReasons;
+        liveBakedBiggest = r.biggestDelta;
+        if (r.failReasons.length > 0) {
+          verdict.failReasons.push(...r.failReasons);
+          verdict.verdict = 'FAIL';
+        }
+        log(
+          PREFIX,
+          `live-vs-baked: ${r.chipsCompared} chip(s) compared, biggest ` +
+            `axis-delta ${r.biggestDelta.toExponential(3)} m ` +
+            `(threshold ${t.liveVsBakedMaxDelta.toExponential(3)} m)`,
+        );
+      }
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      verdict.failReasons.push(`saveAfterAction failed: ${reason}`);
+      verdict.verdict = 'FAIL';
+    }
+  }
+
   const reportPath = writeReport(join(outDir, fixture.name), {
     fixture,
     before,
@@ -513,6 +616,11 @@ async function runFixture(
     beforeViewerPng,
     afterViewerPng,
     warnings,
+    baked,
+    bakedPng,
+    bakedViewerPng,
+    liveBakedFailReasons,
+    liveBakedBiggest,
   });
   log(PREFIX, `${verdict.verdict} — report → ${reportPath}`);
   return { verdict: verdict.verdict, reportPath, diff };

@@ -173,6 +173,15 @@ export interface AssertOverrides {
    * fix. Set to null to disable (e.g. fixtures without a decal plane).
    */
   decalAlignmentMaxDelta?: number | null;
+  /**
+   * 26.5.7-alpha.6 save+reload regression: max chip-centroid drift
+   * (metres) between the live-preview snapshot and the post-save reload
+   * snapshot. The user-reported bug had ~2 mm drift on the Y axis
+   * because applyLiveDelta and kicad-cli disagree on the sign of
+   * KiCad-Y → world-Z. Default 5e-5 m (50 µm). Set to null to skip
+   * (only meaningful for fixtures with `saveAfterAction: true`).
+   */
+  liveVsBakedMaxDelta?: number | null;
 }
 
 /** Static defaults for the standard "jog-z-+1mm on a kicad-cli GLB" action. */
@@ -189,6 +198,7 @@ export const DEFAULT_OVERRIDES: Required<AssertOverrides> = {
   maxAddedMeshes: 0,
   maxRemovedMeshes: 0,
   decalAlignmentMaxDelta: 5e-4,
+  liveVsBakedMaxDelta: 5e-5,
 };
 
 /** What a fixture entry feeds into runAssertions. */
@@ -210,6 +220,78 @@ export interface Verdict {
     chipsInRange: number;
     biggestChipYDelta: number;
   };
+}
+
+/**
+ * 26.5.7-alpha.6 — Save+reload chip-equality verdict. Compares the live
+ * snapshot (after jog, before save) against the baked snapshot (after
+ * Save → GLB reload). Chips are paired by NAME (uuid changes across
+ * reload because the GLTFLoader allocates fresh Object3D instances).
+ *
+ * The assertion is symmetric: every chip in `live` must have a same-named
+ * counterpart in `baked` whose world position is within `maxDelta` metres,
+ * and vice versa. A drift > maxDelta on any axis is a fail.
+ *
+ * Substrate / decal meshes are ignored — only chip nodes are compared.
+ *
+ * Pure function: returns a list of human-readable failure strings (empty
+ * when the snapshots agree). Lets the runner thread this into the
+ * standard verdict object.
+ */
+export function compareLiveVsBaked(
+  live: SceneSnapshot,
+  baked: SceneSnapshot,
+  maxDelta: number,
+): { failReasons: string[]; biggestDelta: number; chipsCompared: number } {
+  const fail: string[] = [];
+  // Pair chip meshes by NAME — uuid changes across GLB reload because
+  // GLTFLoader allocates new Object3Ds each parse.
+  const liveChips = new Map<string, MeshRecord>();
+  for (const m of live.meshes) if (m.inChipNodes) liveChips.set(m.name, m);
+  const bakedChips = new Map<string, MeshRecord>();
+  for (const m of baked.meshes) if (m.inChipNodes) bakedChips.set(m.name, m);
+
+  let biggest = 0;
+  let compared = 0;
+  for (const [name, lm] of liveChips) {
+    const bm = bakedChips.get(name);
+    if (!bm) {
+      fail.push(
+        `chip "${name}" present in LIVE snapshot but missing from BAKED ` +
+          `(after Save+reload). Possible chip-classifier divergence between live ` +
+          `and reloaded GLB.`,
+      );
+      continue;
+    }
+    compared++;
+    const dx = bm.worldPosition.x - lm.worldPosition.x;
+    const dy = bm.worldPosition.y - lm.worldPosition.y;
+    const dz = bm.worldPosition.z - lm.worldPosition.z;
+    const m = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
+    if (m > biggest) biggest = m;
+    if (m > maxDelta) {
+      fail.push(
+        `chip "${name}" drifted by (Δx=${dx.toExponential(3)}, ` +
+          `Δy=${dy.toExponential(3)}, Δz=${dz.toExponential(3)}) m between LIVE ` +
+          `and BAKED snapshots — max-axis ${m.toExponential(3)} m exceeds ` +
+          `${maxDelta.toExponential(3)} m. ` +
+          `Save+reload regression: applyLiveDelta and kicad-cli's (offset XYZ) ` +
+          `interpretation diverge — check src/blocks/Model3DViewerGL.tsx ` +
+          `applyLiveDelta and the empirical kicad-cli mapping ` +
+          `(KiCad +Y → world −Z, KiCad +X rotate → world −X rotate, ` +
+          `KiCad +Z rotate → world −Y rotate).`,
+      );
+    }
+  }
+  for (const [name] of bakedChips) {
+    if (!liveChips.has(name)) {
+      fail.push(
+        `chip "${name}" present in BAKED snapshot but missing from LIVE ` +
+          `— GLB-reload classifier picked up a chip that wasn't in the live scene.`,
+      );
+    }
+  }
+  return { failReasons: fail, biggestDelta: biggest, chipsCompared: compared };
 }
 
 /**
