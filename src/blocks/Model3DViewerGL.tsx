@@ -985,9 +985,15 @@ export default function Model3DViewerGL(props: Props) {
     const dxKicad = (props.offset[0] - lastSavedOffset[0]) / 1000;
     const dyKicad = (props.offset[1] - lastSavedOffset[1]) / 1000;
     const dzKicad = (props.offset[2] - lastSavedOffset[2]) / 1000;
-    const dxWorld = dxKicad;       // KiCad +X → world +X
-    const dyWorld = dzKicad;       // KiCad +Z (up) → world +Y
-    const dzWorld = dyKicad;       // KiCad +Y (back) → world +Z
+    // 26.5.8-alpha.3: dzWorld = −dyKicad (NOT +dyKicad). The previous
+    // mapping put the LIVE chip at world +Z for setOffsetY(+1), but
+    // kicad-cli bakes Y=+1 to world −Z (empirically verified). The
+    // dial's Y wedges + ArrowUp/Down were sign-flipped together so that
+    // user-visible click semantics still produce screen-up motion under
+    // the corrected mapping. Save round-trip is now consistent.
+    const dxWorld =  dxKicad;       // KiCad +X → world +X
+    const dyWorld =  dzKicad;       // KiCad +Z → world +Y
+    const dzWorld = -dyKicad;       // KiCad +Y → world −Z (matches kicad-cli bake)
 
     const drxKicad = (props.rotation[0] - lastSavedRotation[0]) * Math.PI / 180;
     const dryKicad = (props.rotation[1] - lastSavedRotation[1]) * Math.PI / 180;
@@ -1076,7 +1082,7 @@ export default function Model3DViewerGL(props: Props) {
     const s = sign === '+' ? 1 : -1;
     switch (axis) {
       case 'x': return new THREE.Vector3(s, 0, 0);
-      case 'y': return new THREE.Vector3(0, 0, s);
+      case 'y': return new THREE.Vector3(0, 0, -s);  // 26.5.8-alpha.3: KiCad +Y → world −Z
       case 'z': return new THREE.Vector3(0, s, 0);
     }
   }

@@ -48,23 +48,27 @@ function pathForLabel(container: HTMLElement, label: string): SVGPathElement {
 }
 
 describe('Model3DJogDial / real DOM click → onJog (label-driven)', () => {
-  it('clicking the visually-LABELLED "+Y" wedge calls onJog("y", -1.0)', () => {
+  // 26.5.8-alpha.3 contract: click "+Y" → onJog('y', +1.0). Sign flipped from
+  // alpha.2 to align with the corrected applyLiveDelta (KiCad +Y → world −Z),
+  // so click "+Y" delivers world −Z = screen-up motion AND a +Y on disk that
+  // kicad-cli bakes at the same world position.
+  it('clicking the visually-LABELLED "+Y" wedge calls onJog("y", +1.0)', () => {
     const onJog = vi.fn();
     const { container } = render(() => (
       <Model3DJogDial onJog={onJog} onReset={() => {}} />
     ));
     fireEvent.click(pathForLabel(container, '+Y'));
     expect(onJog).toHaveBeenCalledTimes(1);
-    expect(onJog).toHaveBeenCalledWith('y', -1.0);
+    expect(onJog).toHaveBeenCalledWith('y', 1.0);
   });
 
-  it('clicking the visually-LABELLED "−Y" wedge calls onJog("y", +1.0)', () => {
+  it('clicking the visually-LABELLED "−Y" wedge calls onJog("y", -1.0)', () => {
     const onJog = vi.fn();
     const { container } = render(() => (
       <Model3DJogDial onJog={onJog} onReset={() => {}} />
     ));
     fireEvent.click(pathForLabel(container, '−Y'));
-    expect(onJog).toHaveBeenCalledWith('y', 1.0);
+    expect(onJog).toHaveBeenCalledWith('y', -1.0);
   });
 
   it('clicking the visually-LABELLED "+X" wedge calls onJog("x", +1.0)', () => {
