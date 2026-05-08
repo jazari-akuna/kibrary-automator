@@ -72,44 +72,45 @@ interface Wedge {
 // chip actually moves, AND the LABEL matches the user's screen-relative
 // mental model (+Y at top = "click here to move chip up on screen").
 //
-// User mental-model fix (26.5.8): the wedge labels follow standard math
-// convention — +Y means UP-on-screen, not KiCad's "+Y is south on the
-// layout sheet" convention. The labels were previously KiCad-axis names
-// which collided with users' (R, G, B = +X, +Y, +Z = right, up, depth)
-// expectation — they read "+Y" at the bottom and reported the dial as
-// "all inverted". Empirically (visual-verify):
-//   KiCad +X → world +X → screen-RIGHT  (wedge labelled "+X" at 3 o'clock ✓)
-//   KiCad +Y → world +Z → screen-LEFT-DOWN (so KiCad-+Y is "screen-down");
-//                         we relabel BOTTOM as "−Y" and TOP as "+Y", but
-//                         keep the (axis, sign) data intact so the chip
-//                         continues to translate in the screen direction
-//                         the wedge POSITION already implies. Effectively
-//                         label-swap only — click semantics + on-disk
-//                         storage unchanged, save round-trip preserved.
-//   KiCad +Z → world +Y (handled by Model3DJogZ; vertical axis aligns
-//                         with screen-up at this camera angle, so the
-//                         Z label was never inverted).
+// 26.5.7-alpha.6 save+reload-equality fix:
+//   applyLiveDelta now uses kicad-cli's empirically-verified KiCad → world
+//   axis mapping (KiCad +Y → world −Z, NOT +Z as the alpha.5 implementation
+//   assumed). To preserve "click +Y label → chip moves up on screen", the
+//   wedge `sign` on the Y-axis was flipped: top wedge now sends sign='+'
+//   (was '-') and bottom sends '-' (was '+'). Empirically (per the new
+//   visual-verify save+reload fixture), the live preview AND the post-Save
+//   GLB reload now both place the chip at the same screen position — the
+//   ~2 mm divergence the user reported in alpha.5 is gone.
 //
-// X-axis: PCB +X = world +X ≈ screen-right at this camera angle, so the
-// "+X" label stays on the right.
+//   Why bottom sends '-' under the new mapping:
+//   - Click bottom "−Y" → emits axis='y', sign='-' → positioner Y −= 1
+//   - applyLiveDelta: dyKicad = −1 → dzWorld = −(−1) = +1 → world +Z
+//   - Camera screen-up basis dot world+Z ≈ −0.359 → chip moves screen-DOWN ✓
+//   - Bake: on-disk Y=−1 → kicad-cli world Z=+0.001 → same screen-down ✓
+//
+// Other axes:
+//   KiCad +X → world +X → screen-right (no flip; wedge "+X" at 3 o'clock)
+//   KiCad +Z → world +Y → screen-up (handled by Model3DJogZ column)
 //
 // Z (height) is handled by the separate Model3DJogZ column — this dial
 // is X/Y only.
 const OUTER_WEDGES: Wedge[] = [
-  // top → user reads "+Y"; click sends KiCad-Y −delta (which renders as
-  // screen-up via world −Z projection). Save round-trip ends up at the
-  // same on-screen position as the live preview.
-  { a1: 315, a2: 45,  axis: 'y', sign: '-', ring: 'outer', label: '+Y' },
+  // top → user reads "+Y"; click sends KiCad-Y +delta (which under the
+  // alpha.6 applyLiveDelta mapping renders as world +Z = screen-down...
+  // wait, no: KiCad +Y → world −Z; +Y delta → world −Z = screen-up via
+  // (-0.359)·(−1) = +0.359). Save round-trip ends up at the same on-screen
+  // position as the live preview.
+  { a1: 315, a2: 45,  axis: 'y', sign: '+', ring: 'outer', label: '+Y' },
   { a1: 45,  a2: 135, axis: 'x', sign: '+', ring: 'outer', label: '+X' },
-  // bottom → "−Y"; click sends KiCad-Y +delta (renders screen-down).
-  { a1: 135, a2: 225, axis: 'y', sign: '+', ring: 'outer', label: '−Y' },
+  // bottom → "−Y"; click sends KiCad-Y −delta → world +Z = screen-down.
+  { a1: 135, a2: 225, axis: 'y', sign: '-', ring: 'outer', label: '−Y' },
   { a1: 225, a2: 315, axis: 'x', sign: '-', ring: 'outer', label: '−X' },
 ];
 const INNER_WEDGES: Wedge[] = [
   // Inner ring uses arrow icons that match screen direction directly.
-  { a1: 315, a2: 45,  axis: 'y', sign: '-', ring: 'inner', label: '↑' },
+  { a1: 315, a2: 45,  axis: 'y', sign: '+', ring: 'inner', label: '↑' },
   { a1: 45,  a2: 135, axis: 'x', sign: '+', ring: 'inner', label: '→' },
-  { a1: 135, a2: 225, axis: 'y', sign: '+', ring: 'inner', label: '↓' },
+  { a1: 135, a2: 225, axis: 'y', sign: '-', ring: 'inner', label: '↓' },
   { a1: 225, a2: 315, axis: 'x', sign: '-', ring: 'inner', label: '←' },
 ];
 
@@ -154,12 +155,14 @@ export default function Model3DJogDial(props: Props) {
     let axis: 'x' | 'y' | null = null;
     let amount = 0;
     switch (e.key) {
-      // ArrowUp/Down sign-flipped to match the wedge layout above:
-      // pressing ↑ moves the chip toward screen-up, which (after the
-      // camera projection) is PCB −Y. Without the flip, the keyboard
-      // and the click targets would disagree.
-      case 'ArrowUp':    axis = 'y'; amount = -big; break;
-      case 'ArrowDown':  axis = 'y'; amount =  big; break;
+      // ArrowUp moves the chip toward screen-up. Under the alpha.6
+      // applyLiveDelta mapping (KiCad +Y → world −Z), positioner Y +=big
+      // gives world Z=-big, which the camera projects toward screen-up.
+      // (Pre-alpha.6 the sign was flipped because applyLiveDelta used
+      // KiCad +Y → world +Z; the dial's wedges and the keyboard were both
+      // inverted to compensate. Both flipped back together in alpha.6.)
+      case 'ArrowUp':    axis = 'y'; amount =  big; break;
+      case 'ArrowDown':  axis = 'y'; amount = -big; break;
       case 'ArrowRight': axis = 'x'; amount =  big; break;
       case 'ArrowLeft':  axis = 'x'; amount = -big; break;
     }

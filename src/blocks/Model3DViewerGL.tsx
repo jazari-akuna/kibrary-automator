@@ -966,35 +966,43 @@ export default function Model3DViewerGL(props: Props) {
     // alpha.34: positioner emits MILLIMETRES; kicad-cli's GLB unit is
     // METRES. /1000 keeps a 1 mm slider tick from becoming a 1 m fly-away.
     //
-    // KiCad-PCB → three.js-world axis mapping (empirically verified via
-    // visual-verify on synthetic_pcb_named: a +1 mm KiCad-axis jog moves
-    // the chip's world position by exactly +0.001 m on the listed axis):
+    // KiCad → three.js-world axis mapping. EMPIRICALLY DETERMINED (alpha.6)
+    // from kicad-cli pcb export glb output on a synthetic 1-mm offset
+    // footprint. Source: /tmp/empirical_kicad/empirical.py (run inside
+    // kibrary-visual-verify image; see commit message + 26.5.7-alpha.6
+    // visual-verify report).
     //
-    //     KiCad +X  →  world +X   (no remap; both are "to the right")
-    //     KiCad +Y  →  world +Z   (KiCad's "south on layout sheet" rotates
-    //                              onto three.js's depth axis)
-    //     KiCad +Z  →  world +Y   (KiCad's "out of board" lands on Y-up)
+    //     Translation:
+    //       KiCad +X mm  →  glTF +X = world +X mm   (no flip)
+    //       KiCad +Y mm  →  glTF −Z = world −Z mm   (SIGN FLIP)
+    //       KiCad +Z mm  →  glTF +Y = world +Y mm   (KiCad-up = world-up)
     //
-    // 26.5.8 dial-label fix: the wedge labels in Model3DJogDial /
-    // Model3DRotateDial were swapped to reflect the user's screen-relative
-    // mental model ("+Y at top of dial = chip moves up on screen") because
-    // the camera at (0.12, 0.10, 0.12) projects KiCad +Y (= world +Z)
-    // toward screen-DOWN. The applyLiveDelta remap below stays the same —
-    // it's the dial labels (NOT this code) that needed to flip, so the
-    // on-disk KiCad-coord storage round-trips cleanly through kicad-cli.
+    //     Rotation (KiCad rotate axis ↔ world rotate axis):
+    //       KiCad +X rotate  →  world rotation about world −X (sign flip)
+    //       KiCad +Y rotate  →  world rotation about world +Z
+    //       KiCad +Z rotate  →  world rotation about world −Y (sign flip)
+    //
+    // Pre-alpha.6 this code used a no-flip Y/Z swap (dzWorld = dyKicad),
+    // which gave LIVE preview that disagreed with the post-Save kicad-cli
+    // bake by ~2 mm on world-Z (the user-reported "saved offsets in wrong
+    // direction"). The dial labels in Model3DJogDial / Model3DRotateDial
+    // already promise screen-relative motion via their own (axis, sign)
+    // wiring; the wedge `sign` fields were re-aligned in alpha.6 so a
+    // click on the visible "+Y" label still moves the chip toward
+    // screen-up under the corrected mapping below.
     const dxKicad = (props.offset[0] - lastSavedOffset[0]) / 1000;
     const dyKicad = (props.offset[1] - lastSavedOffset[1]) / 1000;
     const dzKicad = (props.offset[2] - lastSavedOffset[2]) / 1000;
-    const dxWorld = dxKicad;       // KiCad +X → world +X
-    const dyWorld = dzKicad;       // KiCad +Z (up) → world +Y
-    const dzWorld = dyKicad;       // KiCad +Y (back) → world +Z
+    const dxWorld =  dxKicad;       // KiCad +X → world +X
+    const dyWorld =  dzKicad;       // KiCad +Z → world +Y (no flip)
+    const dzWorld = -dyKicad;       // KiCad +Y → world −Z (FLIP — matches kicad-cli bake)
 
     const drxKicad = (props.rotation[0] - lastSavedRotation[0]) * Math.PI / 180;
     const dryKicad = (props.rotation[1] - lastSavedRotation[1]) * Math.PI / 180;
     const drzKicad = (props.rotation[2] - lastSavedRotation[2]) * Math.PI / 180;
-    const drxWorld = drxKicad;
-    const dryWorld = drzKicad;
-    const drzWorld = dryKicad;
+    const drxWorld = -drxKicad;     // KiCad +X rotate → world −X rotate (FLIP)
+    const dryWorld = -drzKicad;     // KiCad +Z rotate → world −Y rotate (FLIP)
+    const drzWorld =  dryKicad;     // KiCad +Y rotate → world +Z rotate
 
     // Scale delta is a multiplier (live/saved). Scale axes follow the
     // same KiCad → world swap so a "scale Z" slider stretches the chip
@@ -1066,17 +1074,18 @@ export default function Model3DViewerGL(props: Props) {
   }
 
   /**
-   * KiCad-axis-letter → world-space unit vector. Mirrors applyLiveDelta:
+   * KiCad-axis-letter → world-space unit vector. Mirrors applyLiveDelta's
+   * empirical kicad-cli mapping (alpha.6):
    *   KiCad +X → world +X
-   *   KiCad +Y → world +Z   (back along the layout sheet → world depth)
-   *   KiCad +Z → world +Y   (out of the board → world up)
+   *   KiCad +Y → world −Z   (sign flip — kicad-cli's bake convention)
+   *   KiCad +Z → world +Y   (KiCad-up = world-up)
    * sign flips the corresponding component.
    */
   function kicadAxisToWorld(axis: 'x' | 'y' | 'z', sign: '+' | '-'): THREE.Vector3 {
     const s = sign === '+' ? 1 : -1;
     switch (axis) {
       case 'x': return new THREE.Vector3(s, 0, 0);
-      case 'y': return new THREE.Vector3(0, 0, s);
+      case 'y': return new THREE.Vector3(0, 0, -s);    // alpha.6: KiCad +Y → world −Z
       case 'z': return new THREE.Vector3(0, s, 0);
     }
   }
