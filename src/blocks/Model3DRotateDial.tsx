@@ -64,24 +64,13 @@ interface Wedge {
 // file rationale. The (axis, sign) data is the KiCad-coord rotation that
 // the click sends to the positioner; the label tells the user what the
 // visible chip rotation will look like (e.g. "+Z" = clockwise yaw).
-// 26.5.8-alpha.6: X and Z wedge signs flipped to match the on-disk
-// kicad-cli rotation convention (KiCad +X rotate maps to world rotation
-// around −X, KiCad +Z rotate maps to world rotation around −Y). The dial
-// LABEL stays the same; what flips is the on-disk value the click writes,
-// so the field shows the value the user clicked (alpha.5: clicking "−X"
-// wrote +90 to the field — wrong sign). applyLiveDelta's drxWorld and
-// dryWorld are sign-flipped in lockstep so the live preview rotates in
-// the same screen direction as before. Y rotation is left UNCHANGED —
-// the field sign and save round-trip already work correctly per user
-// report (only the hover arrow direction is off, which is a separate
-// issue tracked separately).
 const WEDGES: Wedge[] = [
-  { a1: 0,   a2: 60,  axis: 'x', sign: '-', label: '−X' },
+  { a1: 0,   a2: 60,  axis: 'x', sign: '+', label: '−X' },
   { a1: 60,  a2: 120, axis: 'y', sign: '+', label: '−Y' },
-  { a1: 120, a2: 180, axis: 'z', sign: '+', label: '+Z' },
-  { a1: 180, a2: 240, axis: 'x', sign: '+', label: '+X' },
+  { a1: 120, a2: 180, axis: 'z', sign: '-', label: '+Z' },
+  { a1: 180, a2: 240, axis: 'x', sign: '-', label: '+X' },
   { a1: 240, a2: 300, axis: 'y', sign: '-', label: '+Y' },
-  { a1: 300, a2: 360, axis: 'z', sign: '-', label: '−Z' },
+  { a1: 300, a2: 360, axis: 'z', sign: '+', label: '−Z' },
 ];
 
 // Smaller than the XY dial so the two can sit side-by-side without

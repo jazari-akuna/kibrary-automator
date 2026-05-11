@@ -995,21 +995,12 @@ export default function Model3DViewerGL(props: Props) {
     const dyWorld =  dzKicad;       // KiCad +Z → world +Y
     const dzWorld = -dyKicad;       // KiCad +Y → world −Z (matches kicad-cli bake)
 
-    // 26.5.8-alpha.6: drxWorld and dryWorld sign-flipped to match
-    // kicad-cli's empirical bake mapping for rotation:
-    //   KiCad +X rotate → world rotation about −X (sign flip)
-    //   KiCad +Y rotate → world rotation about +Z (no flip — Y unchanged)
-    //   KiCad +Z rotate → world rotation about −Y (sign flip)
-    // Wedges in Model3DRotateDial.tsx for X and Z were sign-flipped in
-    // lockstep so user-visible click semantics still rotate the chip in
-    // the same screen direction (and the field now shows what the user
-    // clicked: -X click = -90, not +90).
     const drxKicad = (props.rotation[0] - lastSavedRotation[0]) * Math.PI / 180;
     const dryKicad = (props.rotation[1] - lastSavedRotation[1]) * Math.PI / 180;
     const drzKicad = (props.rotation[2] - lastSavedRotation[2]) * Math.PI / 180;
-    const drxWorld = -drxKicad;
-    const dryWorld = -drzKicad;
-    const drzWorld =  dryKicad;
+    const drxWorld = drxKicad;
+    const dryWorld = drzKicad;
+    const drzWorld = dryKicad;
 
     // Scale delta is a multiplier (live/saved). Scale axes follow the
     // same KiCad → world swap so a "scale Z" slider stretches the chip
@@ -1081,38 +1072,18 @@ export default function Model3DViewerGL(props: Props) {
   }
 
   /**
-   * KiCad-axis-letter → world-space TRANSLATION direction. Mirrors
-   * applyLiveDelta's translation remap:
+   * KiCad-axis-letter → world-space unit vector. Mirrors applyLiveDelta:
    *   KiCad +X → world +X
-   *   KiCad +Y → world −Z   (sign flip; matches kicad-cli bake)
-   *   KiCad +Z → world +Y
+   *   KiCad +Y → world +Z   (back along the layout sheet → world depth)
+   *   KiCad +Z → world +Y   (out of the board → world up)
    * sign flips the corresponding component.
    */
   function kicadAxisToWorld(axis: 'x' | 'y' | 'z', sign: '+' | '-'): THREE.Vector3 {
     const s = sign === '+' ? 1 : -1;
     switch (axis) {
       case 'x': return new THREE.Vector3(s, 0, 0);
-      case 'y': return new THREE.Vector3(0, 0, -s);
+      case 'y': return new THREE.Vector3(0, 0, -s);  // 26.5.8-alpha.3: KiCad +Y → world −Z
       case 'z': return new THREE.Vector3(0, s, 0);
-    }
-  }
-
-  /**
-   * KiCad-axis-letter → world-space ROTATION axis. Different from
-   * `kicadAxisToWorld` (translation) because rotation axes are remapped
-   * with different sign flips (per applyLiveDelta's rotation block):
-   *   KiCad +X rotate → world rotation about −X
-   *   KiCad +Y rotate → world rotation about +Z
-   *   KiCad +Z rotate → world rotation about −Y
-   * Used by the hover-preview rotate helper so the visible arc draws
-   * around the same axis the chip will actually rotate around when the
-   * wedge is clicked.
-   */
-  function kicadRotationAxisToWorld(axis: 'x' | 'y' | 'z'): THREE.Vector3 {
-    switch (axis) {
-      case 'x': return new THREE.Vector3(-1, 0, 0);
-      case 'y': return new THREE.Vector3(0, 0, 1);
-      case 'z': return new THREE.Vector3(0, -1, 0);
     }
   }
 
@@ -1239,12 +1210,10 @@ export default function Model3DViewerGL(props: Props) {
       const dir = kicadAxisToWorld(preview.axis, preview.sign);
       hoverHelper = buildTranslateHelper(dir, center, chipDim);
     } else {
-      // 26.5.8-alpha.6: rotation hover uses kicadRotationAxisToWorld
-      // (NOT kicadAxisToWorld) because rotation axes have different sign
-      // flips than translation axes. Without this, the Y rotation arrow
-      // drew around world −Z while the actual chip rotation happens
-      // around world +Z (= opposite-direction visual indication).
-      const axisVec = kicadRotationAxisToWorld(preview.axis);
+      // The rotate dial passes the kicad axis directly. Remap to world
+      // basis so the arc plane matches the actual rotation plane the
+      // chip would experience on click.
+      const axisVec = kicadAxisToWorld(preview.axis, '+');
       hoverHelper = buildRotateHelper(axisVec, preview.sign, center, chipDim);
     }
     scene.add(hoverHelper);

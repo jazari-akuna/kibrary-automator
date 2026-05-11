@@ -2,13 +2,6 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
-## [26.5.8-alpha.6] — 2026-05-08
-
-### Fixed
-- **Rotation: X and Z dial wedge field-sign + save round-trip.** User on alpha.5: clicking the "−X" wedge wrote `+90` to the field (wanted `−90`); clicking "+Z" wrote the wrong sign too. The on-disk kicad-cli rotation convention sign-flips on X and Z (KiCad +X rotate → world rotation about −X; KiCad +Z rotate → world rotation about −Y), but the dial wedges and applyLiveDelta were using the same-sign mapping. Same pattern as the alpha.5 translation Y fix: flipped the wedge `sign` fields for X and Z wedges in `Model3DRotateDial.tsx` (`-X` now sends `'x'-90`, `+X` sends `'x'+90`, `+Z` sends `'z'+90`, `-Z` sends `'z'-90`), and flipped `applyLiveDelta`'s `drxWorld` and `dryWorld` to compensate so the live three.js rotation visually matches the wedge label and matches what kicad-cli will bake on Save.
-- **Rotation: Y wedge hover-arrow direction.** User on alpha.5: clicking +Y rotation worked correctly (field value right, save round-trip stable, chip rotates the right way), BUT the cyan hover preview arc was drawn around the OPPOSITE world axis (− instead of +). Cause: the rotation hover used `kicadAxisToWorld('y', '+')` which (after the alpha.5 translation-Y axis flip) returns world −Z, but the actual chip rotation under applyLiveDelta is around world +Z. Translation and rotation axes have different sign flips per kicad-cli's bake convention — they cannot share one axis-mapping function. Added a separate `kicadRotationAxisToWorld` helper that returns the correct world rotation axis for each KiCad axis, and swapped it into the rotation hover branch. Translation arrows are unchanged (still correct).
-- Y rotation otherwise unchanged in alpha.6 — the field sign + save round-trip already worked correctly; only the visual hover indicator was wrong.
-
 ## [26.5.8-alpha.5] — 2026-05-08
 
 ### Fixed
