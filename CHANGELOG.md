@@ -2,6 +2,11 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.11-alpha.1] — 2026-05-11
+
+### Reverted
+- **Reverts 26.5.8-alpha.6 in full.** User report: "everything is fucked up". Restoring alpha.5 behaviour: translation Y save round-trip works correctly; rotation X/Z dial field-sign mismatch and Y rotation hover-arrow direction are KNOWN BUGS to be investigated separately with real-binary screenshots before any further fix attempt. No more rotation changes without ground-truth pixel evidence from the user's machine.
+
 ## [26.5.8-alpha.5] — 2026-05-08
 
 ### Fixed
