@@ -10,10 +10,27 @@ interface WorkspaceOpenResult extends Workspace {
   first_run: boolean;
 }
 
+function readRecents(): string[] {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem('recents') ?? '[]');
+    return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeRecents(paths: string[]): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem('recents', JSON.stringify(paths));
+  } catch {
+    // Recents are a convenience cache; workspace open must still succeed.
+  }
+}
+
 const [current, setCurrent] = createSignal<Workspace | null>(null);
-const [recents, setRecents] = createSignal<string[]>(
-  JSON.parse(localStorage.getItem('recents') ?? '[]')
-);
+const [recents, setRecents] = createSignal<string[]>(readRecents());
 const [firstRun, setFirstRun] = createSignal(false);
 
 export { current as currentWorkspace, recents as recentWorkspaces, firstRun };
@@ -29,7 +46,7 @@ export async function openWorkspace(path: string) {
   if (first_run) setFirstRun(true);
   const next = [path, ...recents().filter((p) => p !== path)].slice(0, 10);
   setRecents(next);
-  localStorage.setItem('recents', JSON.stringify(next));
+  writeRecents(next);
   // Start the fs watcher for the staging directory (T28).
   // Fire-and-forget: watcher failure is non-fatal (no staging dir yet is OK).
   invoke('watch_workspace', { workspace: path }).catch((e) =>

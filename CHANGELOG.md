@@ -2,6 +2,11 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.13-alpha.1] — 2026-05-13
+
+### Fixed
+- **macOS packaged sidecar no longer dies on launch under hardened runtime.** The DMG build's PyInstaller sidecar ran before Tauri bundling, but the signed `.app` failed when PyInstaller extracted and loaded its bundled Python framework: macOS rejected the mapped library because the ad-hoc signed host process and extracted Python framework did not share a Team ID. Added a macOS entitlement file and configured Tauri to sign the app/sidecar with `com.apple.security.cs.disable-library-validation`, which lets the bundled sidecar answer JSON-RPC again. Verified from the installed `/Applications/Kibrary.app` with `system.ping`.
+
 ## [26.5.11-alpha.1] — 2026-05-11
 
 ### Reverted

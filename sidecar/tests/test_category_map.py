@@ -6,6 +6,7 @@ so that monkeypatched env vars are picked up cleanly.
 """
 
 import json
+import sys
 from pathlib import Path
 
 from kibrary_sidecar.category_map import load_map, suggest_library
@@ -20,19 +21,24 @@ def _reload_suggest(category: str) -> str:
     return suggest_library(category, _force_reload=True)
 
 
+def _use_xdg_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+
 # ---------------------------------------------------------------------------
 # Plan-mandated tests (Steps 22.1 / 22.2)
 # ---------------------------------------------------------------------------
 
 def test_known_category_routes_to_lib(tmp_path, monkeypatch):
     """A well-known category must resolve to its KSL library."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _use_xdg_config(tmp_path, monkeypatch)
     assert _reload_suggest("Resistors") == "Resistors_KSL"
 
 
 def test_unknown_falls_back_to_misc(tmp_path, monkeypatch):
     """An unrecognised category must fall back to Misc_KSL."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _use_xdg_config(tmp_path, monkeypatch)
     assert _reload_suggest("Definitely Not A Category") == "Misc_KSL"
 
 
@@ -42,13 +48,13 @@ def test_unknown_falls_back_to_misc(tmp_path, monkeypatch):
 
 def test_legacy_alias_works(tmp_path, monkeypatch):
     """Deprecated alias 'Clock/Timing' must resolve to Oscillators_KSL."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _use_xdg_config(tmp_path, monkeypatch)
     assert _reload_suggest("Clock/Timing") == "Oscillators_KSL"
 
 
 def test_user_override_takes_precedence(tmp_path, monkeypatch):
     """A user-supplied category-map.json must override the bundled default."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _use_xdg_config(tmp_path, monkeypatch)
 
     # Write a minimal override into the XDG config dir
     kibrary_dir = tmp_path / "kibrary"
@@ -74,7 +80,7 @@ def test_user_override_takes_precedence(tmp_path, monkeypatch):
 
 def test_bundled_default_spot_checks(tmp_path, monkeypatch):
     """Verify a representative slice of the bundled default map."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _use_xdg_config(tmp_path, monkeypatch)
 
     cases = [
         ("Capacitors",                        "Capacitors_KSL"),
@@ -94,7 +100,7 @@ def test_bundled_default_spot_checks(tmp_path, monkeypatch):
 
 def test_load_map_returns_dict(tmp_path, monkeypatch):
     """load_map() must always return a non-empty dict."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _use_xdg_config(tmp_path, monkeypatch)
     mapping = load_map(_force_reload=True)
     assert isinstance(mapping, dict)
     assert len(mapping) > 0
