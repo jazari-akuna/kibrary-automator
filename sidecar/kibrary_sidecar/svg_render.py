@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -50,6 +52,50 @@ def _system_env() -> dict[str, str]:
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
     return env
+
+
+def _normalise_command(value: object) -> list[str] | None:
+    if isinstance(value, list) and value:
+        return [str(part) for part in value]
+    if isinstance(value, str) and value:
+        return [value]
+    return None
+
+
+def kicad_cli_cmd() -> list[str]:
+    """Return the command prefix for invoking kicad-cli.
+
+    Development tests historically assumed ``kicad-cli`` is on PATH, but a
+    packaged macOS app has a deliberately sparse PATH. Prefer the active KiCad
+    install when one is configured, and in a PyInstaller sidecar fall back to
+    detected installs or KiCad.app's standard macOS bundle location.
+    """
+    try:
+        from kibrary_sidecar import kicad_install, settings
+
+        active = settings.get_active_install()
+        cmd = _normalise_command((active or {}).get("kicad_cli_bin"))
+        if cmd:
+            return cmd
+
+        if getattr(sys, "frozen", False):
+            for install in kicad_install.cached_installs():
+                cmd = _normalise_command(install.get("kicad_cli_bin"))
+                if cmd:
+                    return cmd
+    except Exception:
+        log.debug("Could not resolve active KiCad install", exc_info=True)
+
+    on_path = shutil.which("kicad-cli")
+    if on_path:
+        return [on_path]
+
+    if sys.platform == "darwin" and getattr(sys, "frozen", False):
+        bundled = Path("/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli")
+        if bundled.is_file():
+            return [str(bundled)]
+
+    return ["kicad-cli"]
 
 # Footprints — full layer set so previews show silkscreen, mask, fab, etc.
 # Same as icons.py but expanded with B.Silkscreen and B.Fab so 2-side parts
@@ -85,7 +131,7 @@ def render_symbol_svg(sym_path: Path, component_name: str) -> str:
     """
     with tempfile.TemporaryDirectory() as tmp_dir:
         cmd = [
-            "kicad-cli",
+            *kicad_cli_cmd(),
             "sym",
             "export",
             "svg",
@@ -130,7 +176,7 @@ def render_footprint_svg(pretty_dir: Path, footprint_name: str) -> str:
     """
     with tempfile.TemporaryDirectory() as tmp_dir:
         cmd = [
-            "kicad-cli",
+            *kicad_cli_cmd(),
             "fp",
             "export",
             "svg",

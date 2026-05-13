@@ -39,7 +39,7 @@ from kibrary_sidecar.render_3d import (
     _splice_into_template,
     footprint_has_model_block,
 )
-from kibrary_sidecar.svg_render import _system_env
+from kibrary_sidecar.svg_render import _system_env, kicad_cli_cmd
 
 # kicad-cli's silent-drop signature when ``pcb export glb`` is asked to
 # embed a model whose file isn't present on disk. The CLI prints this on
@@ -148,7 +148,7 @@ def render_footprint_3d_glb(
         fp_name = footprint_file.stem
 
         cmd = [
-            "kicad-cli",
+            *kicad_cli_cmd(),
             "pcb",
             "export",
             "glb",
@@ -287,9 +287,14 @@ def render_footprint_3d_glb_with_top_layers(
         out_svg = tmp_dir / "preview.svg"
         fp_name = footprint_file.stem
 
+        glb_cmd = [
+            *kicad_cli_cmd(),
+            "pcb", "export", "glb",
+            "-o", str(out_glb),
+            str(board_path),
+        ]
         glb_proc = subprocess.run(
-            ["kicad-cli", "pcb", "export", "glb", "-o", str(out_glb), str(board_path)],
-            capture_output=True, text=True, env=_system_env(),
+            glb_cmd, capture_output=True, text=True, env=_system_env(),
         )
         if glb_proc.returncode != 0:
             err = (glb_proc.stderr or glb_proc.stdout or "").strip()
@@ -309,7 +314,7 @@ def render_footprint_3d_glb_with_top_layers(
                 )
                 stderr_dump = debug_dir / f"failed_stderr_{ts_safe}.txt"
                 stderr_dump.write_text(
-                    f"--- cmd ---\n{' '.join(['kicad-cli', 'pcb', 'export', 'glb', '-o', str(out_glb), str(board_path)])}\n\n"
+                    f"--- cmd ---\n{' '.join(glb_cmd)}\n\n"
                     f"--- exit code ---\n{glb_proc.returncode}\n\n"
                     f"--- stdout ---\n{glb_proc.stdout or ''}\n\n"
                     f"--- stderr ---\n{glb_proc.stderr or ''}\n",
@@ -373,16 +378,18 @@ def render_footprint_3d_glb_with_top_layers(
         # warning + empty string rather than aborting the entire render.
         # The viewer falls back to "no decal" gracefully.
         svg_text = ""
+        svg_cmd = [
+            *kicad_cli_cmd(),
+            "pcb", "export", "svg",
+            "--layers", _TOP_LAYERS_SVG_LAYERS,
+            "--mode-single",
+            "--fit-page-to-board",
+            "--exclude-drawing-sheet",
+            "-o", str(out_svg),
+            str(board_path),
+        ]
         svg_proc = subprocess.run(
-            [
-                "kicad-cli", "pcb", "export", "svg",
-                "--layers", _TOP_LAYERS_SVG_LAYERS,
-                "--mode-single",
-                "--fit-page-to-board",
-                "--exclude-drawing-sheet",
-                "-o", str(out_svg),
-                str(board_path),
-            ],
+            svg_cmd,
             capture_output=True, text=True, env=_system_env(),
         )
         if svg_proc.returncode == 0 and out_svg.is_file():

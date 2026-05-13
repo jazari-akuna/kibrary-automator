@@ -2,7 +2,7 @@
  * SearchPanel — Task 32 Solid block (alpha.15: side pane + perf).
  *
  * Provides a search-as-you-type interface backed by search.raph.io.
- * Gracefully hides when no API key is configured.
+ * Gracefully disables search when no API key is configured.
  *
  * Behaviour (spec §8 + alpha.15 perf spec):
  *  - On mount: fetch api_key from OS keychain and base_url from settings;
@@ -211,6 +211,7 @@ export default function SearchPanel() {
 
   // Reactive derived values.
   const apiKey = () => apiKeyData()?.value ?? '';
+  const searchUnavailable = () => !apiKeyData.loading && apiKey() === '';
   const baseUrl = () =>
     settingsData()?.settings?.search_raph_io?.base_url?.replace(/\/$/, '') ||
     'https://search.raph.io';
@@ -280,6 +281,12 @@ export default function SearchPanel() {
       setSearching(false);
       return;
     }
+    if (searchUnavailable()) {
+      setResults([]);
+      setSearchError('Search is unavailable in this build: missing search.raph.io API key.');
+      setSearching(false);
+      return;
+    }
     const myId = ++requestSeq;
     setSearchError(null);
     try {
@@ -324,6 +331,13 @@ export default function SearchPanel() {
   const onInput = (value: string) => {
     setQuery(value);
     try { localStorage.setItem(QUERY_STORAGE_KEY, value); } catch { /* ignore */ }
+    if (searchUnavailable()) {
+      setSearching(false);
+      setResults([]);
+      setSearchError(value.trim() === '' ? null : 'Search is unavailable in this build: missing search.raph.io API key.');
+      ++requestSeq;
+      return;
+    }
     // Fire the "Searching…" indicator synchronously — the input feels
     // alive within ~16 ms, not after the 80 ms debounce. Empty queries
     // skip both the indicator and the request.
@@ -350,6 +364,7 @@ export default function SearchPanel() {
     // Track signals for reactivity.
     const sf = stockFilterParam();
     const q = query();
+    if (searchUnavailable()) return;
     if (q.trim() === '') return;
     // No debounce here — toggle is a deliberate single click, not a burst.
     runSearch(q, sf);
@@ -377,8 +392,6 @@ export default function SearchPanel() {
   // While settings / keychain are still loading, render nothing to avoid flash.
   return (
     <Show when={!settingsData.loading && !apiKeyData.loading}>
-      {/* If no API key is set, degrade gracefully — render nothing. */}
-      <Show when={apiKey() !== ''}>
         {/* Collapsed rail: 40px wide vertical bar with rotated label. */}
         <Show when={!searchPaneOpen()}>
           <div class="flex flex-col items-center pt-2 pb-2">
@@ -481,8 +494,9 @@ export default function SearchPanel() {
                 type="text"
                 data-testid="search-input"
                 class="flex-1 min-w-0 bg-zinc-100 dark:bg-zinc-800 px-3 py-1.5 rounded text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-500"
-                placeholder="MPN, description, LCSC…"
+                placeholder={searchUnavailable() ? 'Search key missing' : 'MPN, description, LCSC…'}
                 value={query()}
+                disabled={searchUnavailable()}
                 onInput={(e) => onInput(e.currentTarget.value)}
               />
               <div class="relative">
@@ -525,6 +539,12 @@ export default function SearchPanel() {
             {/* Searching indicator */}
             <Show when={searching()}>
               <p class="text-xs text-zinc-400 dark:text-zinc-500 italic">Searching…</p>
+            </Show>
+
+            <Show when={searchUnavailable()}>
+              <div class="px-3 py-2 bg-amber-900/40 border border-amber-700 rounded text-sm text-amber-200">
+                Search is unavailable in this build: missing search.raph.io API key.
+              </div>
             </Show>
 
             {/* Error banner */}
@@ -610,7 +630,6 @@ export default function SearchPanel() {
             </Show>
           </div>
         </Show>
-      </Show>
     </Show>
   );
 }

@@ -42,7 +42,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from kibrary_sidecar.svg_render import _system_env
+from kibrary_sidecar.svg_render import _system_env, kicad_cli_cmd
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ def render_footprint_3d_png(
 
         # 2. Render.
         cmd = [
-            "kicad-cli",
+            *kicad_cli_cmd(),
             "pcb",
             "render",
             "--output", str(output_png),
@@ -773,7 +773,7 @@ def render_footprint_3d_png_angled(
         fp_name = footprint_file.stem
 
         cmd = [
-            "kicad-cli",
+            *kicad_cli_cmd(),
             "pcb",
             "render",
             "--output", str(output_png),

@@ -65,7 +65,10 @@ def _read_cache() -> list[dict] | None:
         age = time.time() - float(payload.get("written_at", 0))
         if age > _CACHE_MAX_AGE_S:
             return None
-        return payload["installs"]
+        installs = payload["installs"]
+        if any("kicad_cli_bin" not in install for install in installs):
+            return None
+        return installs
     except Exception:
         return None
 

@@ -2,6 +2,12 @@
 
 All notable changes to Kibrary are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is **CalVer with semver-compatible suffixes**: `YY.M.D-alpha.N` (e.g. `26.4.26-alpha.1` = first alpha build of 2026-04-26). Pre-release counter goes in the `-alpha.N` suffix; bump it for additional builds the same day.
 
+## [26.5.13-alpha.2] — 2026-05-13
+
+### Fixed
+- **macOS previewers resolve KiCad.app's bundled `kicad-cli` instead of assuming it is on PATH.** Symbol, footprint, 3D, and icon rendering now prefer the active/detected KiCad install before spawning preview commands, and stale KiCad install caches without `kicad_cli_bin` are refreshed.
+- **Search side pane no longer renders as an empty dark panel when a local build has no embedded search.raph.io key.** The panel now stays visible with a clear unavailable state, and the Tauri shell falls back to the sidecar/keychain secret path when no key was compiled into the binary.
+
 ## [26.5.13-alpha.1] — 2026-05-13
 
 ### Fixed

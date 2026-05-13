@@ -88,13 +88,18 @@ pub async fn sidecar_call(
     if method == "secrets.get" && params.get("name").and_then(Value::as_str)
         == Some("search_raph_io_api_key")
     {
-        return Ok(json!({ "value": embedded_secrets::search_api_key() }));
+        let key = embedded_secrets::search_api_key();
+        if !key.is_empty() {
+            return Ok(json!({ "value": key }));
+        }
     }
     // Writes to the same key are no-ops — there's nothing to store.
     if method == "secrets.set" && params.get("name").and_then(Value::as_str)
         == Some("search_raph_io_api_key")
     {
-        return Ok(json!({}));
+        if !embedded_secrets::search_api_key().is_empty() {
+            return Ok(json!({}));
+        }
     }
 
     sidecar.call(&method, params).await.map_err(|e| e.to_string())

@@ -431,6 +431,28 @@ def editor_open(p: dict) -> dict:
     return kicad_editor.open_editor(install, kind, file_path)
 
 
+def _ensure_active_kicad_install() -> dict | None:
+    """Resolve and persist an active KiCad install before preview rendering.
+
+    The Settings room calls ``kicad.detect`` and auto-picks an install, but
+    users can reach the previewers first. Packaged macOS apps also do not have
+    KiCad.app's ``Contents/MacOS`` directory on PATH, so a bare ``kicad-cli``
+    spawn fails unless the active install has already been resolved.
+    """
+    active = st.get_active_install()
+    if active and active.get("kicad_cli_bin"):
+        return active
+
+    installs = kicad_install.cached_installs()
+    if not installs:
+        return None
+
+    chosen = next((i for i in installs if i.get("kicad_cli_bin")), installs[0])
+    if chosen.get("id"):
+        st.set_active_install(chosen["id"])
+    return chosen
+
+
 def library_list(p: dict) -> dict:
     return {"libraries": lib_scanner.list_libraries(Path(p["workspace"]))}
 
@@ -510,6 +532,7 @@ def library_render_symbol_svg(p: dict) -> dict:
     eeschema would show, then the UI displays it as a plain ``<img>``.
     """
     from kibrary_sidecar import svg_render
+    _ensure_active_kicad_install()
     lib_dir = Path(p["lib_dir"])
     sym_path = lib_dir / f"{lib_dir.name}.kicad_sym"
     svg = svg_render.render_symbol_svg(sym_path, p["component_name"])
@@ -525,6 +548,7 @@ def library_render_footprint_svg(p: dict) -> dict:
     file basename in the .pretty dir, not by the internal name.
     """
     from kibrary_sidecar import svg_render, lib_scanner
+    _ensure_active_kicad_install()
     lib_dir = Path(p["lib_dir"])
     component_name = p["component_name"]
     pretty = lib_dir / f"{lib_dir.name}.pretty"
@@ -552,6 +576,7 @@ def library_render_footprint_svg(p: dict) -> dict:
 def parts_render_symbol_svg(p: dict) -> dict:
     """Render the staged symbol for a part (Add room) to SVG via kicad-cli."""
     from kibrary_sidecar import svg_render
+    _ensure_active_kicad_install()
     staging_part = Path(p["staging_dir"]) / p["lcsc"]
     sym_path = staging_part / f"{p['lcsc']}.kicad_sym"
     # JLC2KiCadLib names the symbol after the manufacturer part / title;
@@ -569,6 +594,7 @@ def parts_render_symbol_svg(p: dict) -> dict:
 def parts_render_footprint_svg(p: dict) -> dict:
     """Render the staged footprint for a part to SVG via kicad-cli."""
     from kibrary_sidecar import svg_render
+    _ensure_active_kicad_install()
     staging_part = Path(p["staging_dir"]) / p["lcsc"]
     pretty = staging_part / f"{p['lcsc']}.pretty"
     if not pretty.is_dir():
@@ -589,6 +615,7 @@ def library_render_3d_png(p: dict) -> dict:
     from kibrary_sidecar import lib_scanner, render_3d
     import base64
     import tempfile
+    _ensure_active_kicad_install()
     lib_dir = Path(p["lib_dir"])
     component_name = p["component_name"]
     fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
@@ -627,6 +654,7 @@ def library_render_3d_png_angled(p: dict) -> dict:
     from kibrary_sidecar import lib_scanner, render_3d
     import base64
     import tempfile
+    _ensure_active_kicad_install()
     lib_dir = Path(p["lib_dir"])
     component_name = p["component_name"]
     fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
@@ -680,6 +708,7 @@ def library_render_3d_glb_angled(p: dict) -> dict:
     """
     from kibrary_sidecar import lib_scanner, render_3d_glb
     import base64
+    _ensure_active_kicad_install()
     lib_dir = Path(p["lib_dir"])
     component_name = p["component_name"]
     fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
