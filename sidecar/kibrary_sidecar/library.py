@@ -27,6 +27,37 @@ _KSL_ROOT = "${KSL_ROOT}"
 # Public API
 # ---------------------------------------------------------------------------
 
+def check_duplicate(workspace: Path, lcsc: str) -> dict:
+    """Advisory pre-commit check: does *lcsc* already exist in *workspace*?
+
+    CLI parity — the legacy CLI warned before adding a symbol that already
+    existed elsewhere. This is purely advisory and NON-DESTRUCTIVE: it neither
+    blocks nor changes commit behaviour. The UI calls it before
+    ``commit_to_library`` so it can surface "this component/LCSC already
+    exists in library X".
+
+    Reuses ``lib_scanner.lcsc_index`` (``{lcsc: {library, component_name}}``)
+    so the LCSC-matching rules (entryName ^C\\d+$ or an ``LCSC`` property)
+    stay in one place.
+
+    Returns ``{duplicate: bool, library: str|None, component_name: str|None}``.
+    """
+    # Local import: lib_scanner pulls in kiutils, which the commit path here
+    # already needs, but keeping it local matches the lazy-import discipline
+    # and avoids surprising importers of this module.
+    from kibrary_sidecar import lib_scanner
+
+    index = lib_scanner.lcsc_index(workspace)
+    entry = index.get(lcsc)
+    if entry is None:
+        return {"duplicate": False, "library": None, "component_name": None}
+    return {
+        "duplicate": True,
+        "library": entry.get("library"),
+        "component_name": entry.get("component_name"),
+    }
+
+
 def commit_to_library(
     workspace: Path,
     lcsc: str,

@@ -48,6 +48,27 @@ def _write_line(line: str) -> None:
         sys.stdout.flush()
 
 
+def _classify_error(exc: Exception) -> str:
+    """Map a handler exception to a stable, frontend-facing error code.
+
+    Backward-compatible: the response shape is unchanged and anything not
+    explicitly mapped still falls through to the historical ``HANDLER_ERROR``
+    default, so existing callers keep working.
+
+    Note: ``FileNotFoundError`` and ``PermissionError`` are subclasses of
+    ``OSError`` (and are checked before the param-validation group), while
+    ``KeyError``/``TypeError``/``ValueError`` typically signal a bad/missing
+    RPC param.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return "NOT_FOUND"
+    if isinstance(exc, PermissionError):
+        return "PERMISSION_DENIED"
+    if isinstance(exc, (KeyError, TypeError, ValueError)):
+        return "INVALID_PARAMS"
+    return "HANDLER_ERROR"
+
+
 def _handle_sync(req: Request) -> None:
     """Dispatch a sync handler and write its response.
 
@@ -63,7 +84,7 @@ def _handle_sync(req: Request) -> None:
         resp = Response(
             id=req.id,
             ok=False,
-            error=ErrorBody(code="HANDLER_ERROR", message=str(exc)),
+            error=ErrorBody(code=_classify_error(exc), message=str(exc)),
         )
     _write_line(resp.model_dump_json(exclude_none=True))
 
@@ -91,7 +112,7 @@ def _handle_async(req: Request) -> None:
         resp = Response(
             id=req.id,
             ok=False,
-            error=ErrorBody(code="HANDLER_ERROR", message=str(exc)),
+            error=ErrorBody(code=_classify_error(exc), message=str(exc)),
         )
     _write_line(resp.model_dump_json(exclude_none=True))
 

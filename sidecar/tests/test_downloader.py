@@ -276,6 +276,129 @@ def test_done_event_contains_all_results(tmp_path: Path):
     assert done["params"]["results"] == results
 
 
+# ---------------------------------------------------------------------------
+# Unit 2: per-part retry with backoff (CLI parity)
+# ---------------------------------------------------------------------------
+
+def _counting_dl(fail_times: int, exc: bool = False):
+    """Return (dl_fn, calls) where dl_fn fails the first *fail_times* calls
+    (per-lcsc) then succeeds. When ``exc`` is True it raises instead of
+    returning ok=False."""
+    calls: dict[str, int] = {}
+
+    async def one(lcsc: str, target: Path, progress=None) -> tuple[bool, str | None]:
+        calls[lcsc] = calls.get(lcsc, 0) + 1
+        if calls[lcsc] <= fail_times:
+            if exc:
+                raise RuntimeError(f"transient boom {calls[lcsc]}")
+            return False, f"transient failure {calls[lcsc]}"
+        # Success: write the assets run_batch's assets_present() looks for so
+        # the part counts as genuinely complete.
+        target.mkdir(parents=True, exist_ok=True)
+        (target / f"{lcsc}.kicad_sym").write_text("(kicad_symbol_lib)")
+        pretty = target / f"{lcsc}.pretty"
+        pretty.mkdir()
+        (pretty / "FOO.kicad_mod").write_text("(footprint stub)")
+        shapes = target / f"{lcsc}.3dshapes"
+        shapes.mkdir()
+        (shapes / "FOO.step").write_bytes(b"ISO-10303-21\n")
+        return True, None
+
+    return one, calls
+
+
+@pytest.fixture(autouse=True)
+def _fast_backoff(monkeypatch):
+    """Mock asyncio.sleep inside downloader so retry backoff is instant."""
+    import kibrary_sidecar.downloader as dl_mod
+
+    async def _instant(_seconds):
+        return None
+
+    # Only patch the symbol the downloader's retry loop calls.
+    monkeypatch.setattr(dl_mod.asyncio, "sleep", _instant)
+
+
+def test_retry_succeeds_after_transient_failures(tmp_path: Path):
+    """Two transient failures then success → part ends ok with 3 attempts."""
+    dl_fn, calls = _counting_dl(fail_times=2)
+    results = asyncio.run(
+        run_batch(["C1"], tmp_path, concurrency=1, dl=dl_fn, max_attempts=3)
+    )
+    assert calls["C1"] == 3
+    assert results["C1"]["ok"] is True
+    assert results["C1"]["warnings"] == []
+
+
+def test_retry_succeeds_after_transient_exceptions(tmp_path: Path):
+    """A raised exception is a genuine failure and must be retried too."""
+    dl_fn, calls = _counting_dl(fail_times=1, exc=True)
+    results = asyncio.run(
+        run_batch(["C1"], tmp_path, concurrency=1, dl=dl_fn, max_attempts=3)
+    )
+    assert calls["C1"] == 2
+    assert results["C1"]["ok"] is True
+
+
+def test_retry_gives_up_after_max_attempts(tmp_path: Path):
+    """All attempts fail → exactly max_attempts calls, then the existing
+    component_load_failed warning is surfaced (not retried forever)."""
+    dl_fn, calls = _counting_dl(fail_times=99)
+    results = asyncio.run(
+        run_batch(["C1"], tmp_path, concurrency=1, dl=dl_fn, max_attempts=3)
+    )
+    assert calls["C1"] == 3
+    row = results["C1"]
+    assert row["ok"] is False
+    assert row["warnings"]
+    assert row["warnings"][0]["kind"] == "component_load_failed"
+
+
+def test_no_retry_on_first_success(tmp_path: Path):
+    """A part that succeeds immediately is called exactly once (no retry on
+    success)."""
+    dl_fn, calls = _counting_dl(fail_times=0)
+    results = asyncio.run(
+        run_batch(["C1"], tmp_path, concurrency=1, dl=dl_fn, max_attempts=3)
+    )
+    assert calls["C1"] == 1
+    assert results["C1"]["ok"] is True
+
+
+def test_retry_backoff_sleeps_between_attempts(tmp_path: Path, monkeypatch):
+    """Backoff is applied between attempts (sleep called attempts-1 times),
+    and not after the final attempt."""
+    import kibrary_sidecar.downloader as dl_mod
+
+    slept: list[float] = []
+
+    async def _record(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(dl_mod.asyncio, "sleep", _record)
+
+    dl_fn, calls = _counting_dl(fail_times=99)
+    asyncio.run(
+        run_batch(
+            ["C1"], tmp_path, concurrency=1, dl=dl_fn,
+            max_attempts=3, retry_backoff=2.0,
+        )
+    )
+    # 3 attempts -> 2 backoff sleeps between them, none after the last.
+    assert slept == [2.0, 2.0]
+
+
+def test_default_max_attempts_from_module_constant(tmp_path: Path):
+    """When max_attempts isn't passed, the module default (3, CLI parity)
+    applies."""
+    import kibrary_sidecar.downloader as dl_mod
+    assert dl_mod.DEFAULT_MAX_ATTEMPTS == 3
+
+    dl_fn, calls = _counting_dl(fail_times=99)
+    asyncio.run(run_batch(["C1"], tmp_path, concurrency=1, dl=dl_fn))
+    assert calls["C1"] == 3
+
+
 def test_async_registry_has_parts_download():
     """ASYNC_REGISTRY must export parts.download as a callable."""
     assert "parts.download" in ASYNC_REGISTRY

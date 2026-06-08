@@ -26,9 +26,26 @@ from typing import Awaitable, Callable
 
 from kibrary_sidecar import jlc
 from kibrary_sidecar import icons
-from kibrary_sidecar import search_client
 from kibrary_sidecar import staging as staging_mod  # `staging` param shadows the module
 from kibrary_sidecar.event_names import DOWNLOAD_DONE, DOWNLOAD_PROGRESS
+
+
+# ---------------------------------------------------------------------------
+# Lazy accessor for search_client.
+#
+# ``search_client`` builds a module-scoped ``httpx.Client`` at import time, and
+# importing it here at module top dragged ``httpx`` (TLS/SSL machinery) onto
+# the sidecar's first-RPC critical path: the startup chain is
+# ``__main__`` -> ``rpc`` -> ``downloader``, so a top-level
+# ``from kibrary_sidecar import search_client`` loaded httpx the moment the
+# sidecar started. The only place that actually needs search_client is the
+# per-part metadata fetch inside ``run_batch``'s worker, well after startup, so
+# we defer the import to there. Mirrors the lazy accessor pattern in
+# ``methods.py`` (``_search_client`` / ``_lib_scanner`` / ...).
+# ---------------------------------------------------------------------------
+def _search_client():
+    from kibrary_sidecar import search_client
+    return search_client
 
 
 def _missing_assets(assets: dict) -> list[str]:
@@ -45,6 +62,22 @@ def _missing_assets(assets: dict) -> list[str]:
     return missing
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Per-part download retry with backoff (CLI parity).
+#
+# The legacy CLI retried a failed part download 3 times with a 2s backoff so a
+# transient JLC2KiCadLib/network blip didn't fail the part outright (forcing
+# the user to click Retry). The current orchestrator dropped that behaviour;
+# we restore it here, bounded so we never retry forever.
+#
+# Defaults are module constants (CLI parity: 3 attempts / 2s) overridable via
+# env vars for the rare stress-test / slow-network case, and per-call via the
+# ``run_batch`` keyword args. Kept as simple constants rather than a
+# settings.json schema change so the hot download path doesn't read settings.
+# ---------------------------------------------------------------------------
+DEFAULT_MAX_ATTEMPTS = int(os.environ.get("KIBRARY_DOWNLOAD_MAX_ATTEMPTS", "3"))
+DEFAULT_RETRY_BACKOFF = float(os.environ.get("KIBRARY_DOWNLOAD_RETRY_BACKOFF", "2.0"))
 
 EmitFn = Callable[[dict], Awaitable[None]]
 # A download function may optionally accept a progress callback (int 0-100).
@@ -66,6 +99,8 @@ async def run_batch(
     concurrency: int = 4,
     emit: EmitFn | None = None,
     dl: DlFn | None = None,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    retry_backoff: float = DEFAULT_RETRY_BACKOFF,
 ) -> dict:
     """
     Download *lcscs* into *staging/<lcsc>/* directories in parallel.
@@ -126,11 +161,45 @@ async def run_batch(
                 except Exception:  # pragma: no cover
                     log.debug("progress emit raised", exc_info=True)
 
-            # Pass progress callback if supported, else fall back gracefully.
-            try:
-                ok, err = await dl_fn(lcsc, staging / lcsc, progress=_on_progress)
-            except TypeError:
-                ok, err = await dl_fn(lcsc, staging / lcsc)
+            # Bounded retry-with-backoff (CLI parity). A transient
+            # JLC2KiCadLib/network failure used to fail the part outright;
+            # retry up to *max_attempts* with *retry_backoff* seconds between
+            # tries. Only genuine failures retry — an exception, an ok=False
+            # return, OR ok=True but nothing landed on disk (jlc swallows
+            # easyeda's success=False, so assets_present() is the real
+            # post-condition). Success short-circuits immediately.
+            attempts = max(1, int(max_attempts))
+
+            async def _attempt() -> tuple[bool, str | None]:
+                # Pass progress callback if supported, else fall back gracefully.
+                try:
+                    return await dl_fn(lcsc, staging / lcsc, progress=_on_progress)
+                except TypeError:
+                    return await dl_fn(lcsc, staging / lcsc)
+
+            ok, err = False, None
+            for attempt in range(1, attempts + 1):
+                try:
+                    ok, err = await _attempt()
+                except asyncio.CancelledError:
+                    # Respect cancellation — never swallow it into a retry.
+                    raise
+                except Exception as exc:  # noqa: BLE001 — third-party can raise anything
+                    ok, err = False, f"{type(exc).__name__}: {exc}"
+
+                # Treat ok=True with no assets on disk as a genuine failure
+                # worth retrying (the silent easyeda success=False path).
+                present = jlc.assets_present(staging / lcsc, lcsc)
+                succeeded = ok and any(present.values())
+                if succeeded:
+                    break
+                if attempt < attempts:
+                    log.warning(
+                        "download attempt %d/%d failed for %s (%s) — retrying in %.1fs",
+                        attempt, attempts, lcsc, err or "no assets", retry_backoff,
+                    )
+                    await asyncio.sleep(retry_backoff)
+
             # Inspect what actually landed on disk. Even on ok=True some
             # assets might still be absent (e.g. easyeda has a symbol but
             # no 3D model for a given LCSC) — the frontend uses this to
@@ -179,7 +248,7 @@ async def run_batch(
                 # gets an empty category. Never fails the download.
                 try:
                     api_key = os.environ.get("KIBRARY_SEARCH_API_KEY", "")
-                    part = await asyncio.to_thread(search_client.get_part, lcsc, api_key)
+                    part = await asyncio.to_thread(_search_client().get_part, lcsc, api_key)
                     if part:
                         # Footprint name is the .pretty/<name>.kicad_mod stem
                         # JLC2KiCadLib produced — surface it so the UI can
