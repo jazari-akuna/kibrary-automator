@@ -1,6 +1,54 @@
 import json
 from pathlib import Path
-from kibrary_sidecar.workspace import open_workspace, read_workspace_settings
+from kibrary_sidecar.workspace import (
+    open_workspace,
+    read_workspace_settings,
+    write_workspace_settings,
+)
+from kibrary_sidecar.handlers.workspace import workspace_set_settings
+
+
+def test_write_workspace_settings_round_trips(tmp_path: Path):
+    """write_workspace_settings persists to .kibrary/workspace.json and
+    read_workspace_settings reads it back. Regression guard: the function was
+    once called by the set_settings handler but never defined, so
+    workspace.set_settings threw AttributeError (broke the First-Run Wizard).
+    """
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    open_workspace(str(ws))
+    new = {
+        "version": 1,
+        "kicad_target": "/opt/kicad",
+        "git": {"enabled": False, "auto_commit": False, "commit_template": "x"},
+        "concurrency": 8,
+    }
+    write_workspace_settings(str(ws), new)
+    assert read_workspace_settings(str(ws)) == new
+
+
+def test_set_settings_handler_persists(tmp_path: Path):
+    """The RPC handler (the exact path that threw AttributeError) works."""
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    open_workspace(str(ws))
+    resp = workspace_set_settings(
+        {"root": str(ws), "settings": {**read_workspace_settings(str(ws)), "concurrency": 12}}
+    )
+    assert resp == {"ok": True}
+    assert read_workspace_settings(str(ws))["concurrency"] == 12
+
+
+def test_write_workspace_settings_merges_partial(tmp_path: Path):
+    """A partial payload never drops unrelated keys (top-level merge)."""
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    open_workspace(str(ws))
+    write_workspace_settings(str(ws), {"kicad_target": "/x"})
+    got = read_workspace_settings(str(ws))
+    assert got["kicad_target"] == "/x"
+    assert got["concurrency"] == 4  # untouched default preserved
+
 
 def test_open_workspace_creates_kibrary_dir(tmp_path: Path):
     ws = tmp_path / "myrepo"

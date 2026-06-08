@@ -55,6 +55,27 @@ def read_workspace_settings(root: str) -> dict:
     return json.loads(p.read_text())
 
 
+def write_workspace_settings(root: str, settings: dict) -> dict:
+    """Persist workspace settings to ``<root>/.kibrary/workspace.json``.
+
+    Counterpart of :func:`read_workspace_settings`. The frontend sends the
+    full settings object (it spreads the existing settings then overrides a
+    field — see FirstRunWizard), but we still merge over the current on-disk
+    settings at the top level so a partial payload can never silently drop
+    unrelated keys. Writes atomically (temp file + ``replace``) so a crash
+    mid-write can't leave a torn workspace.json. Returns the merged dict.
+    """
+    rp = Path(root)
+    kdir = rp / ".kibrary"
+    kdir.mkdir(parents=True, exist_ok=True)
+    merged = {**read_workspace_settings(root), **(settings or {})}
+    p = _settings_path(rp)
+    tmp = p.parent / (p.name + ".tmp")
+    tmp.write_text(json.dumps(merged, indent=2))
+    tmp.replace(p)
+    return merged
+
+
 def open_workspace(root: str) -> dict:
     rp = Path(root)
     if not rp.is_dir():
