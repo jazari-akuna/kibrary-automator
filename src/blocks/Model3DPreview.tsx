@@ -17,7 +17,7 @@
  * with an editable Model3DPositioner block.
  */
 
-import { createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show } from 'solid-js';
+import { createEffect, createMemo, createResource, createSignal, lazy, onCleanup, onMount, Show, Suspense } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { currentWorkspace } from '~/state/workspace';
@@ -25,7 +25,13 @@ import { pushToast } from '~/state/toasts';
 import { computeIsDirty, setIsDirty } from '~/state/dirty';
 import Model3DPositioner from '~/blocks/Model3DPositioner';
 import Model3DViewer from '~/blocks/Model3DViewer';
-import Model3DViewerGL from '~/blocks/Model3DViewerGL';
+// Lazy-loaded so the ~600KB three.js + GLTFLoader + OrbitControls bundle
+// (Model3DViewerGL is the ONLY static importer of `three`) is split into an
+// async chunk and never parsed on the startup critical path — it only loads
+// when the GL viewer branch (<Show when={useGL()}>) actually renders.
+// NOTE: Solid's lazy() REQUIRES a <Suspense> ancestor around the usage site
+// or it throws; that boundary is added around the useGL() branch below.
+const Model3DViewerGL = lazy(() => import('~/blocks/Model3DViewerGL'));
 import Model3DJogDial from '~/blocks/Model3DJogDial';
 import type { HoverPreview } from '~/blocks/Model3DJogDial';
 import Model3DJogZ from '~/blocks/Model3DJogZ';
@@ -317,6 +323,16 @@ export default function Model3DPreview(props: Props) {
                   />
                 }
               >
+                <Suspense
+                  fallback={
+                    <div
+                      data-testid="3d-gl-loading"
+                      class="flex items-center justify-center h-40 rounded bg-zinc-200 dark:bg-zinc-800 text-xs text-zinc-500 dark:text-zinc-400"
+                    >
+                      Loading 3D…
+                    </div>
+                  }
+                >
                 <Model3DViewerGL
                   libDir={props.libDir!}
                   componentName={props.componentName!}
@@ -346,6 +362,7 @@ export default function Model3DPreview(props: Props) {
                     }
                   }}
                 />
+                </Suspense>
               </Show>
               {/* alpha.34: vertical-center the Z column against the SVG
                   jog dial (was top-aligned and visually drifted). */}

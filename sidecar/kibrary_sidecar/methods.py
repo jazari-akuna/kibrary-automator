@@ -11,24 +11,78 @@ from kibrary_sidecar import workspace as ws
 from kibrary_sidecar import settings as st
 from kibrary_sidecar import parser as parsemod
 from kibrary_sidecar import staging
-from kibrary_sidecar import symfile
 from kibrary_sidecar import category_map
-from kibrary_sidecar import library
 from kibrary_sidecar import git_ops
 from kibrary_sidecar import git_undo
-from kibrary_sidecar import search_client
 from kibrary_sidecar import files
 from kibrary_sidecar import kicad_install
 from kibrary_sidecar import kicad_register
 from kibrary_sidecar import editor as kicad_editor
-from kibrary_sidecar import lib_scanner
-from kibrary_sidecar import lib_ops
-from kibrary_sidecar import sexpr_diff
-from kibrary_sidecar import model3d_ops
 from kibrary_sidecar import bootstrap
 from kibrary_sidecar import secrets
 from kibrary_sidecar import icons as icons_mod
-from kibrary_sidecar import drop_import
+
+
+# ---------------------------------------------------------------------------
+# Lazy accessors for heavy modules.
+#
+# Importing these at module top-level delayed the sidecar's first-RPC
+# readiness (which blocks app startup): ``search_client`` builds a
+# module-scoped ``httpx.Client`` at import time, and
+# ``lib_scanner`` / ``lib_ops`` / ``model3d_ops`` / ``symfile`` / ``library`` /
+# ``sexpr_diff`` / ``drop_import`` each pull in ``kiutils`` (directly or
+# transitively). The first RPCs the frontend hits
+# (``system.ping`` / ``system.version``) need none of these, so we defer the
+# import to the first handler that actually uses each module.
+#
+# Python caches modules in ``sys.modules``, so every call after the first is
+# just a dict lookup — there is no per-call cost worth memoising beyond that.
+# The REGISTRY below references handler *functions*, which stay valid; only
+# *when* the module import happens changes.
+# ---------------------------------------------------------------------------
+def _search_client():
+    from kibrary_sidecar import search_client
+    return search_client
+
+
+def _lib_scanner():
+    from kibrary_sidecar import lib_scanner
+    return lib_scanner
+
+
+def _lib_ops():
+    from kibrary_sidecar import lib_ops
+    return lib_ops
+
+
+def _model3d_ops():
+    from kibrary_sidecar import model3d_ops
+    return model3d_ops
+
+
+def _symfile():
+    from kibrary_sidecar import symfile
+    return symfile
+
+
+def _library():
+    from kibrary_sidecar import library
+    return library
+
+
+def _sexpr_diff():
+    from kibrary_sidecar import sexpr_diff
+    return sexpr_diff
+
+
+def _drop_import():
+    from kibrary_sidecar import drop_import
+    return drop_import
+
+
+def _packaging():
+    from kibrary_sidecar import packaging
+    return packaging
 
 
 def system_ping(_: dict) -> dict:
@@ -86,7 +140,7 @@ def parts_write_meta(p: dict) -> dict:
 
 
 def parts_read_props(p: dict) -> dict:
-    return {"properties": symfile.read_properties(Path(p["sym_path"]))}
+    return {"properties": _symfile().read_properties(Path(p["sym_path"]))}
 
 
 def library_read_props(p: dict) -> dict:
@@ -95,7 +149,7 @@ def library_read_props(p: dict) -> dict:
     symbol in a single-symbol staged file)."""
     lib_dir = Path(p["lib_dir"])
     sym_path = lib_dir / f"{lib_dir.name}.kicad_sym"
-    return {"properties": symfile.read_properties_named(sym_path, p["component_name"])}
+    return {"properties": _symfile().read_properties_named(sym_path, p["component_name"])}
 
 
 def library_write_props(p: dict) -> dict:
@@ -103,12 +157,12 @@ def library_write_props(p: dict) -> dict:
     file (in place). Library mode counterpart of parts.write_props."""
     lib_dir = Path(p["lib_dir"])
     sym_path = lib_dir / f"{lib_dir.name}.kicad_sym"
-    symfile.write_properties_named(sym_path, p["component_name"], p["edits"])
+    _symfile().write_properties_named(sym_path, p["component_name"], p["edits"])
     return {"ok": True}
 
 
 def parts_write_props(p: dict) -> dict:
-    symfile.write_properties(Path(p["sym_path"]), p["edits"])
+    _symfile().write_properties(Path(p["sym_path"]), p["edits"])
     return {"ok": True}
 
 
@@ -163,7 +217,7 @@ def library_suggest(p: dict) -> dict:
         return {"library": derived, "is_existing": False, "existing": [], "matches": []}
 
     try:
-        existing_libs = lib_scanner.list_libraries(Path(workspace_path))
+        existing_libs = _lib_scanner().list_libraries(Path(workspace_path))
         existing_names = sorted({lib["name"] for lib in existing_libs})
     except Exception as exc:
         log.warning("library.suggest: list_libraries failed: %s", exc)
@@ -222,6 +276,16 @@ def library_suggest(p: dict) -> dict:
     }
 
 
+def library_check_duplicate(p: dict) -> dict:
+    """Advisory pre-commit duplicate check (CLI parity).
+
+    Returns ``{duplicate: bool, library: str|None, component_name: str|None}``
+    so the UI can warn "this LCSC already exists in library X" before the user
+    commits. Does NOT change commit semantics — see library.check_duplicate.
+    """
+    return _library().check_duplicate(Path(p["workspace"]), p["lcsc"])
+
+
 def library_commit(p: dict) -> dict:
     """Commit a staged part to a target library, then optionally git-commit
     the change per the workspace's git settings.
@@ -232,7 +296,7 @@ def library_commit(p: dict) -> dict:
     target_lib = p["target_lib"]
     edits = p.get("edits", {})
 
-    committed_path = library.commit_to_library(
+    committed_path = _library().commit_to_library(
         workspace, lcsc, staging_part, target_lib, edits
     )
 
@@ -285,6 +349,22 @@ def library_commit(p: dict) -> dict:
         "target_lib": target_lib,
         "component_name": component_name,
     }
+
+
+def workspace_export_zip(p: dict) -> dict:
+    """Zip the workspace (all libraries + repository.json) into a
+    distributable archive, excluding VCS/scratch/bytecode junk. CLI parity
+    with the legacy ``package_repo()``.
+
+    Params:
+        workspace (str)         — workspace root to package.
+        out_path  (str, optional) — destination .zip. Defaults to
+                                    ``<workspace>/<workspace_name>.zip``.
+
+    Returns ``{path: str, file_count: int}``.
+    """
+    out = Path(p["out_path"]) if p.get("out_path") else None
+    return _packaging().package_workspace(Path(p["workspace"]), out)
 
 
 def git_init(p: dict) -> dict:
@@ -380,7 +460,6 @@ def editor_open(p: dict) -> dict:
 
     # Library mode (Libraries room): {lib_dir, component_name, kind}
     if "lib_dir" in p and "component_name" in p:
-        from kibrary_sidecar import lib_scanner
         lib_dir = Path(p["lib_dir"])
         component_name = p["component_name"]
         if workspace_root is None:
@@ -388,7 +467,7 @@ def editor_open(p: dict) -> dict:
         if kind == "symbol":
             file_path = lib_dir / f"{lib_dir.name}.kicad_sym"
         elif kind == "footprint":
-            fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
+            fp_path = _lib_scanner()._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
             if fp_path is None:
                 raise FileNotFoundError(
                     f"No .kicad_mod for symbol {component_name!r} in {lib_dir}"
@@ -432,59 +511,59 @@ def editor_open(p: dict) -> dict:
 
 
 def library_list(p: dict) -> dict:
-    return {"libraries": lib_scanner.list_libraries(Path(p["workspace"]))}
+    return {"libraries": _lib_scanner().list_libraries(Path(p["workspace"]))}
 
 
 def library_list_components(p: dict) -> dict:
-    return {"components": lib_scanner.list_components(Path(p["lib_dir"]))}
+    return {"components": _lib_scanner().list_components(Path(p["lib_dir"]))}
 
 
 def library_lcsc_index(p: dict) -> dict:
-    return {"index": lib_scanner.lcsc_index(Path(p["workspace"]))}
+    return {"index": _lib_scanner().lcsc_index(Path(p["workspace"]))}
 
 
 def library_get_component(p: dict) -> dict:
-    return lib_scanner.get_component(Path(p["lib_dir"]), p["component_name"])
+    return _lib_scanner().get_component(Path(p["lib_dir"]), p["component_name"])
 
 
 def library_rename_component(p: dict) -> dict:
-    lib_ops.rename_component(Path(p["lib_dir"]), p["old_name"], p["new_name"])
+    _lib_ops().rename_component(Path(p["lib_dir"]), p["old_name"], p["new_name"])
     return {"ok": True}
 
 
 def library_delete_component(p: dict) -> dict:
-    lib_ops.delete_component(Path(p["lib_dir"]), p["component_name"])
+    _lib_ops().delete_component(Path(p["lib_dir"]), p["component_name"])
     return {"ok": True}
 
 
 def library_move_component(p: dict) -> dict:
-    lib_ops.move_component(Path(p["src_lib"]), Path(p["dst_lib"]), p["component_name"])
+    _lib_ops().move_component(Path(p["src_lib"]), Path(p["dst_lib"]), p["component_name"])
     return {"ok": True}
 
 
 def library_rename_library(p: dict) -> dict:
-    lib_ops.rename_library(Path(p["workspace"]), p["old"], p["new"])
+    _lib_ops().rename_library(Path(p["workspace"]), p["old"], p["new"])
     return {"ok": True}
 
 
 def library_update_metadata(p: dict) -> dict:
-    lib_ops.update_library_metadata(Path(p["lib_dir"]), p["metadata"])
+    _lib_ops().update_library_metadata(Path(p["lib_dir"]), p["metadata"])
     return {"ok": True}
 
 
 def library_diff(p: dict) -> dict:
-    return {"changes": sexpr_diff.diff_kicad_sym(p["before"], p["after"])}
+    return {"changes": _sexpr_diff().diff_kicad_sym(p["before"], p["after"])}
 
 
 def library_replace_3d(p: dict) -> dict:
-    dst = model3d_ops.replace_3d_model(
+    dst = _model3d_ops().replace_3d_model(
         Path(p["lib_dir"]), p["component_name"], Path(p["new_step_path"])
     )
     return {"path": str(dst)}
 
 
 def library_add_3d(p: dict) -> dict:
-    dst = model3d_ops.add_3d_model(
+    dst = _model3d_ops().add_3d_model(
         Path(p["lib_dir"]), p["component_name"], Path(p["src_path"])
     )
     return {"path": str(dst)}
@@ -524,7 +603,8 @@ def library_render_footprint_svg(p: dict) -> dict:
     stem to kicad-cli — empirically kicad-cli matches ``--footprint X`` by
     file basename in the .pretty dir, not by the internal name.
     """
-    from kibrary_sidecar import svg_render, lib_scanner
+    from kibrary_sidecar import svg_render
+    lib_scanner = _lib_scanner()
     lib_dir = Path(p["lib_dir"])
     component_name = p["component_name"]
     pretty = lib_dir / f"{lib_dir.name}.pretty"
@@ -586,9 +666,10 @@ def library_render_3d_png(p: dict) -> dict:
     return the PNG bytes as a base64 data URL the frontend can drop into
     ``<img src=…>``.
     """
-    from kibrary_sidecar import lib_scanner, render_3d
+    from kibrary_sidecar import render_3d
     import base64
     import tempfile
+    lib_scanner = _lib_scanner()
     lib_dir = Path(p["lib_dir"])
     component_name = p["component_name"]
     fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
@@ -624,9 +705,10 @@ def library_render_3d_png_angled(p: dict) -> dict:
     to the spliced board before kicad-cli sees it, so the user can drag
     positioner values around without disk writes between every tick.
     """
-    from kibrary_sidecar import lib_scanner, render_3d
+    from kibrary_sidecar import render_3d
     import base64
     import tempfile
+    lib_scanner = _lib_scanner()
     lib_dir = Path(p["lib_dir"])
     component_name = p["component_name"]
     fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
@@ -678,8 +760,9 @@ def library_render_3d_glb_angled(p: dict) -> dict:
       WebGL — no further sidecar calls until the user commits a transform
       change (Save button).
     """
-    from kibrary_sidecar import lib_scanner, render_3d_glb
+    from kibrary_sidecar import render_3d_glb
     import base64
+    lib_scanner = _lib_scanner()
     lib_dir = Path(p["lib_dir"])
     component_name = p["component_name"]
     fp_path = lib_scanner._find_footprint(lib_dir, component_name)  # type: ignore[attr-defined]
@@ -718,7 +801,7 @@ def library_render_3d_glb_angled(p: dict) -> dict:
 def library_set_3d_offset(p: dict) -> dict:
     """Update the offset / rotation / scale of the first 3D model block in
     a committed component's ``.kicad_mod``."""
-    model3d_ops.set_3d_offset(
+    _model3d_ops().set_3d_offset(
         Path(p["lib_dir"]),
         p["component_name"],
         offset=tuple(p.get("offset", [0, 0, 0])),
@@ -758,7 +841,7 @@ def search_query(p: dict) -> dict:
     # alpha.15: forward stock_filter when the frontend passes it. None /
     # absent maps to the default `none` upstream so older self-hosted
     # backends are unaffected.
-    return search_client.search(
+    return _search_client().search(
         p["q"],
         api_key=api_key,
         base_url=base_url,
@@ -771,14 +854,14 @@ def search_prefetch_photos(p: dict) -> dict:
     this once per `setResults` so thumbnails land ~one IPC RTT sooner.
     """
     api_key, base_url = _search_settings()
-    return search_client.prefetch_photos(
+    return _search_client().prefetch_photos(
         p.get("lcscs") or [], api_key=api_key, base_url=base_url
     )
 
 
 def search_get_part(p: dict) -> dict:
     api_key, base_url = _search_settings()
-    part = search_client.get_part(p["lcsc"], api_key=api_key, base_url=base_url)
+    part = _search_client().get_part(p["lcsc"], api_key=api_key, base_url=base_url)
     return {"part": part}
 
 
@@ -799,7 +882,7 @@ def search_fetch_photo(p: dict) -> dict:
         file=sys.stderr,
         flush=True,
     )
-    return search_client.fetch_photo(p["lcsc"], api_key=api_key, base_url=base_url)
+    return _search_client().fetch_photo(p["lcsc"], api_key=api_key, base_url=base_url)
 
 
 def secrets_get(p: dict) -> dict:
@@ -836,12 +919,12 @@ def library_backfill_icons(p: dict) -> dict:
 
 def drop_scan_paths(p: dict) -> dict:
     """Drag-drop import: walk dropped paths, group by stem, return manifest."""
-    return drop_import.scan_paths(p["paths"])
+    return _drop_import().scan_paths(p["paths"])
 
 
 def drop_commit_group(p: dict) -> dict:
     """Drag-drop import: copy a scanned group into the target library."""
-    return drop_import.commit_group(
+    return _drop_import().commit_group(
         workspace=Path(p["workspace"]),
         group=p["group"],
         target_lib=p["target_lib"],
@@ -855,6 +938,7 @@ REGISTRY = {
     "workspace.open": workspace_open,
     "workspace.settings": workspace_settings,
     "workspace.set_settings": workspace_set_settings,
+    "workspace.export_zip": workspace_export_zip,
     "settings.get": settings_get,
     "settings.set": settings_set,
     "parts.parse_input": parts_parse_input,
@@ -871,6 +955,7 @@ REGISTRY = {
     "parts.read_file": parts_read_file,
     "parts.list_dir": parts_list_dir,
     "library.suggest": library_suggest,
+    "library.check_duplicate": library_check_duplicate,
     "library.commit": library_commit,
     "git.init": git_init,
     "git.is_safe": git_is_safe,

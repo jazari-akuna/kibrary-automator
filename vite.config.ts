@@ -18,6 +18,18 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split three.js (+ its loaders/controls) into its own async chunk
+        // so it stays off the startup critical path. Model3DViewerGL is the
+        // only static importer of `three` and is itself lazy()-loaded.
+        manualChunks(id: string) {
+          if (id.includes('node_modules/three')) return 'three';
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     strictPort: true,

@@ -137,6 +137,89 @@ fn unix_to_utc(ts: u64) -> (u64, u8, u8, u8, u8, u8) {
     (y, mo as u8, d as u8, h as u8, m as u8, s as u8)
 }
 
+/// How long a cached Python path is trusted without re-probing.
+///
+/// Within this window, [`try_resolve_sidecar`] returns the cached
+/// [`BootstrapResult`] directly (after a cheap `Path::exists()` stat) instead
+/// of spawning a probe process on every launch — the cold-start win.
+const CACHE_TTL_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+
+/// Parse the `detected_at` field (ISO-8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`, the
+/// exact shape written by [`write_cache`]) back into a UNIX timestamp.
+///
+/// Returns `None` on any parse failure so callers can treat malformed cache
+/// entries as stale rather than panicking.
+fn parse_detected_at(detected_at: &str) -> Option<u64> {
+    // Expected: "YYYY-MM-DDTHH:MM:SSZ"
+    let s = detected_at.strip_suffix('Z')?;
+    let (date, time) = s.split_once('T')?;
+
+    let mut dparts = date.split('-');
+    let year: i64 = dparts.next()?.parse().ok()?;
+    let month: i64 = dparts.next()?.parse().ok()?;
+    let day: i64 = dparts.next()?.parse().ok()?;
+    if dparts.next().is_some() {
+        return None;
+    }
+
+    let mut tparts = time.split(':');
+    let hour: u64 = tparts.next()?.parse().ok()?;
+    let min: u64 = tparts.next()?.parse().ok()?;
+    let sec: u64 = tparts.next()?.parse().ok()?;
+    if tparts.next().is_some() {
+        return None;
+    }
+
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || min > 59 || sec > 59 {
+        return None;
+    }
+
+    // Days since 1970-01-01 (inverse of `unix_to_utc`'s date algorithm).
+    // http://howardhinnant.github.io/date_algorithms.html — days_from_civil.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    let days = era * 146_097 + doe - 719_468;
+    if days < 0 {
+        return None;
+    }
+
+    Some(days as u64 * 86_400 + hour * 3_600 + min * 60 + sec)
+}
+
+/// Pure, filesystem-free check: is a cache entry stamped at `detected_at`
+/// still within `ttl_secs` of `now_secs`?
+///
+/// Returns `false` if the timestamp fails to parse. Boundary behaviour: an
+/// entry whose age is *exactly* `ttl_secs` is still considered fresh
+/// (`age <= ttl_secs`); one second older is stale.
+fn cache_is_fresh(detected_at: &str, now_secs: u64, ttl_secs: u64) -> bool {
+    match parse_detected_at(detected_at) {
+        Some(detected_secs) => {
+            // Saturating: a clock that moved backwards (detected in the
+            // "future") yields age 0 → treated as fresh, never a panic.
+            let age = now_secs.saturating_sub(detected_secs);
+            age <= ttl_secs
+        }
+        None => false,
+    }
+}
+
+/// Current wall-clock time as seconds since the UNIX epoch (0 if the clock is
+/// before the epoch, which should never happen).
+fn now_unix_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // Probe helper
 // ---------------------------------------------------------------------------
@@ -242,17 +325,29 @@ pub fn try_resolve_sidecar(env_override: Option<&str>) -> Option<BootstrapResult
     }
 
     // --- 2. Disk cache ---
+    //
+    // Cold-start fast path: if the cache exists, is recent (within
+    // `CACHE_TTL_SECS`), and the cached interpreter still exists on disk
+    // (a cheap stat — NOT a process spawn), trust it and return immediately.
+    // This avoids the ~100-400ms `probe_python` subprocess on every launch.
+    //
+    // If the trusted path is later wrong, the sidecar spawn in main.rs
+    // `.setup()` fails and the existing `bootstrap_status` → `<Bootstrap/>`
+    // fallback handles it — the same not-found UX that already exists.
     if let Some(cache) = read_cache() {
         if !cache.python_path.is_empty() {
-            if let Some(version) = probe_python(&cache.python_path) {
+            let fresh = cache_is_fresh(&cache.detected_at, now_unix_secs(), CACHE_TTL_SECS);
+            let exists = std::path::Path::new(&cache.python_path).exists();
+            if fresh && exists {
                 return Some(BootstrapResult {
                     python_path: cache.python_path,
-                    sidecar_version: version,
+                    sidecar_version: cache.sidecar_version,
                 });
             }
-            // Cache is stale — continue searching.
+            // Cache present but stale, expired, or the file vanished — fall
+            // through to a probe + PATH scan to re-resolve and re-cache.
             eprintln!(
-                "[bootstrap] cached python {:?} probe failed, searching PATH",
+                "[bootstrap] cached python {:?} not trusted (fresh={fresh}, exists={exists}), searching PATH",
                 cache.python_path
             );
         }
@@ -570,4 +665,127 @@ pub async fn bootstrap_install_direct(
     })
     .await
     .map_err(|e| format!("Async task panicked: {}", e))?
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TTL: u64 = 7 * 24 * 60 * 60; // 7 days, mirrors CACHE_TTL_SECS
+
+    /// Round-trip guard: the timestamp `write_cache` produces (via
+    /// `unix_to_utc`) must parse back to the same second via
+    /// `parse_detected_at`. If either side drifts, the fast path silently
+    /// stops trusting freshly written caches.
+    #[test]
+    fn parse_detected_at_round_trips_unix_to_utc() {
+        // A spread of epochs, including a leap day (2024-02-29) and a
+        // century-divisible-by-400 year boundary already baked into the math.
+        for &ts in &[0u64, 1, 1_700_000_000, 1_709_251_199, 1_709_251_200, 4_102_444_800] {
+            let (y, mo, d, h, mi, s) = unix_to_utc(ts);
+            let stamp = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s);
+            assert_eq!(
+                parse_detected_at(&stamp),
+                Some(ts),
+                "round-trip failed for ts={ts} (stamp={stamp})"
+            );
+        }
+    }
+
+    #[test]
+    fn cache_is_fresh_within_ttl_is_true() {
+        // detected 1 day ago, TTL 7 days → fresh.
+        let now = 2_000_000_000u64;
+        let (y, mo, d, h, mi, s) = unix_to_utc(now - 24 * 60 * 60);
+        let stamp = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s);
+        assert!(cache_is_fresh(&stamp, now, TTL));
+    }
+
+    #[test]
+    fn cache_is_fresh_older_than_ttl_is_false() {
+        // detected 8 days ago, TTL 7 days → stale.
+        let now = 2_000_000_000u64;
+        let (y, mo, d, h, mi, s) = unix_to_utc(now - 8 * 24 * 60 * 60);
+        let stamp = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s);
+        assert!(!cache_is_fresh(&stamp, now, TTL));
+    }
+
+    #[test]
+    fn cache_is_fresh_malformed_timestamp_is_false() {
+        // Every one of these must parse-fail → treated as stale (false).
+        for bad in &[
+            "",
+            "not-a-timestamp",
+            "2024-13-01T00:00:00Z",       // month 13
+            "2024-01-32T00:00:00Z",       // day 32
+            "2024-01-01T25:00:00Z",       // hour 25
+            "2024-01-01T00:60:00Z",       // minute 60
+            "2024-01-01T00:00:60Z",       // second 60
+            "2024-01-01T00:00:00",        // missing Z
+            "2024-01-01 00:00:00Z",       // space instead of T
+            "2024/01/01T00:00:00Z",       // wrong date separator
+            "2024-01-01T00:00Z",          // missing seconds
+            "2024-01-01T00:00:00:00Z",    // extra time field
+            "2024-01-01-01T00:00:00Z",    // extra date field
+            "abcd-01-01T00:00:00Z",       // non-numeric year
+        ] {
+            assert!(
+                !cache_is_fresh(bad, 2_000_000_000, TTL),
+                "expected malformed {bad:?} to be treated as not-fresh"
+            );
+        }
+    }
+
+    #[test]
+    fn cache_is_fresh_exactly_at_boundary_is_fresh() {
+        // Age == TTL exactly is INCLUSIVE (fresh); one second older is stale.
+        let now = 2_000_000_000u64;
+
+        let (y, mo, d, h, mi, s) = unix_to_utc(now - TTL);
+        let at_boundary = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s);
+        assert!(
+            cache_is_fresh(&at_boundary, now, TTL),
+            "age == TTL must be fresh (inclusive boundary)"
+        );
+
+        let (y, mo, d, h, mi, s) = unix_to_utc(now - TTL - 1);
+        let past_boundary = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s);
+        assert!(
+            !cache_is_fresh(&past_boundary, now, TTL),
+            "age == TTL+1 must be stale"
+        );
+    }
+
+    #[test]
+    fn cache_is_fresh_future_timestamp_is_fresh_not_panic() {
+        // Clock skew: detected "in the future" relative to now. Must not
+        // panic (saturating sub) and is treated as fresh (age 0).
+        let now = 2_000_000_000u64;
+        let (y, mo, d, h, mi, s) = unix_to_utc(now + 10_000);
+        let future = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s);
+        assert!(cache_is_fresh(&future, now, TTL));
+    }
+
+    /// Env-override behaviour is unchanged: a bogus override path that cannot
+    /// be probed must NOT short-circuit to a `BootstrapResult` for that path.
+    /// (The override branch still probes; it is not trusted blindly like the
+    /// cache fast path.) We use a path guaranteed not to be a working Python.
+    #[test]
+    fn env_override_with_unprobeable_path_does_not_trust_it() {
+        let bogus = "/nonexistent/definitely/not/python-binary-xyz";
+        let result = try_resolve_sidecar(Some(bogus));
+        // Whatever resolution falls through to (cache/PATH), it must never be
+        // the bogus override path itself — that path was probed and failed.
+        if let Some(r) = result {
+            assert_ne!(
+                r.python_path, bogus,
+                "env-override path was returned without a successful probe — \
+                 the override branch must still validate via probe_python"
+            );
+        }
+    }
 }
