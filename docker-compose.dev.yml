@@ -7,7 +7,18 @@ services:
     working_dir: /workspace
     volumes:
       - .:/workspace
+      # Cached crate sources (downloaded .crate files) and git deps.
       - cargo-cache:/root/.cargo/registry
+      - cargo-git:/root/.cargo/git
+      # Persist COMPILED Rust artifacts across container runs. Without this,
+      # every build recompiles the whole Tauri/webkit dependency tree cold
+      # (~the "1 hour" build). With it, only the first build is slow; every
+      # build after is incremental (seconds). The volume shadows the bind
+      # mount at this subpath, so host target/ stays clean too.
+      - cargo-target:/workspace/src-tauri/target
+      # Container-native node_modules (avoids the host bind-mount perf hit and
+      # any host/container platform mismatch). Run `pnpm install` once inside.
+      - node-modules:/workspace/node_modules
       - pnpm-store:/root/.local/share/pnpm/store
     network_mode: host
     tty: true
@@ -15,4 +26,7 @@ services:
 
 volumes:
   cargo-cache:
+  cargo-git:
+  cargo-target:
+  node-modules:
   pnpm-store:
