@@ -11,6 +11,7 @@
  */
 
 import { For } from 'solid-js';
+import { polar as polarAt, wedgePath as wedgePathAt, midAngle } from './_dialGeometry';
 
 /**
  * 26.5.7 hover-preview contract: when the user hovers a wedge the dial
@@ -51,12 +52,13 @@ interface Props {
 
 const CX = 90;
 const CY = 90;
+const CENTER = { cx: CX, cy: CY };
 
 // Angle measured clockwise from north (12 o'clock = 0°). Returns canvas
-// coordinates so callers can plug straight into SVG path data.
+// coordinates so callers can plug straight into SVG path data. Thin wrapper
+// over the shared _dialGeometry.polar binding this dial's centre.
 function polar(angleDeg: number, radius: number): [number, number] {
-  const rad = (angleDeg * Math.PI) / 180;
-  return [CX + radius * Math.sin(rad), CY - radius * Math.cos(rad)];
+  return polarAt(CENTER, angleDeg, radius);
 }
 
 interface Wedge {
@@ -124,26 +126,7 @@ const INNER_R_INNER = 26;
 const RESET_R = 22;
 
 function wedgePath(a1: number, a2: number, rOuter: number, rInner: number): string {
-  // Each cardinal wedge spans 90°; passing through a1=315, a2=45 wraps the
-  // 0° boundary but the SVG arc with sweep-flag=1 still draws the short
-  // (clockwise) arc, so the math is uniform.
-  const [ox1, oy1] = polar(a1, rOuter);
-  const [ox2, oy2] = polar(a2, rOuter);
-  const [ix2, iy2] = polar(a2, rInner);
-  const [ix1, iy1] = polar(a1, rInner);
-  return [
-    `M ${ox1} ${oy1}`,
-    `A ${rOuter} ${rOuter} 0 0 1 ${ox2} ${oy2}`,
-    `L ${ix2} ${iy2}`,
-    `A ${rInner} ${rInner} 0 0 0 ${ix1} ${iy1}`,
-    'Z',
-  ].join(' ');
-}
-
-function midAngle(a1: number, a2: number): number {
-  // For wraparound (315 → 45) we want 0, not 180.
-  if (a2 < a1) return ((a1 + a2 + 360) / 2) % 360;
-  return (a1 + a2) / 2;
+  return wedgePathAt(CENTER, a1, a2, rOuter, rInner);
 }
 
 export default function Model3DJogDial(props: Props) {

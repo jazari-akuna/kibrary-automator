@@ -31,6 +31,7 @@
 
 import { For } from 'solid-js';
 import type { HoverPreview } from './Model3DJogDial';
+import { polar as polarAt, wedgePath as wedgePathAt, midAngle } from './_dialGeometry';
 
 type Axis = 'x' | 'y' | 'z';
 
@@ -45,10 +46,10 @@ interface Props {
 
 const CX = 70;
 const CY = 70;
+const CENTER = { cx: CX, cy: CY };
 
 function polar(angleDeg: number, radius: number): [number, number] {
-  const rad = (angleDeg * Math.PI) / 180;
-  return [CX + radius * Math.sin(rad), CY - radius * Math.cos(rad)];
+  return polarAt(CENTER, angleDeg, radius);
 }
 
 interface Wedge {
@@ -80,22 +81,7 @@ const INNER_R = 26;
 const RESET_R = 22;
 
 function wedgePath(a1: number, a2: number, rOuter: number, rInner: number): string {
-  const [ox1, oy1] = polar(a1, rOuter);
-  const [ox2, oy2] = polar(a2, rOuter);
-  const [ix2, iy2] = polar(a2, rInner);
-  const [ix1, iy1] = polar(a1, rInner);
-  return [
-    `M ${ox1} ${oy1}`,
-    `A ${rOuter} ${rOuter} 0 0 1 ${ox2} ${oy2}`,
-    `L ${ix2} ${iy2}`,
-    `A ${rInner} ${rInner} 0 0 0 ${ix1} ${iy1}`,
-    'Z',
-  ].join(' ');
-}
-
-function midAngle(a1: number, a2: number): number {
-  if (a2 < a1) return ((a1 + a2 + 360) / 2) % 360;
-  return (a1 + a2) / 2;
+  return wedgePathAt(CENTER, a1, a2, rOuter, rInner);
 }
 
 export default function Model3DRotateDial(props: Props) {
