@@ -11,11 +11,6 @@
  *   <lib_dir>/<lib>.kicad_sym                    (merged symbol library)
  *   <lib_dir>/<lib>.pretty/<component>.kicad_mod (per-component footprint)
  *   <lib_dir>/<lib>.3dshapes/<component>.<ext>   (per-component 3D model)
- *
- * PropertyEditor still expects (stagingDir, lcsc) for now — the underlying
- * `parts.read_props` happens to work because that handler reads
- * `${stagingDir}/${lcsc}/${lcsc}.kicad_sym`, which doesn't exist in committed
- * libraries.  TODO: route PropertyEditor through a library-mode RPC too.
  */
 
 import { createResource, Show } from 'solid-js';

@@ -31,6 +31,19 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 // `window` at module-eval time and breaks node-environment tests).
 import { formatWarning, type RenderWarning } from './_renderWarnings';
 import { findSubstrateMesh, computeSubstrateBboxLocal } from './_substrateBbox';
+import { classifierFoundNoChips } from './_chipClassification';
+// Keystone refactor: KiCad↔three.js coordinate math lives in ONE tested,
+// pure module so the rotation/translation sign conventions can't drift.
+// See src/three/coords.ts for the axis table + the documented
+// translation-vs-rotation-Y asymmetry.
+import {
+  kicadTranslationToWorld,
+  kicadRotationToWorldEuler,
+  kicadScaleToWorld,
+  scaleRatioFrom,
+  composeDeltaMatrix,
+  kicadAxisToWorld,
+} from '~/three/coords';
 import type { HoverPreview } from './Model3DJogDial';
 
 type Triple = [number, number, number];
@@ -196,6 +209,13 @@ export default function Model3DViewerGL(props: Props) {
     null,
   );
   const [warningsDismissed, setWarningsDismissed] = createSignal(false);
+  // noChipModel = the GLB loaded fine but the chip/substrate classifier found
+  // ZERO movable chip nodes, so applyLiveDelta (the position/rotation jogs)
+  // is a no-op. Previously this only produced a console.warn — the model
+  // rendered, the dials moved nothing, and the user got no feedback. We now
+  // drive a visible on-canvas banner from this signal. Set when the
+  // classifier yields no chips; cleared at the start of every (re)load.
+  const [noChipModel, setNoChipModel] = createSignal(false);
   const [loading, setLoading] = createSignal(true);
 
   let containerEl: HTMLDivElement | undefined;
@@ -489,6 +509,9 @@ export default function Model3DViewerGL(props: Props) {
     setAssetError(null);
     setAssetWarnings(null);
     setWarningsDismissed(false);
+    // Clear the "no movable part" banner — a fresh load gets a fresh
+    // classification; we only re-raise it if THIS load yields zero chips.
+    setNoChipModel(false);
     const myId = ++loadId;
     window.__model3dGLLoadCount = (window.__model3dGLLoadCount || 0) + 1;
     // 3d-fix-journal Wave-2 follow-up: zero out per-load probe state so
@@ -853,11 +876,18 @@ export default function Model3DViewerGL(props: Props) {
           // warning. Don't fall back to translating loadedRoot — better
           // to translate nothing than translate the wrong thing (which
           // is exactly the Wave 3-B bug we're fixing).
-          if (chipNodes.length === 0) {
+          if (classifierFoundNoChips(chipNodes.length)) {
+            // Keep the console.warn for logs/visual-verify probes, but ALSO
+            // raise a visible on-canvas banner (setNoChipModel) so the user
+            // understands why the position/rotation jogs do nothing instead
+            // of silently editing a model whose movable part we never found.
             console.warn(
               '[3D viewer GL] classifier found no chip groups — applyLiveDelta will be a no-op',
             );
             window.__model3dGLLastError = 'classifier found no chip groups';
+            setNoChipModel(true);
+          } else {
+            setNoChipModel(false);
           }
           if (substrateBboxLocal) {
             window.__model3dGLSubstrateBbox = {
@@ -982,41 +1012,28 @@ export default function Model3DViewerGL(props: Props) {
     // toward screen-DOWN. The applyLiveDelta remap below stays the same —
     // it's the dial labels (NOT this code) that needed to flip, so the
     // on-disk KiCad-coord storage round-trips cleanly through kicad-cli.
-    const dxKicad = (props.offset[0] - lastSavedOffset[0]) / 1000;
-    const dyKicad = (props.offset[1] - lastSavedOffset[1]) / 1000;
-    const dzKicad = (props.offset[2] - lastSavedOffset[2]) / 1000;
-    // 26.5.8-alpha.3: dzWorld = −dyKicad (NOT +dyKicad). The previous
-    // mapping put the LIVE chip at world +Z for setOffsetY(+1), but
-    // kicad-cli bakes Y=+1 to world −Z (empirically verified). The
-    // dial's Y wedges + ArrowUp/Down were sign-flipped together so that
-    // user-visible click semantics still produce screen-up motion under
-    // the corrected mapping. Save round-trip is now consistent.
-    const dxWorld =  dxKicad;       // KiCad +X → world +X
-    const dyWorld =  dzKicad;       // KiCad +Z → world +Y
-    const dzWorld = -dyKicad;       // KiCad +Y → world −Z (matches kicad-cli bake)
-
-    const drxKicad = (props.rotation[0] - lastSavedRotation[0]) * Math.PI / 180;
-    const dryKicad = (props.rotation[1] - lastSavedRotation[1]) * Math.PI / 180;
-    const drzKicad = (props.rotation[2] - lastSavedRotation[2]) * Math.PI / 180;
-    const drxWorld = drxKicad;
-    const dryWorld = drzKicad;
-    const drzWorld = dryKicad;
-
-    // Scale delta is a multiplier (live/saved). Scale axes follow the
-    // same KiCad → world swap so a "scale Z" slider stretches the chip
-    // in its tall axis even though kicad-cli's GLB calls that world Y.
-    const sxK = lastSavedScale[0] !== 0 ? props.scale[0] / lastSavedScale[0] : 1;
-    const syK = lastSavedScale[1] !== 0 ? props.scale[1] / lastSavedScale[1] : 1;
-    const szK = lastSavedScale[2] !== 0 ? props.scale[2] / lastSavedScale[2] : 1;
-    const sxW = sxK;
-    const syW = szK;
-    const szW = syK;
-
-    const delta = new THREE.Matrix4().compose(
-      new THREE.Vector3(dxWorld, dyWorld, dzWorld),
-      new THREE.Quaternion().setFromEuler(new THREE.Euler(drxWorld, dryWorld, drzWorld, 'XYZ')),
-      new THREE.Vector3(sxW, syW, szW),
+    // All KiCad→world axis math (the +X/+Y→−Z/+Z→+Y remap, the mm→m and
+    // deg→rad scales, the scale-axis swap, and the documented
+    // translation-vs-rotation-Y sign asymmetry) lives in src/three/coords.ts.
+    // This block now just feeds the raw KiCad-space deltas in.
+    const offsetWorld = kicadTranslationToWorld([
+      props.offset[0] - lastSavedOffset[0],
+      props.offset[1] - lastSavedOffset[1],
+      props.offset[2] - lastSavedOffset[2],
+    ]);
+    const rotationWorld = kicadRotationToWorldEuler([
+      props.rotation[0] - lastSavedRotation[0],
+      props.rotation[1] - lastSavedRotation[1],
+      props.rotation[2] - lastSavedRotation[2],
+    ]);
+    // Scale delta is a multiplier (live/saved); coords.ts applies the same
+    // KiCad → world swap so a "scale Z" slider stretches the chip in its tall
+    // axis even though kicad-cli's GLB calls that world Y.
+    const scaleWorld = kicadScaleToWorld(
+      scaleRatioFrom(props.scale, lastSavedScale),
     );
+
+    const delta = composeDeltaMatrix(offsetWorld, rotationWorld, scaleWorld);
 
     // Apply to every chip node (a single .kicad_mod can have multiple
     // (model …) blocks — secondary models like a mounting post should
@@ -1071,21 +1088,8 @@ export default function Model3DViewerGL(props: Props) {
     window.__model3dGLHoverHelperName = '';
   }
 
-  /**
-   * KiCad-axis-letter → world-space unit vector. Mirrors applyLiveDelta:
-   *   KiCad +X → world +X
-   *   KiCad +Y → world +Z   (back along the layout sheet → world depth)
-   *   KiCad +Z → world +Y   (out of the board → world up)
-   * sign flips the corresponding component.
-   */
-  function kicadAxisToWorld(axis: 'x' | 'y' | 'z', sign: '+' | '-'): THREE.Vector3 {
-    const s = sign === '+' ? 1 : -1;
-    switch (axis) {
-      case 'x': return new THREE.Vector3(s, 0, 0);
-      case 'y': return new THREE.Vector3(0, 0, -s);  // 26.5.8-alpha.3: KiCad +Y → world −Z
-      case 'z': return new THREE.Vector3(0, s, 0);
-    }
-  }
+  // kicadAxisToWorld (the translation hover-arrow direction) now comes from
+  // src/three/coords.ts so it stays in lock-step with kicadTranslationToWorld.
 
   function buildTranslateHelper(
     direction: THREE.Vector3,
@@ -1580,6 +1584,25 @@ export default function Model3DViewerGL(props: Props) {
                 ×
               </button>
             </div>
+          </div>
+        </Show>
+        {/*
+          No-movable-part banner. The GLB loaded but the chip/substrate
+          classifier found zero chip groups, so applyLiveDelta is a no-op —
+          the position/rotation dials would silently do nothing. Surface
+          that visibly (the IPEX-style "renders but jogs are dead" case).
+          Anchored bottom so it doesn't collide with the top warnings
+          banner, and gated off loading()/assetError() like that banner.
+        */}
+        <Show when={!loading() && !assetError() && noChipModel()}>
+          <div
+            data-testid="3d-viewer-gl-no-chip"
+            class="absolute bottom-2 left-2 right-2 px-3 py-2 rounded text-[11px] text-amber-900 dark:text-amber-200 bg-amber-100/95 dark:bg-amber-900/85 border border-amber-300 dark:border-amber-700 shadow pointer-events-none"
+          >
+            <p class="font-medium">
+              3D model loaded, but its movable part couldn't be identified —
+              position editing is disabled for this model.
+            </p>
           </div>
         </Show>
       </div>
