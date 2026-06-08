@@ -348,6 +348,54 @@ async function grabViewerScreenshot(sid: string): Promise<Buffer | null> {
   return png;
 }
 
+/**
+ * Clear any lingering dial hover-preview helper before we snapshot.
+ *
+ * After the spacer→target re-navigation, the dial SVG re-mounts under the
+ * (stationary) WebDriver cursor, which is parked on a wedge from the prior
+ * fixture's click. WebKit fires a synthetic `mouseenter` on the freshly
+ * mounted wedge → the app paints a transient `hover-preview-arrow`
+ * ArrowHelper (whose line+cone children are UNNAMED meshes) into the scene
+ * root. That helper is in the BEFORE snapshot but the action's onClick
+ * clears it, so it's gone in AFTER → the diff reports "1 mesh removed" and
+ * the maxRemovedMeshes=0 assertion FAILs even though every chip moved
+ * exactly right.
+ *
+ * The dial wedges call `onHoverChange(null)` on `mouseleave`, which the
+ * viewer turns into disposeHoverHelper(). We dispatch mouseleave/mouseout
+ * on every jog/rotate wedge to drive that path through the REAL app, then
+ * wait until __model3dGLHoverHelperName is empty so BEFORE is clean.
+ */
+async function clearHoverPreview(sid: string): Promise<void> {
+  await execScript(
+    sid,
+    `var sel = '[data-testid^="jog-"],[data-testid^="rotate-"]';
+     var els = document.querySelectorAll(sel);
+     for (var i = 0; i < els.length; i++) {
+       try {
+         els[i].dispatchEvent(new MouseEvent('mouseleave', { bubbles: false }));
+         els[i].dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+       } catch (e) { /* ignore */ }
+     }
+     return els.length;`,
+  );
+  // Wait until the viewer reports no hover helper mounted. If the hook is
+  // absent (older build), the check resolves immediately on '' and we move
+  // on — the dispatch above is still best-effort correct.
+  await waitFor(
+    async () => {
+      const name = await execScript(
+        sid,
+        `return window.__model3dGLHoverHelperName || '';`,
+      );
+      return name === '' ? true : null;
+    },
+    3_000,
+    100,
+    'hover-preview helper cleared (__model3dGLHoverHelperName empty)',
+  );
+}
+
 async function captureSnapshot(sid: string): Promise<SceneSnapshot> {
   const snap = await execScript(sid, `return ${buildSnapshotScript()};`);
   if (!snap || !snap.ok) {
@@ -367,6 +415,87 @@ async function captureSnapshot(sid: string): Promise<SceneSnapshot> {
 async function snapshotInitialLoadCount(sid: string): Promise<number> {
   const v = await execScript(sid, `return window.__model3dGLLoadCount || 0;`);
   return typeof v === 'number' ? v : 0;
+}
+
+/**
+ * A library/component pair guaranteed to differ from `fixture` — used as a
+ * "spacer" selection between fixtures so `Model3DViewerGL.loadGLB()` (which
+ * only re-fires when [libDir, componentName, savedRev] changes) is FORCED to
+ * re-load when the next fixture reuses the current component/footprint.
+ *
+ * Several fixtures share SyntheticPCB_KSL/synthetic_pcb_named; selecting two
+ * of them back-to-back left `componentName` unchanged, so no new GLB load
+ * fired and waitForViewerReady (waiting on __model3dGLLoadCount to increment)
+ * timed out at 25s. Picking a spacer with a DIFFERENT component name makes
+ * the subsequent target selection a genuine (oldComp → newComp) transition.
+ */
+const SPACER_A = { lib: 'UFL_KSL', footprint: 'U.FL_Hirose_U.FL-R-SMT-1_Vertical' };
+const SPACER_B = { lib: 'USBC_KSL', footprint: 'USB_C_Receptacle_HRO_TYPE-C-31-M-12' };
+
+function spacerFor(fixture: Fixture): { lib: string; footprint: string } {
+  // Never pick a spacer whose component name collides with the target —
+  // that would defeat the purpose (no componentName change). The selection
+  // keys on componentName, so compare on footprint.
+  return fixture.footprint === SPACER_A.footprint ? SPACER_B : SPACER_A;
+}
+
+/**
+ * Drive a spacer selection and wait until the GLB load counter has moved
+ * PAST `baseCount` — i.e. the spacer's own GLB actually loaded — so the
+ * subsequent target selection starts from a clean, different component.
+ * Returns the load counter observed after the spacer settled, which the
+ * caller passes to waitForViewerReady as the new baseline.
+ */
+async function selectSpacerAndWait(
+  sid: string,
+  spacer: { lib: string; footprint: string },
+  baseCount: number,
+): Promise<number> {
+  await execAsync(
+    sid,
+    `var done = arguments[arguments.length - 1];
+     try {
+       if (!window.__kibraryTest) { done({ ok: false, e: '__kibraryTest not exposed' }); return; }
+       window.__kibraryTest.setRoom('libraries');
+       var lib = ${JSON.stringify(spacer.lib)};
+       var fp = ${JSON.stringify(spacer.footprint)};
+       setTimeout(function(){
+         try {
+           if (typeof window.__kibraryTest.openComponent === 'function') {
+             Promise.resolve(window.__kibraryTest.openComponent(lib, fp))
+               .then(function(){ done({ ok: true }); })
+               .catch(function(e){ done({ ok: false, e: String(e) }); });
+           } else {
+             try { window.__kibraryTest.selectLibrary(lib); } catch(e) {}
+             setTimeout(function(){
+               try { window.__kibraryTest.selectComponent(fp); } catch(e) {}
+               done({ ok: true });
+             }, 200);
+           }
+         } catch (e) { done({ ok: false, e: String(e) }); }
+       }, 50);
+     } catch (e) { done({ ok: false, e: String(e) }); }`,
+  );
+  // Wait for the spacer's GLB to actually finish loading (loadCount past the
+  // baseline) so the next target selection is a real component transition.
+  // A shorter window than waitForViewerReady's full gate — we only need the
+  // counter to bump, not a fully-stable scene.
+  const settled = await waitFor(
+    async () => {
+      const c = await execScript(sid, `return window.__model3dGLLoadCount || 0;`);
+      return typeof c === 'number' && c > baseCount ? c : null;
+    },
+    20_000,
+    200,
+    `spacer ${spacer.lib}/${spacer.footprint} GLB loaded (loadCount > ${baseCount})`,
+  );
+  // Brief settle, then re-read so the baseline handed to the next
+  // navigation reflects ANY extra in-flight spacer loads — otherwise the
+  // target's strict-increment wait could match the spacer's own trailing
+  // load instead of the target's.
+  await new Promise((r) => setTimeout(r, 150));
+  const after = await execScript(sid, `return window.__model3dGLLoadCount || 0;`);
+  return typeof after === 'number' ? Math.max(after, settled ?? baseCount) : baseCount;
 }
 
 async function navigateToFootprint(sid: string, fixture: Fixture): Promise<void> {
@@ -417,7 +546,62 @@ async function performAction(sid: string, fixture: Fixture): Promise<string[]> {
   const warnings: string[] = [];
   const eid = await findElement(sid, fixture.jogButtonSelector);
   if (eid) {
-    await elClick(sid, eid);
+    // The rotate dial occasionally returns a transient WebDriver
+    // "click failed (400)" (WebKitWebDriver's element-interactability
+    // probe racing the SVG re-paint). Retry a couple of times with a
+    // re-find + short backoff before giving up — the click itself is
+    // idempotent enough for a verification harness (a double rotate would
+    // be caught by the assertions, but in practice the first attempt that
+    // *throws* never reached the handler).
+    let clicked = false;
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 3 && !clicked; attempt++) {
+      try {
+        const target = attempt === 0 ? eid : (await findElement(sid, fixture.jogButtonSelector)) ?? eid;
+        await elClick(sid, target);
+        clicked = true;
+      } catch (e) {
+        lastErr = e;
+        const msg = e instanceof Error ? e.message : String(e);
+        log(PREFIX, `click attempt ${attempt + 1} failed (${msg}); retrying`);
+        if (attempt === 0) warnings.push(`click on ${fixture.jogButtonSelector} retried after: ${msg}`);
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    if (!clicked) {
+      // W3C element-click kept failing (400). For the SVG rotate-dial
+      // wedges this is DETERMINISTIC, not a flake: a 60° <path> wedge's
+      // geometric bounding-box centre can fall outside the wedge shape
+      // (in a neighbouring wedge or the centre disk), so WebKitWebDriver's
+      // pointer-interactability probe rejects the synthesized click. Fall
+      // back to dispatching a real DOM `click` MouseEvent on the element,
+      // which invokes the SolidJS onClick handler through the actual UI —
+      // same code path a user click would take, just without WebDriver's
+      // hit-testing. (Mirrors the existing __kibraryTest jog fallback
+      // below; kept here so the rotate fixture exercises the dial wedge.)
+      const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+      log(PREFIX, `W3C click exhausted retries; falling back to DOM click dispatch`);
+      warnings.push(
+        `W3C element-click on ${fixture.jogButtonSelector} failed (${msg}); ` +
+          `used a dispatched DOM click MouseEvent on the wedge instead ` +
+          `(SVG wedge bounding-box centre is not pointer-interactable).`,
+      );
+      const r = await execScript(
+        sid,
+        `var el = document.querySelector(${JSON.stringify(fixture.jogButtonSelector)});
+         if (!el) return { ok: false, e: 'selector not in DOM for DOM-click fallback' };
+         try {
+           el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+           return { ok: true };
+         } catch (e) { return { ok: false, e: String(e) }; }`,
+      );
+      if (!r?.ok) {
+        throw new Error(
+          `performAction: click on ${fixture.jogButtonSelector} failed after 3 W3C ` +
+            `attempts AND the DOM-click fallback: ${r?.e ?? msg}`,
+        );
+      }
+    }
   } else {
     warnings.push(
       `jogButtonSelector "${fixture.jogButtonSelector}" not found in DOM. ` +
@@ -512,8 +696,35 @@ async function runFixture(
   // fixture N's chipNodeCount/substrateName globals — without this
   // baseline the wait passes instantly on stale state and we snapshot
   // an empty mid-transition scene.
-  const initialLoadCount = await snapshotInitialLoadCount(sid);
+  let initialLoadCount = await snapshotInitialLoadCount(sid);
   log(PREFIX, `initial __model3dGLLoadCount = ${initialLoadCount}`);
+
+  // FORCE a fresh GLB load even when this fixture reuses the currently
+  // selected component/footprint. Model3DViewerGL.loadGLB() only re-fires
+  // when [libDir, componentName, savedRev] changes, and Model3DPreview is
+  // not remounted between fixtures — so selecting an already-selected
+  // component fires no new load and waitForViewerReady would hang 25s.
+  // Several fixtures share SyntheticPCB_KSL/synthetic_pcb_named, so we
+  // unconditionally route through a DIFFERENT spacer component first; the
+  // subsequent target selection is then always a genuine componentName
+  // transition that re-triggers loadGLB. (Cheap & robust: ~1 extra GLB
+  // load per fixture, but no fragile "did the count bump?" race.)
+  const currentComp = await execScript(
+    sid,
+    `try { return (window.__kibraryTest && window.__kibraryTest.getSelectedComponent)
+       ? window.__kibraryTest.getSelectedComponent() : null; } catch (e) { return null; }`,
+  );
+  if (currentComp === fixture.footprint) {
+    const spacer = spacerFor(fixture);
+    log(
+      PREFIX,
+      `current component "${currentComp}" == target footprint; ` +
+        `routing through spacer ${spacer.lib}/${spacer.footprint} to force a GLB reload`,
+    );
+    initialLoadCount = await selectSpacerAndWait(sid, spacer, initialLoadCount);
+    log(PREFIX, `post-spacer __model3dGLLoadCount = ${initialLoadCount}`);
+  }
+
   await navigateToFootprint(sid, fixture);
   await waitForViewerReady(sid, initialLoadCount);
   // Layout/visibility gate. Without this u_fl_hirose's BEFORE used to
@@ -549,6 +760,12 @@ async function runFixture(
      return true;`,
   );
   await new Promise((r) => setTimeout(r, 150));
+
+  // Clear any lingering dial hover-preview helper (an unnamed ArrowHelper
+  // child mesh) the cursor may have re-triggered when the dial SVG
+  // re-mounted after the spacer navigation — otherwise it appears in BEFORE
+  // but not AFTER and trips the maxRemovedMeshes=0 assertion.
+  await clearHoverPreview(sid);
 
   log(PREFIX, 'capturing BEFORE snapshot + screenshot (full + viewer-cropped)');
   const before = await captureSnapshot(sid);
