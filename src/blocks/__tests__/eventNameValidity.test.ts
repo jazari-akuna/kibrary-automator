@@ -47,6 +47,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, extname } from 'node:path';
 
@@ -486,5 +487,58 @@ describe('Whole-codebase event-name validator scan', () => {
         `backend emit. Did you rename one side without renaming the other?\n` +
         orphanCanonicalListens.map((n) => `  '${n}'`).join('\n'),
     ).toEqual([]);
+  });
+});
+
+/**
+ * Codegen contract — the three event-name mirror files
+ * (`src-tauri/src/event_names.rs`, `sidecar/kibrary_sidecar/event_names.py`,
+ * `src/utils/eventNames.ts`) are DERIVED from the single canonical source
+ * `contracts/event-names.json` via `scripts/gen-event-names.mjs`. These specs
+ * assert the canonical JSON agrees with the live TS module AND that the three
+ * committed files are exactly what the generator would (re)produce — i.e. the
+ * files have not drifted from the canonical source by hand-editing.
+ */
+describe('event-name codegen contract (contracts/event-names.json)', () => {
+  const contractPath = fileURLToPath(
+    new URL('../../../contracts/event-names.json', import.meta.url),
+  );
+  const generatorPath = fileURLToPath(
+    new URL('../../../scripts/gen-event-names.mjs', import.meta.url),
+  );
+  const contract = JSON.parse(readFileSync(contractPath, 'utf-8')) as {
+    names: { value: string; ts?: { key: string } }[];
+  };
+
+  it('canonical JSON values match the live TAURI_EVENT_NAMES module', async () => {
+    const sot = await import('~/utils/eventNames');
+    const moduleValues = new Set(
+      Object.values(sot.TAURI_EVENT_NAMES) as string[],
+    );
+    // Every TS-exposed canonical entry must equal the module's value under the
+    // same camelCase key, and vice-versa (no name in one but not the other).
+    const tsEntries = contract.names.filter((n) => n.ts);
+    for (const n of tsEntries) {
+      expect(
+        (sot.TAURI_EVENT_NAMES as Record<string, string>)[n.ts!.key],
+        `contracts/event-names.json key '${n.ts!.key}' must match TAURI_EVENT_NAMES`,
+      ).toBe(n.value);
+    }
+    expect(
+      tsEntries.map((n) => n.value).sort(),
+      'TAURI_EVENT_NAMES and the canonical JSON ts entries must cover the same set',
+    ).toEqual([...moduleValues].sort());
+  });
+
+  it('the three committed mirror files match the generator output (no hand-drift)', () => {
+    // `--check` regenerates in memory and exits non-zero if any of the three
+    // target files differs from what the canonical JSON would produce. A clean
+    // exit proves event_names.rs / event_names.py / eventNames.ts are still
+    // byte-identical to the generated form.
+    expect(() => {
+      execFileSync(process.execPath, [generatorPath, '--check'], {
+        stdio: 'pipe',
+      });
+    }, 'run `node scripts/gen-event-names.mjs` — a mirror file drifted from contracts/event-names.json').not.toThrow();
   });
 });
