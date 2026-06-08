@@ -71,6 +71,36 @@ export default function ReviewSequential() {
     },
   );
 
+  // Advisory duplicate check for the current part. Non-blocking and
+  // best-effort: any failure resolves to "no duplicate" so review/commit is
+  // never impeded. Mirrors the per-row check in ReviewBulkAssign.
+  interface DuplicateResult {
+    duplicate: boolean;
+    library: string | null;
+    component_name: string | null;
+  }
+  type DupSource = { lcsc: string; root: string };
+  const dupSource = (): DupSource | undefined => {
+    const it = item();
+    const ws = workspace();
+    if (!it || !ws) return undefined;
+    return { lcsc: it.lcsc, root: ws.root };
+  };
+  const [duplicateLib] = createResource<string | null, DupSource>(
+    dupSource,
+    async (args: DupSource) => {
+      try {
+        const r = await invoke<DuplicateResult>('sidecar_call', {
+          method: 'library.check_duplicate',
+          params: { workspace: args.root, lcsc: args.lcsc },
+        });
+        return r?.duplicate ? r.library : null;
+      } catch {
+        return null;
+      }
+    },
+  );
+
   // Target library: initialised from meta.suggested_lib when meta loads
   const suggestedLib = () => meta()?.suggested_lib ?? FALLBACK_LIB;
   const [targetLib, setTargetLib] = createSignal('');
@@ -146,9 +176,22 @@ export default function ReviewSequential() {
         <Show when={item()}>
           {/* Item heading */}
           <div class="flex items-center justify-between">
-            <h2 class="text-sm font-semibold text-zinc-200">
-              Sequential Review —{' '}
-              <span class="font-mono text-zinc-100">{item()!.lcsc}</span>
+            <h2 class="text-sm font-semibold text-zinc-200 flex items-center gap-2 flex-wrap">
+              <span>
+                Sequential Review —{' '}
+                <span class="font-mono text-zinc-100">{item()!.lcsc}</span>
+              </span>
+              {/* Non-blocking duplicate advisory — commit stays enabled. */}
+              <Show when={duplicateLib()}>
+                <span
+                  data-testid="seq-duplicate-badge"
+                  class="px-1.5 py-0.5 rounded text-[10px] font-sans font-normal text-amber-300 bg-amber-900/40 border border-amber-700 cursor-help whitespace-nowrap"
+                  aria-label={`Already in library ${duplicateLib()}`}
+                  title={`This LCSC code is already in the "${duplicateLib()}" library. Saving will create a duplicate.`}
+                >
+                  ⚠ already in {duplicateLib()}
+                </span>
+              </Show>
             </h2>
             <span class="text-xs text-zinc-500">
               {meta.loading ? 'Loading meta…' : (meta()?.description ?? '')}

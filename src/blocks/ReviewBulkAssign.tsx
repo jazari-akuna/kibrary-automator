@@ -59,10 +59,26 @@ interface RowState {
   edits: Record<string, string>;
   saveState: RowSaveState;
   errorMsg: string;
+  // Inline-edit autosave lifecycle (Reference/Description edits flushed to
+  // the staging .kicad_sym via parts.write_props). Distinct from `saveState`
+  // which tracks the commit-to-library lifecycle.
+  editSaveState: RowSaveState;
   // alpha.22: post-commit destination so the "Open in library" button knows
   // where to navigate after the row is saved.
   committedLib?: string;
   committedComponent?: string;
+  // Advisory: this LCSC already exists somewhere in the workspace (per
+  // library.check_duplicate). Non-blocking — we still allow commit; we just
+  // surface a "⚠ already in <library>" note so the user can avoid an
+  // accidental duplicate. `duplicateLib` is the library that already holds
+  // it; `null`/empty means no duplicate (or the check hasn't resolved yet).
+  duplicateLib?: string | null;
+}
+
+interface DuplicateResult {
+  duplicate: boolean;
+  library: string | null;
+  component_name: string | null;
 }
 
 const FALLBACK_LIB = 'Misc_KSL';
@@ -86,6 +102,21 @@ async function fetchSuggest(category: string, workspace: string): Promise<Sugges
     });
   } catch {
     return { library: FALLBACK_LIB, is_existing: false, existing: [], matches: [] };
+  }
+}
+
+// Advisory duplicate check — purely informational, so a failure must never
+// block the row from loading or committing. On any error we report "no
+// duplicate" (null) and the advisory simply doesn't render.
+async function fetchDuplicate(workspace: string, lcsc: string): Promise<string | null> {
+  try {
+    const r = await invoke<DuplicateResult>('sidecar_call', {
+      method: 'library.check_duplicate',
+      params: { workspace, lcsc },
+    });
+    return r?.duplicate ? r.library : null;
+  } catch {
+    return null;
   }
 }
 
@@ -146,7 +177,10 @@ export default function ReviewBulkAssign() {
           meta = { lcsc };
         }
 
-        const suggest = await fetchSuggest(meta.category ?? '', ws.root);
+        const [suggest, duplicateLib] = await Promise.all([
+          fetchSuggest(meta.category ?? '', ws.root),
+          fetchDuplicate(ws.root, lcsc),
+        ]);
         const suggestedLib = meta.suggested_lib ?? suggest.library;
 
         return {
@@ -161,6 +195,8 @@ export default function ReviewBulkAssign() {
           edits: (meta.edits as Record<string, string>) ?? {},
           saveState: 'idle' as RowSaveState,
           errorMsg: '',
+          editSaveState: 'idle' as RowSaveState,
+          duplicateLib,
         } as RowState;
       }),
     )
@@ -176,6 +212,59 @@ export default function ReviewBulkAssign() {
 
   function updateRow(lcsc: string, patch: Partial<RowState>) {
     setRows((prev) => prev.map((r) => (r.lcsc === lcsc ? { ...r, ...patch } : r)));
+  }
+
+  // ------------------------------------------------------------------------
+  // Inline Reference/Description editing.
+  //
+  // Edits update `row.edits[key]` (and mirror the visible Description column
+  // for the Description key) and are flushed to the staged `.kicad_sym` via
+  // parts.write_props, debounced ~400ms — mirroring PropertyEditor's
+  // autosave. row.edits is ALSO passed at commit time (belt-and-suspenders:
+  // both the staged file and the commit-time edits carry the change), so a
+  // failed debounce flush is non-fatal — the commit still applies the edit.
+  // ------------------------------------------------------------------------
+  const editDebounce = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function editField(lcsc: string, key: string, value: string) {
+    const ws = workspace();
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.lcsc !== lcsc) return r;
+        const nextEdits = { ...r.edits, [key]: value };
+        return {
+          ...r,
+          edits: nextEdits,
+          // Keep the visible Description column in sync with the edit.
+          description: key === 'Description' ? value : r.description,
+        };
+      }),
+    );
+
+    if (!ws) return;
+    const symPath = `${ws.root}/.kibrary/staging/${lcsc}/${lcsc}.kicad_sym`;
+
+    const existing = editDebounce.get(lcsc);
+    if (existing !== undefined) clearTimeout(existing);
+    editDebounce.set(
+      lcsc,
+      setTimeout(async () => {
+        editDebounce.delete(lcsc);
+        const row = untrack(() => rows().find((r) => r.lcsc === lcsc));
+        if (!row) return;
+        updateRow(lcsc, { editSaveState: 'saving' });
+        try {
+          await invoke('sidecar_call', {
+            method: 'parts.write_props',
+            params: { sym_path: symPath, edits: row.edits },
+          });
+          updateRow(lcsc, { editSaveState: 'ok' });
+        } catch (e) {
+          console.warn('[BulkAssign] inline write_props failed (non-fatal):', e);
+          updateRow(lcsc, { editSaveState: 'error' });
+        }
+      }, 400),
+    );
   }
 
   /**
@@ -278,6 +367,7 @@ export default function ReviewBulkAssign() {
               <thead>
                 <tr class="text-left text-zinc-400 text-xs border-b border-zinc-700">
                   <th class="pb-1 pr-3 font-medium">LCSC</th>
+                  <th class="pb-1 pr-3 font-medium">Reference</th>
                   <th class="pb-1 pr-3 font-medium">Description</th>
                   <th class="pb-1 pr-3 font-medium">Footprint</th>
                   {/* alpha.16: Suggested column removed — the LibPicker
@@ -309,7 +399,7 @@ export default function ReviewBulkAssign() {
                     return (
                     <tr class="border-b border-zinc-800 align-middle" data-testid="bulk-row" data-lcsc={row().lcsc}>
                       <td class="py-1.5 pr-3 font-mono">
-                        <span class="inline-flex items-center gap-1.5">
+                        <span class="inline-flex items-center gap-1.5 flex-wrap">
                           {row().lcsc}
                           <Show when={rowWarnings().length > 0}>
                             <span
@@ -321,10 +411,58 @@ export default function ReviewBulkAssign() {
                               ⚠
                             </span>
                           </Show>
+                          {/* Non-blocking duplicate advisory — this LCSC is
+                              already in another library. Commit is still
+                              allowed; we just flag it so the user doesn't
+                              create an accidental duplicate. */}
+                          <Show when={row().duplicateLib}>
+                            <span
+                              data-testid="bulk-row-duplicate-badge"
+                              class="px-1.5 py-0.5 rounded text-[10px] font-sans text-amber-300 bg-amber-900/40 border border-amber-700 cursor-help whitespace-nowrap"
+                              aria-label={`Already in library ${row().duplicateLib}`}
+                              title={`This LCSC code is already in the "${row().duplicateLib}" library. Saving will create a duplicate.`}
+                            >
+                              ⚠ already in {row().duplicateLib}
+                            </span>
+                          </Show>
                         </span>
                       </td>
-                      <td class="py-1.5 pr-3 text-zinc-300 max-w-xs truncate" title={row().description}>
-                        {row().description || <span class="text-zinc-600 italic">—</span>}
+                      <td class="py-1.5 pr-3">
+                        <input
+                          type="text"
+                          data-testid="bulk-edit-reference"
+                          class="w-20 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-xs font-mono text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-50"
+                          placeholder="Ref"
+                          aria-label={`Reference for ${row().lcsc}`}
+                          disabled={row().saveState === 'saving' || row().saveState === 'ok'}
+                          value={row().edits.Reference ?? ''}
+                          onInput={(e) => editField(row().lcsc, 'Reference', e.currentTarget.value)}
+                        />
+                      </td>
+                      <td class="py-1.5 pr-3">
+                        <div class="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            data-testid="bulk-edit-description"
+                            class="w-full min-w-[10rem] bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-xs text-zinc-100 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-50"
+                            placeholder="Description"
+                            aria-label={`Description for ${row().lcsc}`}
+                            disabled={row().saveState === 'saving' || row().saveState === 'ok'}
+                            value={row().edits.Description ?? row().description}
+                            onInput={(e) => editField(row().lcsc, 'Description', e.currentTarget.value)}
+                          />
+                          {/* Inline-edit autosave indicator — same visual
+                              language as the commit Status column. */}
+                          <Show when={row().editSaveState === 'saving'}>
+                            <span class="text-blue-400 text-xs animate-pulse" data-testid="bulk-edit-saving">…</span>
+                          </Show>
+                          <Show when={row().editSaveState === 'ok'}>
+                            <span class="text-emerald-400 text-xs" data-testid="bulk-edit-saved" title="Saved to staging">✓</span>
+                          </Show>
+                          <Show when={row().editSaveState === 'error'}>
+                            <span class="text-amber-400 text-xs" data-testid="bulk-edit-error" title="Staging save failed (will still apply at commit)">!</span>
+                          </Show>
+                        </div>
                       </td>
                       <td class="py-1.5 pr-3 font-mono text-zinc-400 text-xs" data-testid="bulk-footprint">
                         {row().footprint || <span class="text-zinc-600 italic">—</span>}
