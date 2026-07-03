@@ -456,16 +456,28 @@ def _render_footprint(fp_file: Path, width: int, height: int) -> str:
     owner = [[None] * cols for _ in range(rows_n)]  # pad index, or SHARED
     SHARED = -1
 
-    def col(x: float) -> int:
-        return min(max(int((x - min_x) * s), 0), cols - 1)
+    def cell_span(lo: float, hi: float, scale: float, n: int) -> tuple[int, int]:
+        """Cells covered by [lo, hi] (mm), ignoring sliver overlaps.
 
-    def row(y: float) -> int:
-        return min(max(int((y - min_y) * s / 2), 0), rows_n - 1)
+        A cell only counts when the pad covers at least 30% of it, so rows
+        of physically aligned pads always land on the same cells instead of
+        randomly bleeding into neighbors and producing ragged bars.
+        """
+        lo_c, hi_c = lo * scale, hi * scale
+        c0 = min(max(int(lo_c), 0), n - 1)
+        c1 = min(max(int(hi_c), 0), n - 1)
+        if c1 > c0 and hi_c - c1 < 0.3:
+            c1 -= 1
+        if c1 > c0 and c0 + 1 - lo_c < 0.3:
+            c0 += 1
+        return c0, c1
 
     rects = []
     for i, p in enumerate(pads):
-        c0, c1 = col(p["x"] - p["w"] / 2), col(p["x"] + p["w"] / 2)
-        r0, r1 = row(p["y"] - p["h"] / 2), row(p["y"] + p["h"] / 2)
+        c0, c1 = cell_span(p["x"] - p["w"] / 2 - min_x,
+                           p["x"] + p["w"] / 2 - min_x, s, cols)
+        r0, r1 = cell_span(p["y"] - p["h"] / 2 - min_y,
+                           p["y"] + p["h"] / 2 - min_y, s / 2, rows_n)
         rects.append((c0, c1, r0, r1))
         for r in range(r0, r1 + 1):
             for c in range(c0, c1 + 1):
@@ -479,13 +491,19 @@ def _render_footprint(fp_file: Path, width: int, height: int) -> str:
     for i, p in enumerate(pads):
         label = p["num"]
         c0, c1, r0, r1 = rects[i]
-        if not label or (c1 - c0 + 1) < len(label):
+        pad_w = c1 - c0 + 1
+        if not label or pad_w < max(len(label), 2):
             continue
         rr = (r0 + r1) // 2
         cc = (c0 + c1 + 1 - len(label)) // 2
         cells = [(rr, cc + k) for k in range(len(label))]
         if any(owner[r][c] != i or (r, c) in labelled for r, c in cells):
             continue
+        if r1 > r0:
+            # tall pad: give the number its own clear row inside the pad
+            for c in range(c0, c1 + 1):
+                if owner[rr][c] == i:
+                    grid[rr][c] = " "
         for (r, c), ch in zip(cells, label):
             grid[r][c] = ch
         labelled.update(cells)
@@ -507,10 +525,13 @@ def _render_footprint(fp_file: Path, width: int, height: int) -> str:
 
 def show_component_preview(comp: dict) -> None:
     """Clear the screen and show symbol + footprint at the top."""
-    sym_view = Text(render_symbol(comp["sym"]))
+    sym_str = render_symbol(comp["sym"])
+    sym_view = Text(sym_str)
     fp_file = next((f for f in sorted(comp["pretty"].iterdir())
                     if f.suffix == ".kicad_mod"), None)
-    fp_width = max(30, min(64, console.width // 2 - 12))
+    # Give the footprint whatever width remains next to the symbol panel.
+    sym_w = max((len(ln) for ln in sym_str.splitlines()), default=0)
+    fp_width = max(30, min(76, console.width - sym_w - 14))
     fp_view = Text(render_footprint(fp_file, width=fp_width)
                    if fp_file else "(no footprint)")
 
