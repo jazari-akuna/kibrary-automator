@@ -139,7 +139,11 @@ def _bootstrap() -> None:
 
 
 if __name__ == "__main__":
-    _bootstrap()
+    try:
+        _bootstrap()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        sys.exit(130)
 
 try:
     from rich.columns import Columns          # noqa: E402
@@ -544,13 +548,34 @@ def find_local_component(root: Path) -> dict | None:
     return comp
 
 
-def remove_new_entries(root: Path, before: set) -> None:
-    """Delete entries created in the library root since the snapshot."""
-    for entry in set(root.iterdir()) - before:
+def find_download_leftovers(root: Path) -> list[Path]:
+    """Transient download artifacts sitting loose in the library root.
+
+    Finished libraries live inside their own folders, so any symbol file,
+    .pretty/.3dshapes folder, or model file at the top level is a leftover
+    from an unfinished download.
+    """
+    loose_suffixes = (".kicad_sym", ".kicad_mod", ".wrl", ".step", ".stp", ".3ds")
+    out = []
+    for entry in root.iterdir():
+        if entry.is_file() and entry.suffix.lower() in loose_suffixes:
+            out.append(entry)
+        elif entry.is_dir() and entry.suffix in (".pretty", ".3dshapes"):
+            out.append(entry)
+    return sorted(out)
+
+
+def remove_paths(paths) -> None:
+    for entry in paths:
         if entry.is_dir():
             shutil.rmtree(entry)
         elif entry.is_file():
             entry.unlink()
+
+
+def remove_new_entries(root: Path, before: set) -> None:
+    """Delete entries created in the library root since the snapshot."""
+    remove_paths(set(root.iterdir()) - before)
 
 
 def cleanup_downloads(comp: dict) -> None:
@@ -991,14 +1016,32 @@ def cmd_add(root: Path, parts: list[str]) -> None:
     jlc_exe = jlc_executable()
 
     # Leftovers from a previous (aborted) run are handled first.
-    leftover = find_local_component(root)
-    if leftover:
-        say(f"Found existing component in {escape(str(root))}, "
-            "processing it first.")
-        process_component(root, leftover)
-        if not parts and not Confirm.ask("Add another component?", default=False):
-            finish_actions(root)
-            return
+    leftovers = find_download_leftovers(root)
+    if leftovers:
+        say(f"Found previously downloaded files in {escape(str(root))}:")
+        for p in leftovers:
+            console.print(f"  [dim]{escape(p.name)}[/]")
+        comp = find_local_component(root)
+        if comp:
+            console.print("  [bold]1[/] - Add the component to a library")
+            console.print("  [bold]2[/] - Clean up (delete these files)")
+            if Prompt.ask("Select", choices=["1", "2"], default="1",
+                          show_choices=False) == "1":
+                process_component(root, comp)
+                if not parts and not Confirm.ask("Add another component?",
+                                                 default=False):
+                    finish_actions(root)
+                    return
+            else:
+                remove_paths(leftovers)
+                say("Cleaned up.")
+        else:
+            warn("These files do not form a single component and would "
+                 "break part detection.")
+            if not Confirm.ask("Clean up (delete these files)?", default=True):
+                sys.exit("Cannot continue with stray files in the library root.")
+            remove_paths(leftovers)
+            say("Cleaned up.")
 
     while True:
         if not parts:
@@ -1026,7 +1069,7 @@ def cmd_add(root: Path, parts: list[str]) -> None:
 
 
 def cmd_interactive(root: Path) -> None:
-    if find_local_component(root):
+    if find_download_leftovers(root):
         cmd_add(root, [])
         return
     console.print()
@@ -1079,6 +1122,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Library root of the current run, for the Ctrl+C cleanup offer.
+_active_root: Path | None = None
+
+
+def offer_cleanup_on_exit() -> None:
+    """After Ctrl+C, offer to delete partially downloaded component files."""
+    try:
+        root = _active_root
+        if root is None:
+            stored = load_config().get("library_root")
+            if not stored:
+                return
+            root = Path(stored).expanduser()
+        if not root.is_dir():
+            return
+        leftovers = find_download_leftovers(root)
+        if not leftovers:
+            return
+        console.print()
+        say("Downloaded component files remain in the library repository:")
+        for p in leftovers:
+            console.print(f"  [dim]{escape(p.name)}[/]")
+        if Confirm.ask("Clean them up before quitting?", default=True):
+            remove_paths(leftovers)
+            say("Cleaned up.")
+        else:
+            say("Kept — the next launch will offer to add or clean them.")
+    except (KeyboardInterrupt, EOFError):
+        console.print()
+
+
 def main() -> None:
     # Convenience: `kibrary_automator.py C1525 C2040` implies `add`.
     argv = sys.argv[1:]
@@ -1093,7 +1167,8 @@ def main() -> None:
         cmd_config(args.reset)
         return
 
-    root = resolve_library_root(args.library_root)
+    global _active_root
+    root = _active_root = resolve_library_root(args.library_root)
     say(f"Library repository: {escape(str(root))}")
 
     if args.command == "add":
@@ -1111,6 +1186,7 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         console.print("\n[dim]Interrupted.[/]")
+        offer_cleanup_on_exit()
         sys.exit(130)
     except EOFError:
         console.print("\n[dim]Input closed — exiting.[/]")
