@@ -12,7 +12,6 @@ downloads), then re-executes inside it. No manual installation required.
 Subcommands:
   add [PART ...]   download JLCPCB parts and add them to a library (default)
   install          register the repository's libraries in KiCad
-  package          zip the repository for a GitHub release
   config           show (or --reset) the stored configuration
 """
 
@@ -26,7 +25,6 @@ import shutil
 import subprocess
 import sys
 import time
-import zipfile
 from pathlib import Path
 
 APP_NAME    = "kibrary-automator"
@@ -1195,25 +1193,6 @@ def install_libraries_to_kicad(root: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Packaging
-# ---------------------------------------------------------------------------
-
-def package_repo(root: Path) -> None:
-    out = root / (root.name + ".zip")
-    say(f"Zipping repo → {out.name}")
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-        for dirpath, _, filenames in os.walk(root):
-            if ".git" in dirpath:
-                continue
-            for fn in filenames:
-                if fn.endswith((".pyc", "~")) or fn == out.name:
-                    continue
-                p = Path(dirpath) / fn
-                zf.write(p, p.relative_to(root))
-    say("Done.")
-
-
-# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
@@ -1238,8 +1217,6 @@ def finish_actions(root: Path) -> None:
     say("Additional actions:")
     if ask_yn("Install libraries to KiCad?", default=False):
         install_libraries_to_kicad(root)
-    if ask_yn("Create GitHub-release zip now?", default=False):
-        package_repo(root)
 
 
 def cmd_add(root: Path, parts: list[str]) -> None:
@@ -1342,7 +1319,6 @@ def build_parser() -> argparse.ArgumentParser:
                        help="JLCPCB part numbers (asked interactively if omitted)")
 
     sub.add_parser("install", help="register the repository's libraries in KiCad")
-    sub.add_parser("package", help="zip the repository for a GitHub release")
 
     p_cfg = sub.add_parser("config", help="show the stored configuration")
     p_cfg.add_argument("--reset", action="store_true",
@@ -1384,7 +1360,7 @@ def offer_cleanup_on_exit() -> None:
 def main() -> None:
     # Convenience: `kibrary_automator.py C1525 C2040` implies `add`.
     argv = sys.argv[1:]
-    commands = {"add", "install", "package", "config"}
+    commands = {"add", "install", "config"}
     if argv and not argv[0].startswith("-") and argv[0] not in commands:
         argv = ["add"] + argv
 
@@ -1403,8 +1379,6 @@ def main() -> None:
         cmd_add(root, args.parts)
     elif args.command == "install":
         install_libraries_to_kicad(root)
-    elif args.command == "package":
-        package_repo(root)
     else:
         cmd_interactive(root)
 

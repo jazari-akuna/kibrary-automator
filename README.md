@@ -30,7 +30,7 @@ python3 /path/to/kibrary-automator/kibrary_automator.py add C1525 C25804 R25604
 # - Choose reference designators  
 # - Create new library or merge into existing
 # When a component is done you can add another one or quit, then
-# optionally install to KiCad and package a release zip.
+# optionally install to KiCad.
 ```
 
 ### Install Existing Libraries to KiCad
@@ -45,7 +45,6 @@ kibrary_automator.py [--library-root PATH] [command]
 
   add [PART ...]   download JLCPCB parts and add them to a library (default)
   install          register the repository's libraries in KiCad
-  package          zip the repository for a GitHub release
   config           show the stored configuration (--reset to change the path)
 ```
 
