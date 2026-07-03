@@ -1138,21 +1138,14 @@ def add_library_to_table(table_path: Path, lib_name: str, lib_uri: Path,
     return True
 
 
-def choose_kicad_installation(configs: list[dict]) -> dict | None:
+def choose_kicad_installation(configs: list[dict]) -> dict:
+    if len(configs) == 1:
+        return configs[0]
     console.print()
     say("Detected KiCad installations:")
     for i, cfg in enumerate(configs, 1):
         console.print(f"  [bold]{i}[/] - {cfg['type']} KiCad {cfg['version']} "
                       f"[dim]({escape(str(cfg['config_dir']))})[/]")
-
-    if len(configs) == 1:
-        cfg = configs[0]
-        if not ask_yn(f"Install libraries to {cfg['type']} KiCad "
-                      f"{cfg['version']}?", default=True):
-            say("Installation cancelled.")
-            return None
-        return cfg
-
     sel = ask_key("Select installation",
                   [str(i) for i in range(1, len(configs) + 1)], "1")
     return configs[int(sel) - 1]
@@ -1166,8 +1159,6 @@ def install_libraries_to_kicad(root: Path) -> None:
         return
 
     selected = choose_kicad_installation(configs)
-    if not selected:
-        return
     say(f"Installing to {selected['type']} KiCad {selected['version']}")
 
     libs = list_libraries(root)
@@ -1213,10 +1204,9 @@ def process_component(root: Path, comp: dict, part: str | None = None) -> None:
 
 
 def finish_actions(root: Path) -> None:
+    """Register the libraries in KiCad — always, no questions asked."""
     console.print()
-    say("Additional actions:")
-    if ask_yn("Install libraries to KiCad?", default=False):
-        install_libraries_to_kicad(root)
+    install_libraries_to_kicad(root)
 
 
 def cmd_add(root: Path, parts: list[str]) -> None:

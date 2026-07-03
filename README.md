@@ -29,8 +29,8 @@ python3 /path/to/kibrary-automator/kibrary_automator.py add C1525 C25804 R25604
 # - Set component descriptions
 # - Choose reference designators  
 # - Create new library or merge into existing
-# When a component is done you can add another one or quit, then
-# optionally install to KiCad.
+# When a component is done you can add another one or quit; your
+# libraries are then registered in KiCad automatically.
 ```
 
 ### Install Existing Libraries to KiCad
@@ -93,7 +93,7 @@ YourLibrary_KSL/
 1. Run `kibrary_automator.py add C1525 ...` (from anywhere)
 2. Follow interactive setup for descriptions and references
 3. Choose "Create new library"
-4. Optionally install to KiCad immediately
+4. Libraries are installed to KiCad automatically when you're done
 
 ### Adding to Existing Library
 1. Run `kibrary_automator.py add` with new components
@@ -106,8 +106,7 @@ YourLibrary_KSL/
 python3 kibrary_automator.py install
 
 # The script will:
-# ✓ Detect your KiCad installation
-# ✓ Show installation details for confirmation  
+# ✓ Detect your KiCad installation (asking only if there are several)
 # ✓ Add libraries to sym-lib-table and fp-lib-table
 # ✓ Create backups of your configuration
 # ✓ Skip already installed libraries
