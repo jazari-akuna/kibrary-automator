@@ -169,6 +169,52 @@ def warn(msg: str) -> None:
     console.print(f"[bold yellow]![/] {msg}")
 
 
+def _read_raw_key() -> str:
+    """Read one keypress from the terminal without waiting for Enter."""
+    if os.name == "nt":
+        import msvcrt
+        ch = msvcrt.getwch()
+    else:
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    if ch == "\x03":               # raw mode swallows Ctrl+C — re-raise it
+        raise KeyboardInterrupt
+    if ch in ("\x04", "\x1a", ""):  # Ctrl+D / Ctrl+Z
+        raise EOFError
+    return ch
+
+
+def ask_key(prompt: str, choices: list[str], default: str) -> str:
+    """One-keypress choice (Enter = default), so single-digit menus don't
+    need Enter. Falls back to a regular prompt when stdin is not a terminal
+    or a choice needs more than one key."""
+    if not sys.stdin.isatty() or any(len(c) != 1 for c in choices):
+        return Prompt.ask(prompt, choices=choices, default=default,
+                          show_choices=False)
+    console.print(f"{prompt} [magenta]\\[{'/'.join(choices)}][/] "
+                  f"[cyan]({default})[/]: ", end="")
+    while True:
+        ch = _read_raw_key()
+        if ch in ("\r", "\n"):
+            ch = default
+        if ch in choices:
+            console.print(ch)
+            return ch
+
+
+def ask_yn(question: str, default: bool = False) -> bool:
+    if not sys.stdin.isatty():
+        return Confirm.ask(question, default=default)
+    return ask_key(question, ["y", "n"], "y" if default else "n") == "y"
+
+
 # ---------------------------------------------------------------------------
 # Configuration file (flat key/value YAML, no extra dependencies)
 # ---------------------------------------------------------------------------
@@ -248,8 +294,8 @@ def prompt_for_library_root() -> Path:
         if root.exists():
             warn(f"{escape(str(root))} exists but is not a directory.")
             continue
-        if Confirm.ask(f"{escape(str(root))} does not exist. Create it?",
-                       default=False):
+        if ask_yn(f"{escape(str(root))} does not exist. Create it?",
+                  default=False):
             root.mkdir(parents=True)
             return root
 
@@ -508,6 +554,7 @@ def _render_footprint(fp_file: Path, width: int, height: int) -> str:
             grid[r][c] = ch
         labelled.update(cells)
         labelled_nums.add(label)
+    in_pad_nums = set(labelled_nums)
 
     # Dense parts cannot fit numbers inside their pads; mark at least the
     # first pins (1-4) in the free space next to them, so the start and
@@ -557,16 +604,18 @@ def _render_footprint(fp_file: Path, width: int, height: int) -> str:
     while grid and all(ch == " " for ch in grid[-1]):
         grid.pop()
 
-    pin1_labelled = "1" in labelled_nums
-
     footer = f"{len(pads)} pads · {span_x:.1f} × {span_y:.1f} mm"
     pin1 = next((p for p in pads if p["num"] == "1"), None)
-    if pin1 and not pin1_labelled:
+    if pin1 and "1" not in in_pad_nums:
         fx = (pin1["x"] - min_x) / span_x
         fy = (pin1["y"] - min_y) / span_y  # footprint +y points down
         horiz = "left" if fx < 1 / 3 else "right" if fx > 2 / 3 else "center"
         vert = "top" if fy < 1 / 3 else "bottom" if fy > 2 / 3 else "middle"
         footer += f" · pin 1: {vert} {horiz}"
+
+    all_nums = {p["num"] for p in pads if p["num"]}
+    if all_nums - labelled_nums:
+        footer += "\n(too dense to number all pins — showing pins 1-4 only)"
 
     canvas = "\n".join("".join(r).rstrip() for r in grid)
     return f"{canvas}\n\n{footer}"
@@ -707,6 +756,73 @@ def cleanup_downloads(comp: dict) -> None:
 # ---------------------------------------------------------------------------
 # Symbol-file editing
 # ---------------------------------------------------------------------------
+
+def symbol_property(sym_file: Path, name: str) -> str:
+    m = re.search(r'\(property\s+"%s"\s+"([^"]*)"' % re.escape(name),
+                  sym_file.read_text())
+    return m.group(1) if m else ""
+
+
+def resolve_datasheet_url(part: str) -> str | None:
+    """Ask LCSC for the part's datasheet PDF."""
+    import urllib.request
+    req = urllib.request.Request(
+        f"https://wmsc.lcsc.com/ftps/wm/product/detail?productCode={part}",
+        headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        return (data.get("result") or {}).get("pdfUrl") or None
+    except Exception:
+        return None
+
+
+def url_ok(url: str) -> bool:
+    """Check that a URL actually resolves before linking it.
+
+    LCSC redirects unknown resources to its homepage instead of 404ing,
+    so a redirect that lands on a bare domain root counts as broken.
+    """
+    import urllib.parse
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            landed = urllib.parse.urlsplit(resp.geturl()).path
+            return resp.status == 200 and landed not in ("", "/")
+    except Exception:
+        return False
+
+
+def ensure_datasheet(sym_file: Path, part: str | None = None) -> None:
+    """Make sure the symbol's Datasheet field links an actual datasheet.
+
+    JLC2KiCadLib copies whatever link the EasyEDA footprint author entered —
+    often a product page, sometimes nothing. When the field is not a PDF,
+    resolve the real datasheet via LCSC (falling back to the product page).
+    """
+    current = symbol_property(sym_file, "Datasheet")
+    if ".pdf" in current.lower():
+        return
+    part = part or symbol_property(sym_file, "LCSC")
+    if not part:
+        return
+    with console.status("Resolving datasheet link..."):
+        url = resolve_datasheet_url(part)
+        if url and not url_ok(url):
+            url = None
+        if not url and not current:
+            fallback = f"https://www.lcsc.com/product-detail/{part}.html"
+            url = fallback if url_ok(fallback) else None
+    if not url or url == current:
+        return
+    text = sym_file.read_text()
+    new = re.sub(r'\(property\s+"Datasheet"\s+"[^"]*"',
+                 f'(property "Datasheet" "{url}"', text, count=1)
+    if new != text:
+        sym_file.write_text(new)
+        say(f"Datasheet: {escape(url)}")
+
 
 def edit_symbol_description(sym_file: Path) -> None:
     lines = sym_file.read_text().splitlines()
@@ -856,8 +972,8 @@ def check_duplicate(root: Path, comp: dict) -> bool:
     for lib in list_libraries(root):
         lib_sym = root / lib / f"{lib}.kicad_sym"
         if f'(symbol "{name}"' in lib_sym.read_text():
-            if Confirm.ask(f"Component {escape(name)} exists in "
-                           f"'{escape(lib)}'. Add anyway?", default=False):
+            if ask_yn(f"Component {escape(name)} exists in "
+                      f"'{escape(lib)}'. Add anyway?", default=False):
                 return True
             say("Skipping this component.")
             cleanup_downloads(comp)
@@ -873,8 +989,7 @@ def choose_library(root: Path) -> str | None:
     console.print("  [bold]1[/] - Create new library")
     for i, name in enumerate(libs, 2):
         console.print(f"  [bold]{i}[/] - {escape(name)}")
-    sel = Prompt.ask("Select", choices=[str(i) for i in range(1, len(libs) + 2)],
-                     default="1", show_choices=False)
+    sel = ask_key("Select", [str(i) for i in range(1, len(libs) + 2)], "1")
     idx = int(sel)
     return None if idx == 1 else libs[idx - 2]
 
@@ -1034,15 +1149,14 @@ def choose_kicad_installation(configs: list[dict]) -> dict | None:
 
     if len(configs) == 1:
         cfg = configs[0]
-        if not Confirm.ask(f"Install libraries to {cfg['type']} KiCad "
-                           f"{cfg['version']}?", default=True):
+        if not ask_yn(f"Install libraries to {cfg['type']} KiCad "
+                      f"{cfg['version']}?", default=True):
             say("Installation cancelled.")
             return None
         return cfg
 
-    sel = Prompt.ask("Select installation",
-                     choices=[str(i) for i in range(1, len(configs) + 1)],
-                     default="1", show_choices=False)
+    sel = ask_key("Select installation",
+                  [str(i) for i in range(1, len(configs) + 1)], "1")
     return configs[int(sel) - 1]
 
 
@@ -1103,9 +1217,10 @@ def package_repo(root: Path) -> None:
 # Commands
 # ---------------------------------------------------------------------------
 
-def process_component(root: Path, comp: dict) -> None:
+def process_component(root: Path, comp: dict, part: str | None = None) -> None:
     """Interactive pipeline: preview, describe, designate, file into a library."""
     show_component_preview(comp)
+    ensure_datasheet(comp["sym"], part)
     edit_symbol_description(comp["sym"])
     set_default_designator(comp["sym"])
     if not check_duplicate(root, comp):
@@ -1121,9 +1236,9 @@ def process_component(root: Path, comp: dict) -> None:
 def finish_actions(root: Path) -> None:
     console.print()
     say("Additional actions:")
-    if Confirm.ask("Install libraries to KiCad?", default=False):
+    if ask_yn("Install libraries to KiCad?", default=False):
         install_libraries_to_kicad(root)
-    if Confirm.ask("Create GitHub-release zip now?", default=False):
+    if ask_yn("Create GitHub-release zip now?", default=False):
         package_repo(root)
 
 
@@ -1140,11 +1255,10 @@ def cmd_add(root: Path, parts: list[str]) -> None:
         if comp:
             console.print("  [bold]1[/] - Add the component to a library")
             console.print("  [bold]2[/] - Clean up (delete these files)")
-            if Prompt.ask("Select", choices=["1", "2"], default="1",
-                          show_choices=False) == "1":
+            if ask_key("Select", ["1", "2"], "1") == "1":
                 process_component(root, comp)
-                if not parts and not Confirm.ask("Add another component?",
-                                                 default=False):
+                if not parts and not ask_yn("Add another component?",
+                                            default=False):
                     finish_actions(root)
                     return
             else:
@@ -1153,7 +1267,7 @@ def cmd_add(root: Path, parts: list[str]) -> None:
         else:
             warn("These files do not form a single component and would "
                  "break part detection.")
-            if not Confirm.ask("Clean up (delete these files)?", default=True):
+            if not ask_yn("Clean up (delete these files)?", default=True):
                 sys.exit("Cannot continue with stray files in the library root.")
             remove_paths(leftovers)
             say("Cleaned up.")
@@ -1175,9 +1289,9 @@ def cmd_add(root: Path, parts: list[str]) -> None:
                      "component — removing them.")
                 remove_new_entries(root, before)
                 continue
-            process_component(root, comp)
+            process_component(root, comp, part)
         parts = []
-        if not Confirm.ask("Add another component?", default=False):
+        if not ask_yn("Add another component?", default=False):
             break
 
     finish_actions(root)
@@ -1191,8 +1305,7 @@ def cmd_interactive(root: Path) -> None:
     say("No local components found. Choose an option:")
     console.print("  [bold]1[/] - Download JLCPCB parts and create library")
     console.print("  [bold]2[/] - Install existing libraries to KiCad")
-    choice = Prompt.ask("Select", choices=["1", "2"], default="1",
-                        show_choices=False)
+    choice = ask_key("Select", ["1", "2"], "1")
     if choice == "1":
         cmd_add(root, [])
     else:
@@ -1259,7 +1372,7 @@ def offer_cleanup_on_exit() -> None:
         say("Downloaded component files remain in the library repository:")
         for p in leftovers:
             console.print(f"  [dim]{escape(p.name)}[/]")
-        if Confirm.ask("Clean them up before quitting?", default=True):
+        if ask_yn("Clean them up before quitting?", default=True):
             remove_paths(leftovers)
             say("Cleaned up.")
         else:
