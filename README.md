@@ -114,6 +114,15 @@ python3 kibrary_automator.py install
 # ✓ Skip already installed libraries
 ```
 
+### Backfilling Datasheets
+```bash
+# Check every symbol in every library and fill in missing datasheet
+# links (resolved and validated through LCSC; --dry-run to preview)
+python3 fill_datasheets.py [--dry-run]
+```
+New downloads get their datasheet link resolved automatically; this
+script fixes up libraries created before that feature existed.
+
 ### Batch Operations
 ```bash
 # Multiple part numbers in one go
