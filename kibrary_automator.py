@@ -29,11 +29,14 @@ import time
 import zipfile
 from pathlib import Path
 
-APP_NAME      = "kibrary-automator"
-LIB_SUFFIX    = "_KSL"          # suffix appended to new library names
-GH_USER       = "jazari-akuna"  # GitHub username used in package metadata
-MODEL_ENV_VAR = "${KSL_ROOT}"   # KiCad path variable for 3D-model roots
-PYTHON_DEPS   = ("rich", "JLC2KiCadLib")
+APP_NAME    = "kibrary-automator"
+PYTHON_DEPS = ("rich", "JLC2KiCadLib")
+
+# Defaults for the user-tunable settings; override them in the config file
+# (their YAML keys are in parentheses — see `kibrary_automator.py config`).
+LIB_SUFFIX    = "_KSL"          # (lib_suffix)  suffix for new library names
+GH_USER       = "jazari-akuna"  # (github_user) used in package metadata
+MODEL_ENV_VAR = "${KSL_ROOT}"   # (model_var)   KiCad path variable for 3D models
 
 
 # ---------------------------------------------------------------------------
@@ -182,16 +185,46 @@ def load_config() -> dict:
     return cfg
 
 
+SETTING_COMMENTS = {
+    "library_root": "Path to your KiCad library repository",
+    "lib_suffix":   "Suffix appended to new library names",
+    "github_user":  "GitHub username used in package metadata",
+    "model_var":    "KiCad path variable used for 3D-model paths in footprints",
+}
+
+
+def default_settings() -> dict:
+    return {
+        "lib_suffix": LIB_SUFFIX,
+        "github_user": GH_USER,
+        "model_var": MODEL_ENV_VAR,
+    }
+
+
+def apply_settings(cfg: dict) -> None:
+    """Override the default settings with values from the config file."""
+    global LIB_SUFFIX, GH_USER, MODEL_ENV_VAR
+    LIB_SUFFIX    = cfg.get("lib_suffix", LIB_SUFFIX)
+    GH_USER       = cfg.get("github_user", GH_USER)
+    MODEL_ENV_VAR = cfg.get("model_var", MODEL_ENV_VAR)
+
+
 def save_config(cfg: dict) -> None:
+    """Write the config, seeding every tunable so it is visible and editable."""
     path = config_file()
     path.parent.mkdir(parents=True, exist_ok=True)
+    cfg = {**default_settings(), **cfg}
     lines = [
         f"# {APP_NAME} configuration",
         "# Edit freely — one `key: value` per line.",
         "",
     ]
-    lines += [f"{key}: {value}" for key, value in sorted(cfg.items())]
-    path.write_text("\n".join(lines) + "\n")
+    for key in sorted(cfg):
+        if key in SETTING_COMMENTS:
+            lines.append(f"# {SETTING_COMMENTS[key]}")
+        lines.append(f"{key}: {cfg[key]}")
+        lines.append("")
+    path.write_text("\n".join(lines))
     say(f"Configuration saved to {escape(str(path))}")
 
 
@@ -1054,6 +1087,7 @@ def main() -> None:
         argv = ["add"] + argv
 
     args = build_parser().parse_args(argv)
+    apply_settings(load_config())
 
     if args.command == "config":
         cmd_config(args.reset)

@@ -69,7 +69,8 @@ kibrary_automator.py [--library-root PATH] [command]
 - Creates automatic backups before modifications
 
 ### 4. **3D Model Handling**
-- Configures 3D model paths with `${KSL_ROOT}` environment variable
+- Configures 3D model paths with the `${KSL_ROOT}` path variable
+  (changeable via `model_var` in the config file)
 - Maintains proper model references across library structures
 
 ## 📁 Generated Library Structure
@@ -149,20 +150,24 @@ file, created on first run:
 # kibrary-automator configuration
 # Edit freely — one `key: value` per line.
 
+# GitHub username used in package metadata
+github_user: your-username
+
+# Suffix appended to new library names
+lib_suffix: _KSL
+
+# Path to your KiCad library repository
 library_root: /home/you/kicad-shared-libs
+
+# KiCad path variable used for 3D-model paths in footprints
+model_var: ${KSL_ROOT}
 ```
 
-Show it with `kibrary_automator.py config`, change the stored path with
-`kibrary_automator.py config --reset`, or override it for a single run with
-`--library-root PATH`.
-
-For everything else, edit these variables at the top of `kibrary_automator.py`:
-
-```python
-LIB_SUFFIX    = "_KSL"           # Library name suffix
-GH_USER       = "your-username"  # GitHub username for metadata
-MODEL_ENV_VAR = "${KSL_ROOT}"    # 3D model path variable
-```
+Show it with `kibrary_automator.py config`, change the stored library path
+with `kibrary_automator.py config --reset` (or override it for a single run
+with `--library-root PATH`), and edit the other keys directly in the file —
+every setting is written there with its default so there is nothing to
+change in the script itself.
 
 ## 🔍 Interactive Features
 
