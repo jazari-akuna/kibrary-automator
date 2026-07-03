@@ -8,23 +8,20 @@ A Python automation tool that converts JLCPCB component part numbers into proper
 
 ### Prerequisites
 ```bash
-# Install JLC2KiCadLib
-pip install JLC2KiCadLib
-
 # Clone this repository
 git clone https://github.com/your-username/kibrary-automator.git
+
+# JLC2KiCadLib is installed automatically on first use
+# (into a private virtualenv — no system pip needed)
 ```
 
 ### Create Your First Library
 ```bash
-# Navigate to your library workspace
-cd /path/to/your/kicad-shared-libs/
+# Run the automator from anywhere — on first run it asks where your
+# KiCad library repository lives and remembers it from then on
+python3 /path/to/kibrary-automator/kibrary_automator.py add C1525 C25804 R25604
 
-# Run the automator
-python3 /path/to/kibrary-automator/kibrary_automator.py
-
-# When prompted, enter JLCPCB part numbers (space-separated)
-# Example: C1525 C25804 R25604
+# Part numbers can also be entered interactively if omitted.
 
 # Follow the interactive prompts to:
 # - Set component descriptions
@@ -35,8 +32,18 @@ python3 /path/to/kibrary-automator/kibrary_automator.py
 
 ### Install Existing Libraries to KiCad
 ```bash
-# From your library directory
+# From anywhere
 python3 /path/to/kibrary-automator/kibrary_automator.py install
+```
+
+### CLI Reference
+```
+kibrary_automator.py [--library-root PATH] [command]
+
+  add [PART ...]   download JLCPCB parts and add them to a library (default)
+  install          register the repository's libraries in KiCad
+  package          zip the repository for a GitHub release
+  config           show the stored configuration (--reset to change the path)
 ```
 
 ## 🎯 What It Does
@@ -80,21 +87,19 @@ YourLibrary_KSL/
 ## 🔧 Usage Scenarios
 
 ### Creating a New Component Library
-1. Start in your library workspace directory
-2. Run `kibrary_automator.py`
-3. Enter JLCPCB part numbers when prompted
-4. Follow interactive setup for descriptions and references
-5. Choose "Create new library"
-6. Optionally install to KiCad immediately
+1. Run `kibrary_automator.py add C1525 ...` (from anywhere)
+2. Follow interactive setup for descriptions and references
+3. Choose "Create new library"
+4. Optionally install to KiCad immediately
 
 ### Adding to Existing Library
-1. Run `kibrary_automator.py` with new components
+1. Run `kibrary_automator.py add` with new components
 2. Choose existing library from the list
 3. Components are merged automatically
 
 ### Installing Libraries
 ```bash
-# Install all libraries in current directory
+# Install all libraries from your configured library repository
 python3 kibrary_automator.py install
 
 # The script will:
@@ -121,20 +126,39 @@ python3 kibrary_automator.py install
 
 | Installation Type | Configuration Path | Status |
 |------------------|-------------------|---------|
-| **Flatpak** | `~/.var/app/org.kicad.KiCad/config/kicad/` | ✅ Supported |
-| **Regular Install** | `~/.config/kicad/` | ✅ Supported |
+| **Flatpak (Linux)** | `~/.var/app/org.kicad.KiCad/config/kicad/` | ✅ Supported |
+| **Regular Install (Linux)** | `~/.config/kicad/` | ✅ Supported |
+| **macOS** | `~/Library/Preferences/kicad/` | ✅ Supported |
 | **Multiple Versions** | Auto-detected | ✅ Choose target |
 | **Windows** | `%APPDATA%\kicad\` | 🔄 Planned |
-| **macOS** | `~/Library/Preferences/kicad/` | 🔄 Planned |
 
 ## 🎛️ Configuration
 
-Edit these variables in `kibrary_automator.py`:
+The location of your library repository is stored in a human-readable YAML
+file, created on first run:
+
+| Platform | Config file |
+|----------|-------------|
+| **Linux** | `~/.config/kibrary-automator/config.yaml` |
+| **macOS** | `~/Library/Application Support/kibrary-automator/config.yaml` |
+
+```yaml
+# kibrary-automator configuration
+# Edit freely — one `key: value` per line.
+
+library_root: /home/you/kicad-shared-libs
+```
+
+Show it with `kibrary_automator.py config`, change the stored path with
+`kibrary_automator.py config --reset`, or override it for a single run with
+`--library-root PATH`.
+
+For everything else, edit these variables at the top of `kibrary_automator.py`:
 
 ```python
-LIB_SUFFIX = "_KSL"           # Library name suffix
-GH_USER    = "your-username"  # GitHub username for metadata
-ENV_VAR    = "${KSL_ROOT}"    # 3D model path variable
+LIB_SUFFIX    = "_KSL"           # Library name suffix
+GH_USER       = "your-username"  # GitHub username for metadata
+MODEL_ENV_VAR = "${KSL_ROOT}"    # 3D model path variable
 ```
 
 ## 🔍 Interactive Features
@@ -167,10 +191,8 @@ ENV_VAR    = "${KSL_ROOT}"    # 3D model path variable
 # 1. Research components on JLCPCB
 # 2. Copy part numbers: C1525 C25804 R25604
 
-# 3. Generate library
-cd ~/kicad-libraries/
-python3 ~/tools/kibrary_automator.py
-# Enter: C1525 C25804 R25604
+# 3. Generate library (from anywhere — the library location is remembered)
+python3 ~/tools/kibrary_automator.py add C1525 C25804 R25604
 
 # 4. Components automatically:
 #    - Downloaded and converted
@@ -183,24 +205,26 @@ python3 ~/tools/kibrary_automator.py
 ```bash
 # Centralized library repository
 git clone https://github.com/team/kicad-shared-libs.git
-cd kicad-shared-libs/
+# Point the tool at it once
+python3 tools/kibrary_automator.py config --reset
 
 # Install all team libraries
-python3 ../tools/kibrary_automator.py install
+python3 tools/kibrary_automator.py install
 
 # Add new components
-python3 ../tools/kibrary_automator.py
+python3 tools/kibrary_automator.py add
 # Merge into existing team libraries
 
 # Share updates
+cd kicad-shared-libs/
 git add . && git commit -m "Add new components"
 git push
 ```
 
 ## 🛠️ Dependencies
 
-- **Python 3.6+**
-- **JLC2KiCadLib**: Component conversion tool
+- **Python 3.8+** (standard library only)
+- **JLC2KiCadLib**: Component conversion tool (auto-installed into a private venv)
 - **KiCad**: Target installation for libraries
 
 ## 🤝 Contributing
