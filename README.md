@@ -253,6 +253,19 @@ git push
 - **JLC2KiCadLib**: component conversion tool
 - **KiCad**: Target installation for libraries
 
+## 🗑️ Uninstall
+
+```bash
+python3 /path/to/kibrary-automator/uninstall.py        # asks before each removal
+python3 /path/to/kibrary-automator/uninstall.py --yes  # no questions asked
+```
+
+The uninstaller deletes the tool's private virtualenv and configuration
+directory and removes the library entries it registered in KiCad's
+`sym-lib-table` / `fp-lib-table` files (other entries are preserved).
+Your KiCad library repository itself is **never** deleted — your
+libraries stay where they are.
+
 ## 🤝 Contributing
 
 This tool is designed to work with your specific KiCad library workflow. Contributions welcome for:
