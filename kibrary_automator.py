@@ -376,16 +376,31 @@ def _render_symbol(sym_file: Path) -> str:
     top    = sorted((p for p in pins if p["angle"] == 270), key=lambda p: p["x"])
 
     rows = max(len(left), len(right), 1)
+    pairs = [(left[i] if i < len(left) else None,
+              right[i] if i < len(right) else None) for i in range(rows)]
+
+    # Very tall symbols get their middle rows elided so the preview stays
+    # at the top of the screen instead of filling it.
+    max_rows, keep = 24, 10
+    hidden = rows - 2 * keep if rows > max_rows else 0
+    if hidden:
+        pairs = pairs[:keep] + [None] + pairs[-keep:]
+    elision = f"⋮ {hidden} more ⋮" if hidden else ""
+
     lw = max((len(p["name"]) for p in left), default=0)
     rw = max((len(p["name"]) for p in right), default=0)
-    body_w = max(len(name) + 4, 12)
+    body_w = max(len(name) + 4, len(elision) + 2, 12)
     lpw = 4 + 1 + lw + 1               # "{num:>4} {name:>{lw}} "
-    mid = (rows - 1) // 2
+    mid = (len(pairs) - 1) // 2
+    if hidden and pairs[mid] is None:
+        mid += 1
 
     lines = [" " * lpw + "┌" + "─" * body_w + "┐"]
-    for i in range(rows):
-        lp = left[i] if i < len(left) else None
-        rp = right[i] if i < len(right) else None
+    for i, pair in enumerate(pairs):
+        if pair is None:
+            lines.append(" " * lpw + "│" + elision.center(body_w) + "│")
+            continue
+        lp, rp = pair
         ls = (f'{lp["number"]:>4} {lp["name"]:>{lw}} ' if lp else " " * lpw)
         interior = name.center(body_w) if i == mid else " " * body_w
         rs = (f' {rp["name"]:<{rw}} {rp["number"]}' if rp else "")
@@ -437,7 +452,9 @@ def _render_footprint(fp_file: Path, width: int, height: int) -> str:
     s = min((width - 1) / span_x, (height - 1) * 2 / span_y)
     cols = max(int(span_x * s) + 1, 1)
     rows_n = max(int(span_y * s / 2) + 1, 1)
-    grid = [[" "] * cols for _ in range(rows_n)]
+    grid  = [[" "] * cols for _ in range(rows_n)]
+    owner = [[None] * cols for _ in range(rows_n)]  # pad index, or SHARED
+    SHARED = -1
 
     def col(x: float) -> int:
         return min(max(int((x - min_x) * s), 0), cols - 1)
@@ -445,21 +462,47 @@ def _render_footprint(fp_file: Path, width: int, height: int) -> str:
     def row(y: float) -> int:
         return min(max(int((y - min_y) * s / 2), 0), rows_n - 1)
 
-    for p in pads:
+    rects = []
+    for i, p in enumerate(pads):
         c0, c1 = col(p["x"] - p["w"] / 2), col(p["x"] + p["w"] / 2)
         r0, r1 = row(p["y"] - p["h"] / 2), row(p["y"] + p["h"] / 2)
+        rects.append((c0, c1, r0, r1))
         for r in range(r0, r1 + 1):
             for c in range(c0, c1 + 1):
                 grid[r][c] = "▒"
+                owner[r][c] = i if owner[r][c] in (None, i) else SHARED
+
+    # A pad gets its number drawn only on cells it owns exclusively, so
+    # dense footprints show clean pad bars instead of overlapping digits.
+    labelled = set()
+    pin1_labelled = False
+    for i, p in enumerate(pads):
         label = p["num"]
-        if label and (c1 - c0 + 1) >= len(label):
-            rr = (r0 + r1) // 2
-            cc = (c0 + c1 + 1 - len(label)) // 2
-            for k, ch in enumerate(label):
-                grid[rr][cc + k] = ch
+        c0, c1, r0, r1 = rects[i]
+        if not label or (c1 - c0 + 1) < len(label):
+            continue
+        rr = (r0 + r1) // 2
+        cc = (c0 + c1 + 1 - len(label)) // 2
+        cells = [(rr, cc + k) for k in range(len(label))]
+        if any(owner[r][c] != i or (r, c) in labelled for r, c in cells):
+            continue
+        for (r, c), ch in zip(cells, label):
+            grid[r][c] = ch
+        labelled.update(cells)
+        if label == "1":
+            pin1_labelled = True
+
+    footer = f"{len(pads)} pads · {span_x:.1f} × {span_y:.1f} mm"
+    pin1 = next((p for p in pads if p["num"] == "1"), None)
+    if pin1 and not pin1_labelled:
+        fx = (pin1["x"] - min_x) / span_x
+        fy = (pin1["y"] - min_y) / span_y  # footprint +y points down
+        horiz = "left" if fx < 1 / 3 else "right" if fx > 2 / 3 else "center"
+        vert = "top" if fy < 1 / 3 else "bottom" if fy > 2 / 3 else "middle"
+        footer += f" · pin 1: {vert} {horiz}"
 
     canvas = "\n".join("".join(r).rstrip() for r in grid)
-    return f"{canvas}\n\n{span_x:.1f} × {span_y:.1f} mm"
+    return f"{canvas}\n\n{footer}"
 
 
 def show_component_preview(comp: dict) -> None:
@@ -467,7 +510,9 @@ def show_component_preview(comp: dict) -> None:
     sym_view = Text(render_symbol(comp["sym"]))
     fp_file = next((f for f in sorted(comp["pretty"].iterdir())
                     if f.suffix == ".kicad_mod"), None)
-    fp_view = Text(render_footprint(fp_file) if fp_file else "(no footprint)")
+    fp_width = max(30, min(64, console.width // 2 - 12))
+    fp_view = Text(render_footprint(fp_file, width=fp_width)
+                   if fp_file else "(no footprint)")
 
     console.clear()
     console.print(Columns([
