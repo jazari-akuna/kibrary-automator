@@ -8,11 +8,11 @@ A Python automation tool that converts JLCPCB component part numbers into proper
 
 ### Prerequisites
 ```bash
-# Clone this repository
+# Clone this repository — that's it.
 git clone https://github.com/your-username/kibrary-automator.git
 
-# JLC2KiCadLib is installed automatically on first use
-# (into a private virtualenv — no system pip needed)
+# On first launch the script sets up everything it needs by itself:
+# a private virtualenv with Rich (interface) and JLC2KiCadLib (downloads).
 ```
 
 ### Create Your First Library
@@ -23,11 +23,14 @@ python3 /path/to/kibrary-automator/kibrary_automator.py add C1525 C25804 R25604
 
 # Part numbers can also be entered interactively if omitted.
 
-# Follow the interactive prompts to:
+# For each part, a preview of the schematic symbol (pin names and
+# numbers) and the footprint (pad layout) is shown at the top of the
+# screen while you answer the prompts:
 # - Set component descriptions
 # - Choose reference designators  
 # - Create new library or merge into existing
-# - Install to KiCad automatically
+# When a component is done you can add another one or quit, then
+# optionally install to KiCad and package a release zip.
 ```
 
 ### Install Existing Libraries to KiCad
@@ -163,6 +166,22 @@ MODEL_ENV_VAR = "${KSL_ROOT}"    # 3D model path variable
 
 ## 🔍 Interactive Features
 
+### Component Preview
+After each part is downloaded, the schematic symbol (pin names and pin
+numbers, left) and the footprint (pad layout with pad numbers and
+dimensions, right) are rendered at the top of the screen:
+
+```
+ ┌ Schematic symbol ──────────────────┐  ┌ Footprint — SOIC-8 ─────────────┐
+ │            ┌────────────┐          │  │  ▒▒▒▒1▒▒▒▒         ▒▒▒▒8▒▒▒▒    │
+ │   1    GND ┤            ├ CTRL  5  │  │  ▒▒▒▒2▒▒▒▒         ▒▒▒▒7▒▒▒▒    │
+ │   2   TRIG ┤  NE555DR   ├ THR   6  │  │  ▒▒▒▒3▒▒▒▒         ▒▒▒▒6▒▒▒▒    │
+ │   3    OUT ┤            ├ DISCH 7  │  │  ▒▒▒▒4▒▒▒▒         ▒▒▒▒5▒▒▒▒    │
+ │   4 ~RESET ┤            ├ VCC   8  │  │                                 │
+ │            └────────────┘          │  │  6.6 × 4.4 mm                   │
+ └────────────────────────────────────┘  └─────────────────────────────────┘
+```
+
 ### Smart Menus
 - **No components found**: Choose between downloading new parts or installing existing libraries
 - **Multiple KiCad installs**: Select target installation
@@ -223,8 +242,10 @@ git push
 
 ## 🛠️ Dependencies
 
-- **Python 3.8+** (standard library only)
-- **JLC2KiCadLib**: Component conversion tool (auto-installed into a private venv)
+- **Python 3.8+** — everything else is installed automatically on first
+  launch into a private virtualenv:
+- **Rich**: terminal interface (prompts, panels, component previews)
+- **JLC2KiCadLib**: component conversion tool
 - **KiCad**: Target installation for libraries
 
 ## 🤝 Contributing

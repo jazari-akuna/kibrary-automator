@@ -5,6 +5,10 @@ Run it from anywhere: the location of your KiCad library repository is asked
 once on first run and remembered in a human-readable YAML config file
 (see `kibrary_automator.py config` for its location).
 
+On first launch the script sets up everything it needs by itself: a private
+virtualenv containing Rich (for the interface) and JLC2KiCadLib (for the
+downloads), then re-executes inside it. No manual installation required.
+
 Subcommands:
   add [PART ...]   download JLCPCB parts and add them to a library (default)
   install          register the repository's libraries in KiCad
@@ -29,10 +33,11 @@ APP_NAME      = "kibrary-automator"
 LIB_SUFFIX    = "_KSL"          # suffix appended to new library names
 GH_USER       = "jazari-akuna"  # GitHub username used in package metadata
 MODEL_ENV_VAR = "${KSL_ROOT}"   # KiCad path variable for 3D-model roots
+PYTHON_DEPS   = ("rich", "JLC2KiCadLib")
 
 
 # ---------------------------------------------------------------------------
-# Configuration file (flat key/value YAML, no external dependencies)
+# Well-known paths
 # ---------------------------------------------------------------------------
 
 def config_dir() -> Path:
@@ -52,6 +57,114 @@ def data_dir() -> Path:
 def config_file() -> Path:
     return config_dir() / "config.yaml"
 
+
+def venv_dir() -> Path:
+    return data_dir() / "venv"
+
+
+def venv_binary(name: str) -> Path:
+    if os.name == "nt":
+        return venv_dir() / "Scripts" / f"{name}.exe"
+    return venv_dir() / "bin" / name
+
+
+# ---------------------------------------------------------------------------
+# First-launch bootstrap: create the private venv, install every dependency
+# (Rich + JLC2KiCadLib), then re-execute this script inside it.
+# ---------------------------------------------------------------------------
+
+def _run_or_die(cmd: list[str], what: str) -> None:
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"→ Error while {what}:")
+        print(result.stderr)
+        if sys.platform.startswith("linux"):
+            print("→ On Debian/Ubuntu you may need:")
+            print("→   sudo apt install python3-venv python3-pip")
+        sys.exit(1)
+
+
+def _install_environment(stamp: Path, want: str) -> None:
+    venv = venv_dir()
+    python = venv_binary("python")
+    print(f"First launch: setting up the {APP_NAME} environment.")
+
+    if not python.is_file():
+        print(f"→ Creating virtual environment at {venv} ...")
+        venv.parent.mkdir(parents=True, exist_ok=True)
+        _run_or_die([sys.executable, "-m", "venv", str(venv)],
+                    "creating the virtual environment")
+
+    print("→ Ensuring pip is available...")
+    subprocess.run([str(python), "-m", "ensurepip", "--upgrade"],
+                   capture_output=True, text=True)
+
+    print(f"→ Installing {', '.join(PYTHON_DEPS)} (one-time, may take a minute)...")
+    _run_or_die([str(python), "-m", "pip", "install", "--quiet", *PYTHON_DEPS],
+                "installing dependencies")
+
+    if not venv_binary("JLC2KiCadLib").is_file():
+        sys.exit("→ JLC2KiCadLib executable missing after install — "
+                 f"delete {venv} and try again.")
+    stamp.write_text(want)
+    print("→ Environment ready!\n")
+
+
+def _bootstrap() -> None:
+    """Make sure we are running inside the app venv with all dependencies."""
+    if sys.version_info < (3, 8):
+        sys.exit(f"{APP_NAME} needs Python 3.8 or newer.")
+    if os.environ.get("KIBRARY_BOOTSTRAPPED") == "1":
+        return
+
+    stamp = venv_dir() / ".deps"
+    want = ",".join(PYTHON_DEPS)
+    python = venv_binary("python")
+    if not (python.is_file() and stamp.is_file()
+            and stamp.read_text().strip() == want):
+        _install_environment(stamp, want)
+
+    env = dict(os.environ, KIBRARY_BOOTSTRAPPED="1")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    argv = [str(python), str(Path(__file__).resolve()), *sys.argv[1:]]
+    if os.name == "nt":
+        # os.exec* on Windows spawns rather than replaces and mishandles
+        # quoting — run the venv python as a child process instead.
+        sys.exit(subprocess.run(argv, env=env).returncode)
+    os.execve(str(python), argv, env)
+
+
+if __name__ == "__main__":
+    _bootstrap()
+
+try:
+    from rich.columns import Columns          # noqa: E402
+    from rich.console import Console          # noqa: E402
+    from rich.markup import escape            # noqa: E402
+    from rich.panel import Panel              # noqa: E402
+    from rich.prompt import Confirm, Prompt   # noqa: E402
+    from rich.text import Text                # noqa: E402
+except ModuleNotFoundError:
+    if os.environ.get("KIBRARY_BOOTSTRAPPED") == "1":
+        sys.exit(f"The {APP_NAME} environment is broken — "
+                 f"delete {venv_dir()} and relaunch to reinstall.")
+    raise
+
+console = Console(highlight=False)
+
+
+def say(msg: str) -> None:
+    console.print(f"[bold cyan]→[/] {msg}")
+
+
+def warn(msg: str) -> None:
+    console.print(f"[bold yellow]![/] {msg}")
+
+
+# ---------------------------------------------------------------------------
+# Configuration file (flat key/value YAML, no extra dependencies)
+# ---------------------------------------------------------------------------
 
 def load_config() -> dict:
     """Read the config file. Only flat `key: value` pairs are supported."""
@@ -79,25 +192,27 @@ def save_config(cfg: dict) -> None:
     ]
     lines += [f"{key}: {value}" for key, value in sorted(cfg.items())]
     path.write_text("\n".join(lines) + "\n")
-    print(f"→ Configuration saved to {path}")
+    say(f"Configuration saved to {escape(str(path))}")
 
 
 def prompt_for_library_root() -> Path:
-    print("\nWhere is your KiCad library repository?")
-    print("(the folder that holds — or will hold — your *_KSL libraries)")
+    console.print()
+    say("Where is your KiCad library repository?")
+    console.print("  [dim](the folder that holds — or will hold — "
+                  f"your *{LIB_SUFFIX} libraries)[/]")
     while True:
-        raw = input("Library path: ").strip()
+        raw = Prompt.ask("Library path").strip()
         if not raw:
-            print("→ Please enter a path.")
+            warn("Please enter a path.")
             continue
         root = Path(raw).expanduser().resolve()
         if root.is_dir():
             return root
         if root.exists():
-            print(f"→ {root} exists but is not a directory.")
+            warn(f"{escape(str(root))} exists but is not a directory.")
             continue
-        ans = input(f"→ {root} does not exist. Create it? [y/N]: ").lower()
-        if ans == "y":
+        if Confirm.ask(f"{escape(str(root))} does not exist. Create it?",
+                       default=False):
             root.mkdir(parents=True)
             return root
 
@@ -116,7 +231,7 @@ def resolve_library_root(override: str | None) -> Path:
         root = Path(stored).expanduser()
         if root.is_dir():
             return root
-        print(f"→ Configured library path no longer exists: {root}")
+        warn(f"Configured library path no longer exists: {escape(str(root))}")
 
     root = prompt_for_library_root()
     cfg["library_root"] = str(root)
@@ -125,140 +240,247 @@ def resolve_library_root(override: str | None) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# JLC2KiCadLib management (installed into a private virtualenv)
+# S-expression parsing (KiCad symbol and footprint files)
 # ---------------------------------------------------------------------------
 
-def jlc_venv_dir() -> Path:
-    return data_dir() / "jlc_venv"
+_TOKEN_RE = re.compile(r'"(?:[^"\\]|\\.)*"|[()]|[^\s()"]+')
 
 
-def venv_binary(venv: Path, name: str) -> Path:
-    return venv / ("Scripts" if os.name == "nt" else "bin") / name
+def parse_sexp(text: str):
+    """Parse a KiCad s-expression file into nested lists of strings."""
+    tokens = _TOKEN_RE.findall(text)
+    pos = 0
+
+    def parse():
+        nonlocal pos
+        tok = tokens[pos]
+        pos += 1
+        if tok == "(":
+            node = []
+            while pos < len(tokens) and tokens[pos] != ")":
+                node.append(parse())
+            pos += 1  # consume ")"
+            return node
+        if tok == ")":
+            raise ValueError("unbalanced parenthesis")
+        if tok.startswith('"'):
+            return tok[1:-1].replace('\\"', '"')
+        return tok
+
+    return parse()
 
 
-def find_jlc2kicadlib(root: Path) -> Path | None:
-    """Return a working JLC2KiCadLib executable, or None.
+def sexp_first(node: list, tag: str) -> list | None:
+    return next((c for c in node
+                 if isinstance(c, list) and c and c[0] == tag), None)
 
-    Checks the app-owned venv first, then a legacy `.jlc_venv` created by
-    older versions of this script inside the library repository.
-    """
-    candidates = [
-        venv_binary(jlc_venv_dir(), "JLC2KiCadLib"),
-        venv_binary(root / ".jlc_venv", "JLC2KiCadLib"),
-    ]
-    for exe in candidates:
-        if not exe.is_file():
+
+def sexp_find_all(node: list, tag: str) -> list[list]:
+    found = []
+    for c in node:
+        if isinstance(c, list):
+            if c and c[0] == tag:
+                found.append(c)
+            found.extend(sexp_find_all(c, tag))
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Component preview (schematic symbol + footprint, rendered as text)
+# ---------------------------------------------------------------------------
+
+def extract_pins(symbol_node: list) -> list[dict]:
+    pins, seen = [], set()
+    for p in sexp_find_all(symbol_node, "pin"):
+        at = sexp_first(p, "at")
+        if not at or len(at) < 3:
             continue
-        try:
-            result = subprocess.run([str(exe), "--version"],
-                                    capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                return exe
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    return None
+        name_node = sexp_first(p, "name")
+        num_node  = sexp_first(p, "number")
+        number = num_node[1] if num_node and len(num_node) > 1 else "?"
+        if number in seen:  # alternate units share pin numbers
+            continue
+        seen.add(number)
+        name = name_node[1] if name_node and len(name_node) > 1 else ""
+        pins.append({
+            "name": "" if name == "~" else name,
+            "number": number,
+            "x": float(at[1]),
+            "y": float(at[2]),
+            "angle": (round(float(at[3])) % 360) if len(at) > 3 else 0,
+        })
+    return pins
 
 
-def install_jlc2kicadlib() -> bool:
-    """Create the private venv (if needed) and pip-install JLC2KiCadLib."""
-    venv = jlc_venv_dir()
-    python = venv_binary(venv, "python")
-
-    print(f"\n→ Installing JLC2KiCadLib into {venv} ...")
+def render_symbol(sym_file: Path) -> str:
+    """Draw the schematic symbol as a pin-labelled text box."""
     try:
-        if not venv.is_dir():
-            print("→ Creating virtual environment...")
-            result = subprocess.run([sys.executable, "-m", "venv", str(venv)],
-                                    capture_output=True, text=True)
-            if result.returncode != 0:
-                print("→ Error creating venv:")
-                print(result.stderr)
-                return False
-
-        if not python.is_file():
-            print(f"→ Error: python not found at {python}")
-            print(f"→ The venv may be corrupted. Delete {venv} and try again.")
-            return False
-
-        print("→ Ensuring pip is available...")
-        result = subprocess.run([str(python), "-m", "ensurepip", "--upgrade"],
-                                capture_output=True, text=True)
-        if result.returncode != 0:
-            print("→ Warning: ensurepip failed, trying to continue anyway")
-            print(result.stderr)
-
-        print("→ Installing JLC2KiCadLib (this may take a minute)...")
-        result = subprocess.run([str(python), "-m", "pip", "install", "JLC2KiCadLib"],
-                                capture_output=True, text=True)
-        if result.returncode != 0:
-            print("→ Error installing JLC2KiCadLib:")
-            print(result.stderr)
-            return False
-
-        print("→ JLC2KiCadLib installed successfully!")
-        return True
-    except Exception as e:
-        print(f"→ Unexpected error during installation: {e}")
-        if sys.platform.startswith("linux"):
-            print("→ You may need the venv module first:")
-            print("→   sudo apt install python3-venv python3-pip")
-        else:
-            print("→ Make sure your Python installation includes the venv module.")
-        print("→ Then try running this script again.")
-        return False
+        return _render_symbol(sym_file)
+    except Exception:
+        return "(symbol preview unavailable)"
 
 
-def ensure_jlc2kicadlib(root: Path) -> Path:
-    """Return the JLC2KiCadLib executable, offering to install it if missing."""
-    exe = find_jlc2kicadlib(root)
-    if exe:
-        print(f"→ JLC2KiCadLib found at: {exe}")
-        return exe
+def _render_symbol(sym_file: Path) -> str:
+    tree = parse_sexp(sym_file.read_text())
+    sym = sexp_first(tree, "symbol")
+    if not sym or len(sym) < 2:
+        return "(no symbol found)"
+    name = sym[1]
+    pins = extract_pins(sym)
+    if not pins:
+        return f"{name}\n(no pins)"
 
-    print("→ JLC2KiCadLib is required but not installed.")
-    ans = input("→ Install JLC2KiCadLib now? [Y/n]: ").lower()
-    if ans and ans != "y":
-        sys.exit("Cannot proceed without JLC2KiCadLib. Exiting.")
-    if not install_jlc2kicadlib():
-        sys.exit(1)
-    exe = find_jlc2kicadlib(root)
-    if not exe:
-        sys.exit("Installation verification failed. Please check the venv setup.")
-    print(f"→ JLC2KiCadLib is now installed at: {exe}")
-    return exe
+    # KiCad pin angle = direction the pin points, toward the body:
+    # 0 → body to the right (pin on the left side), 180 → right side,
+    # 90 → bottom, 270 → top.
+    left   = sorted((p for p in pins if p["angle"] == 0),   key=lambda p: -p["y"])
+    right  = sorted((p for p in pins if p["angle"] == 180), key=lambda p: -p["y"])
+    bottom = sorted((p for p in pins if p["angle"] == 90),  key=lambda p: p["x"])
+    top    = sorted((p for p in pins if p["angle"] == 270), key=lambda p: p["x"])
+
+    rows = max(len(left), len(right), 1)
+    lw = max((len(p["name"]) for p in left), default=0)
+    rw = max((len(p["name"]) for p in right), default=0)
+    body_w = max(len(name) + 4, 12)
+    lpw = 4 + 1 + lw + 1               # "{num:>4} {name:>{lw}} "
+    mid = (rows - 1) // 2
+
+    lines = [" " * lpw + "┌" + "─" * body_w + "┐"]
+    for i in range(rows):
+        lp = left[i] if i < len(left) else None
+        rp = right[i] if i < len(right) else None
+        ls = (f'{lp["number"]:>4} {lp["name"]:>{lw}} ' if lp else " " * lpw)
+        interior = name.center(body_w) if i == mid else " " * body_w
+        rs = (f' {rp["name"]:<{rw}} {rp["number"]}' if rp else "")
+        lines.append(ls + ("┤" if lp else "│") + interior
+                     + ("├" if rp else "│") + rs)
+    lines.append(" " * lpw + "└" + "─" * body_w + "┘")
+
+    if top:
+        lines.insert(0, "  ▲ top: "
+                     + "  ".join(f'{p["number"]}:{p["name"] or "~"}' for p in top))
+    if bottom:
+        lines.append("  ▼ bottom: "
+                     + "  ".join(f'{p["number"]}:{p["name"] or "~"}' for p in bottom))
+    return "\n".join(lines)
+
+
+def render_footprint(fp_file: Path, width: int = 34, height: int = 13) -> str:
+    """Draw the footprint's pads on a scaled text canvas."""
+    try:
+        return _render_footprint(fp_file, width, height)
+    except Exception:
+        return "(footprint preview unavailable)"
+
+
+def _render_footprint(fp_file: Path, width: int, height: int) -> str:
+    tree = parse_sexp(fp_file.read_text())
+    pads = []
+    for p in sexp_find_all(tree, "pad"):
+        at, size = sexp_first(p, "at"), sexp_first(p, "size")
+        if not at or not size or len(at) < 3 or len(size) < 3:
+            continue
+        w, h = float(size[1]), float(size[2])
+        rot = round(float(at[3])) if len(at) > 3 else 0
+        if rot % 180 == 90:
+            w, h = h, w
+        pads.append({"num": str(p[1]) if len(p) > 1 else "",
+                     "x": float(at[1]), "y": float(at[2]), "w": w, "h": h})
+    if not pads:
+        return "(no pads found)"
+
+    min_x = min(p["x"] - p["w"] / 2 for p in pads)
+    max_x = max(p["x"] + p["w"] / 2 for p in pads)
+    min_y = min(p["y"] - p["h"] / 2 for p in pads)
+    max_y = max(p["y"] + p["h"] / 2 for p in pads)
+    span_x = max(max_x - min_x, 0.01)
+    span_y = max(max_y - min_y, 0.01)
+
+    # columns per mm; character cells are ~twice as tall as wide
+    s = min((width - 1) / span_x, (height - 1) * 2 / span_y)
+    cols = max(int(span_x * s) + 1, 1)
+    rows_n = max(int(span_y * s / 2) + 1, 1)
+    grid = [[" "] * cols for _ in range(rows_n)]
+
+    def col(x: float) -> int:
+        return min(max(int((x - min_x) * s), 0), cols - 1)
+
+    def row(y: float) -> int:
+        return min(max(int((y - min_y) * s / 2), 0), rows_n - 1)
+
+    for p in pads:
+        c0, c1 = col(p["x"] - p["w"] / 2), col(p["x"] + p["w"] / 2)
+        r0, r1 = row(p["y"] - p["h"] / 2), row(p["y"] + p["h"] / 2)
+        for r in range(r0, r1 + 1):
+            for c in range(c0, c1 + 1):
+                grid[r][c] = "▒"
+        label = p["num"]
+        if label and (c1 - c0 + 1) >= len(label):
+            rr = (r0 + r1) // 2
+            cc = (c0 + c1 + 1 - len(label)) // 2
+            for k, ch in enumerate(label):
+                grid[rr][cc + k] = ch
+
+    canvas = "\n".join("".join(r).rstrip() for r in grid)
+    return f"{canvas}\n\n{span_x:.1f} × {span_y:.1f} mm"
+
+
+def show_component_preview(comp: dict) -> None:
+    """Clear the screen and show symbol + footprint at the top."""
+    sym_view = Text(render_symbol(comp["sym"]))
+    fp_file = next((f for f in sorted(comp["pretty"].iterdir())
+                    if f.suffix == ".kicad_mod"), None)
+    fp_view = Text(render_footprint(fp_file) if fp_file else "(no footprint)")
+
+    console.clear()
+    console.print(Columns([
+        Panel(sym_view, title="Schematic symbol", border_style="cyan",
+              padding=(1, 2)),
+        Panel(fp_view, title=f"Footprint — {fp_file.stem}" if fp_file
+              else "Footprint", border_style="magenta", padding=(1, 2)),
+    ]))
+    console.print()
 
 
 # ---------------------------------------------------------------------------
 # Part download and raw-asset organization
 # ---------------------------------------------------------------------------
 
-def download_parts(parts: list[str], jlc_exe: Path, root: Path,
-                   retries: int = 3, delay: int = 2) -> tuple[list, list]:
-    """Download each part into the library root, retrying per part.
+def jlc_executable() -> Path:
+    exe = venv_binary("JLC2KiCadLib")
+    if not exe.is_file():
+        sys.exit(f"JLC2KiCadLib missing from the app environment — "
+                 f"delete {venv_dir()} and relaunch to reinstall.")
+    return exe
 
-    Returns (succeeded, failed) lists of part numbers.
-    """
-    succeeded, failed = [], []
-    for part in parts:
-        cmd = [str(jlc_exe), part,
-               "-dir", ".", "-symbol_lib_dir", ".", "-footprint_lib", ".",
-               "-model_dir", "."]
-        ok = False
+
+def download_part(part: str, jlc_exe: Path, root: Path,
+                  retries: int = 3, delay: int = 2) -> bool:
+    """Download one part into the library root, with retries."""
+    cmd = [str(jlc_exe), part,
+           "-dir", ".", "-symbol_lib_dir", ".", "-footprint_lib", ".",
+           "-model_dir", "."]
+    last = None
+    ok = False
+    with console.status(f"Downloading {part}..."):
         for attempt in range(1, retries + 1):
-            try:
-                subprocess.check_call(cmd, cwd=root)
+            result = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
+            if result.returncode == 0:
                 ok = True
                 break
-            except subprocess.CalledProcessError:
-                if attempt < retries:
-                    print(f"→ {part}: attempt {attempt}/{retries} failed, "
-                          f"retrying in {delay}s...")
-                    time.sleep(delay)
-                else:
-                    print(f"→ {part}: all {retries} attempts failed "
-                          "(JLC2KiCadLib API error)")
-        (succeeded if ok else failed).append(part)
-    return succeeded, failed
+            last = result
+            if attempt < retries:
+                time.sleep(delay)
+    if ok:
+        console.print(f"[green]✓[/] {part} downloaded")
+        return True
+    console.print(f"[red]✗[/] {part}: all {retries} attempts failed "
+                  "(JLC2KiCadLib error)")
+    if last and last.stderr:
+        tail = last.stderr.strip().splitlines()[-3:]
+        for ln in tail:
+            console.print(f"  [dim]{escape(ln)}[/]")
+    return False
 
 
 def wrap_assets(root: Path) -> None:
@@ -289,8 +511,17 @@ def find_local_component(root: Path) -> dict | None:
     return comp
 
 
+def remove_new_entries(root: Path, before: set) -> None:
+    """Delete entries created in the library root since the snapshot."""
+    for entry in set(root.iterdir()) - before:
+        if entry.is_dir():
+            shutil.rmtree(entry)
+        elif entry.is_file():
+            entry.unlink()
+
+
 def cleanup_downloads(comp: dict) -> None:
-    print("Cleaning up…")
+    say("Cleaning up…")
     if comp["sym"].is_file():
         comp["sym"].unlink()
     if comp["pretty"].is_dir():
@@ -313,7 +544,7 @@ def edit_symbol_description(sym_file: Path) -> None:
          if (m := re.match(r'\s*\(property\s+"Description"\s+"([^"]*)"', ln))),
         ""
     )
-    ans = input(f"Component description [{curr}]: ").strip() or curr
+    ans = Prompt.ask("Component description", default=curr).strip() or curr
 
     # If a Description property exists, replace it in place.
     if any('(property "Description"' in ln for ln in lines):
@@ -324,7 +555,7 @@ def edit_symbol_description(sym_file: Path) -> None:
                             f'(property "Description" "{ans}"', ln)
             out.append(ln)
         sym_file.write_text("\n".join(out) + "\n")
-        print(f"→ Description set to: {ans}")
+        say(f"Description set to: {escape(ans)}")
         return
 
     # Otherwise insert one at the end of the first (symbol …) block.
@@ -364,7 +595,7 @@ def edit_symbol_description(sym_file: Path) -> None:
     ]
     out = lines[:end] + block + lines[end:]
     sym_file.write_text("\n".join(out) + "\n")
-    print(f"→ Description set to: {ans}")
+    say(f"Description set to: {escape(ans)}")
 
 
 def set_default_designator(sym_file: Path) -> None:
@@ -375,8 +606,8 @@ def set_default_designator(sym_file: Path) -> None:
          if (m := re.match(r'\s*\(property\s+"Reference"\s+"([^"]+)"', ln))),
         ""
     )
-    ans = input(f"Default reference [{cur}]: ").strip().upper()
-    new = ans or cur
+    raw = Prompt.ask("Default reference", default=cur)
+    new = cur if raw == cur else raw.strip().upper()
     if new and not new.endswith("?"):
         new += "?"
     out = []
@@ -386,7 +617,7 @@ def set_default_designator(sym_file: Path) -> None:
                         f'(property "Reference" "{new}"', ln)
         out.append(ln)
     sym_file.write_text("\n".join(out) + "\n")
-    print(f"→ Reference set to: {new}")
+    say(f"Reference set to: {escape(new)}")
 
 
 def update_symbol_paths(sym_file: Path, lib_name: str, model_dir: Path | None) -> None:
@@ -442,45 +673,41 @@ def list_libraries(root: Path) -> list[str]:
     )
 
 
-def check_duplicate(root: Path, comp: dict) -> None:
+def check_duplicate(root: Path, comp: dict) -> bool:
+    """Return False (after cleaning up) if the user declines a duplicate."""
     lines = comp["sym"].read_text().splitlines()
     name = next((re.match(r'\(symbol\s+"([^"]+)"', ln.lstrip()).group(1)
                  for ln in lines if ln.lstrip().startswith("(symbol ")), None)
     if not name:
-        return
+        return True
     for lib in list_libraries(root):
         lib_sym = root / lib / f"{lib}.kicad_sym"
         if f'(symbol "{name}"' in lib_sym.read_text():
-            ans = input(f"Component {name} exists in '{lib}'. "
-                        "Add anyway? [y/N]: ").lower()
-            if ans != "y":
-                print("→ Aborting.")
-                cleanup_downloads(comp)
-                sys.exit(0)
-            return
+            if Confirm.ask(f"Component {escape(name)} exists in "
+                           f"'{escape(lib)}'. Add anyway?", default=False):
+                return True
+            say("Skipping this component.")
+            cleanup_downloads(comp)
+            return False
+    return True
 
 
 def choose_library(root: Path) -> str | None:
     """Pick an existing library to merge into, or None to create a new one."""
     libs = list_libraries(root)
-    choices = ["Create new library"] + libs
-    print("\nAdd to an existing library or create a new one:")
-    for i, name in enumerate(choices, 1):
-        print(f" {i} - {name}")
-    sel = input("Select [1]: ").strip()
-    if not sel or not sel.isdigit():
-        return None
+    console.print()
+    say("Add to an existing library or create a new one:")
+    console.print("  [bold]1[/] - Create new library")
+    for i, name in enumerate(libs, 2):
+        console.print(f"  [bold]{i}[/] - {escape(name)}")
+    sel = Prompt.ask("Select", choices=[str(i) for i in range(1, len(libs) + 2)],
+                     default="1", show_choices=False)
     idx = int(sel)
-    if idx < 1 or idx > len(choices):
-        print("Invalid choice → defaulting to create new")
-        return None
-    if idx == 1:
-        return None
-    return libs[idx - 2]
+    return None if idx == 1 else libs[idx - 2]
 
 
 def merge_into(root: Path, lib: str, comp: dict) -> None:
-    print(f"Merging '{comp['sym'].name}' into '{lib}'")
+    say(f"Merging '{escape(comp['sym'].name)}' into '{escape(lib)}'")
     lib_dir = root / lib
     lib_sym = lib_dir / f"{lib}.kicad_sym"
     lines = lib_sym.read_text().splitlines()
@@ -508,12 +735,12 @@ def merge_into(root: Path, lib: str, comp: dict) -> None:
 
     update_symbol_paths(lib_sym, lib, dst_3d)
     update_footprint_3d_paths(dst_fp, dst_3d)
-    print("→ Merge done.")
+    say("Merge done.")
 
 
 def create_library(root: Path, comp: dict) -> None:
     default = comp["sym"].stem + LIB_SUFFIX
-    name = input(f"Library name [{default}]: ").strip() or default
+    name = Prompt.ask("Library name", default=default).strip() or default
     if not name.endswith(LIB_SUFFIX):
         name += LIB_SUFFIX
 
@@ -532,7 +759,7 @@ def create_library(root: Path, comp: dict) -> None:
     update_symbol_paths(dst_sym, name, dst_models)
     update_footprint_3d_paths(dst_fp, dst_models)
 
-    lib_desc = input(f"Library description [{name}]: ").strip() or name
+    lib_desc = Prompt.ask("Library description", default=name).strip() or name
     meta = {
         "$schema": "https://go.kicad.org/pcm/schemas/v1",
         "name": name, "description": lib_desc,
@@ -553,11 +780,11 @@ def create_library(root: Path, comp: dict) -> None:
     if repo_json.is_file():
         repo = json.loads(repo_json.read_text())
     else:
-        print("repository.json not found → creating new one")
+        say("repository.json not found → creating new one")
         repo = {"packages": []}
     repo.setdefault("packages", []).append({"path": f"{name}/metadata.json"})
     repo_json.write_text(json.dumps(repo, indent=2))
-    print(f"→ Created library '{name}'.")
+    say(f"Created library '{escape(name)}'.")
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +827,7 @@ def backup_library_table(table_path: Path) -> None:
     backup = table_path.with_name(table_path.name + ".backup")
     if not backup.exists():
         shutil.copy2(table_path, backup)
-        print(f"→ Backup created: {backup}")
+        say(f"Backup created: {escape(str(backup))}")
 
 
 def add_library_to_table(table_path: Path, lib_name: str, lib_uri: Path,
@@ -610,41 +837,39 @@ def add_library_to_table(table_path: Path, lib_name: str, lib_uri: Path,
 
     lines = table_path.read_text().splitlines(keepends=True)
     if any(f'(name "{lib_name}")' in ln for ln in lines):
-        print(f"→ Library '{lib_name}' already exists in {table_path.name}")
+        say(f"Library '{escape(lib_name)}' already exists in {table_path.name}")
         return False
 
     if not lines or lines[-1].strip() != ")":
-        print(f"→ Error: Malformed {table_path.name} file")
+        warn(f"Error: Malformed {table_path.name} file")
         return False
 
     entry = (f'  (lib (name "{lib_name}")(type "KiCad")(uri "{lib_uri}")'
              f'(options "")(descr "{lib_desc}"))\n')
     lines.insert(-1, entry)
     table_path.write_text("".join(lines))
-    print(f"→ Added '{lib_name}' to {table_path.name}")
+    say(f"Added '{escape(lib_name)}' to {table_path.name}")
     return True
 
 
 def choose_kicad_installation(configs: list[dict]) -> dict | None:
-    print("\nDetected KiCad installations:")
+    console.print()
+    say("Detected KiCad installations:")
     for i, cfg in enumerate(configs, 1):
-        print(f" {i} - {cfg['type']} KiCad {cfg['version']} ({cfg['config_dir']})")
+        console.print(f"  [bold]{i}[/] - {cfg['type']} KiCad {cfg['version']} "
+                      f"[dim]({escape(str(cfg['config_dir']))})[/]")
 
     if len(configs) == 1:
         cfg = configs[0]
-        ans = input(f"Install libraries to {cfg['type']} KiCad "
-                    f"{cfg['version']}? [Y/n]: ").lower()
-        if ans and ans != "y":
-            print("→ Installation cancelled.")
+        if not Confirm.ask(f"Install libraries to {cfg['type']} KiCad "
+                           f"{cfg['version']}?", default=True):
+            say("Installation cancelled.")
             return None
         return cfg
 
-    sel = input("Select installation [1]: ").strip()
-    if not sel:
-        return configs[0]
-    if not sel.isdigit() or not 1 <= int(sel) <= len(configs):
-        print("→ Invalid choice")
-        return None
+    sel = Prompt.ask("Select installation",
+                     choices=[str(i) for i in range(1, len(configs) + 1)],
+                     default="1", show_choices=False)
     return configs[int(sel) - 1]
 
 
@@ -652,19 +877,19 @@ def install_libraries_to_kicad(root: Path) -> None:
     """Register every library in the repo with the chosen KiCad install."""
     configs = detect_kicad_installations()
     if not configs:
-        print("→ No KiCad installation detected.")
+        warn("No KiCad installation detected.")
         return
 
     selected = choose_kicad_installation(configs)
     if not selected:
         return
-    print(f"→ Installing to {selected['type']} KiCad {selected['version']}")
+    say(f"Installing to {selected['type']} KiCad {selected['version']}")
 
     libs = list_libraries(root)
     if not libs:
-        print(f"→ No libraries found in {root}")
+        warn(f"No libraries found in {escape(str(root))}")
         return
-    print(f"→ Found {len(libs)} libraries: {', '.join(libs)}")
+    say(f"Found {len(libs)} libraries: {escape(', '.join(libs))}")
 
     installed = 0
     for lib in libs:
@@ -678,8 +903,8 @@ def install_libraries_to_kicad(root: Path) -> None:
             add_library_to_table(selected["fp_table"], lib, fp_dir,
                                  f"Local footprint library: {lib}")
 
-    print(f"→ Installation complete! Added {installed} libraries to KiCad.")
-    print("→ Restart KiCad to see the new libraries.")
+    say(f"Installation complete! Added {installed} libraries to KiCad.")
+    say("Restart KiCad to see the new libraries.")
 
 
 # ---------------------------------------------------------------------------
@@ -688,7 +913,7 @@ def install_libraries_to_kicad(root: Path) -> None:
 
 def package_repo(root: Path) -> None:
     out = root / (root.name + ".zip")
-    print(f"Zipping repo → {out.name}")
+    say(f"Zipping repo → {out.name}")
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
         for dirpath, _, filenames in os.walk(root):
             if ".git" in dirpath:
@@ -698,7 +923,7 @@ def package_repo(root: Path) -> None:
                     continue
                 p = Path(dirpath) / fn
                 zf.write(p, p.relative_to(root))
-    print("→ Done.")
+    say("Done.")
 
 
 # ---------------------------------------------------------------------------
@@ -706,10 +931,12 @@ def package_repo(root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def process_component(root: Path, comp: dict) -> None:
-    """Interactive pipeline: describe, designate, then file into a library."""
+    """Interactive pipeline: preview, describe, designate, file into a library."""
+    show_component_preview(comp)
     edit_symbol_description(comp["sym"])
     set_default_designator(comp["sym"])
-    check_duplicate(root, comp)
+    if not check_duplicate(root, comp):
+        return
     lib = choose_library(root)
     if lib:
         merge_into(root, lib, comp)
@@ -717,59 +944,68 @@ def process_component(root: Path, comp: dict) -> None:
         create_library(root, comp)
     cleanup_downloads(comp)
 
-    print("\nAdditional actions:")
-    if input("Install libraries to KiCad? [y/N]: ").lower() == "y":
+
+def finish_actions(root: Path) -> None:
+    console.print()
+    say("Additional actions:")
+    if Confirm.ask("Install libraries to KiCad?", default=False):
         install_libraries_to_kicad(root)
-    if input("Create GitHub-release zip now? [y/N]: ").lower() == "y":
+    if Confirm.ask("Create GitHub-release zip now?", default=False):
         package_repo(root)
 
 
 def cmd_add(root: Path, parts: list[str]) -> None:
+    jlc_exe = jlc_executable()
+
     # Leftovers from a previous (aborted) run are handled first.
-    comp = find_local_component(root)
-    if comp:
-        print(f"→ Found existing component in {root}, processing it first.")
-        process_component(root, comp)
-        if not parts:
+    leftover = find_local_component(root)
+    if leftover:
+        say(f"Found existing component in {escape(str(root))}, "
+            "processing it first.")
+        process_component(root, leftover)
+        if not parts and not Confirm.ask("Add another component?", default=False):
+            finish_actions(root)
             return
 
-    jlc_exe = ensure_jlc2kicadlib(root)
-    if not parts:
-        parts = input("Enter JLCPCB part#s: ").split()
-    if not parts:
-        sys.exit("No parts specified.")
+    while True:
+        if not parts:
+            parts = Prompt.ask("Enter JLCPCB part #s (space-separated)").split()
+            if not parts:
+                break
+        for part in parts:
+            before = set(root.iterdir())
+            if not download_part(part, jlc_exe, root):
+                remove_new_entries(root, before)  # drop partial downloads
+                continue
+            wrap_assets(root)
+            comp = find_local_component(root)
+            if not comp:
+                warn(f"{part}: downloaded files do not form a single "
+                     "component — removing them.")
+                remove_new_entries(root, before)
+                continue
+            process_component(root, comp)
+        parts = []
+        if not Confirm.ask("Add another component?", default=False):
+            break
 
-    succeeded, failed = download_parts(parts, jlc_exe, root)
-    if failed:
-        print(f"→ Failed to download: {', '.join(failed)}")
-    if not succeeded:
-        sys.exit("Error: all parts failed to download.")
-    if failed:
-        print(f"→ Continuing with successfully downloaded parts: "
-              f"{', '.join(succeeded)}")
-
-    wrap_assets(root)
-    comp = find_local_component(root)
-    if not comp:
-        sys.exit("Error: no component.")
-    process_component(root, comp)
+    finish_actions(root)
 
 
 def cmd_interactive(root: Path) -> None:
-    comp = find_local_component(root)
-    if comp:
-        process_component(root, comp)
-        return
-    print("\nNo local components found. Choose an option:")
-    print(" 1 - Download JLCPCB parts and create library")
-    print(" 2 - Install existing libraries to KiCad")
-    choice = input("Select [1]: ").strip()
-    if choice in ("", "1"):
+    if find_local_component(root):
         cmd_add(root, [])
-    elif choice == "2":
-        install_libraries_to_kicad(root)
+        return
+    console.print()
+    say("No local components found. Choose an option:")
+    console.print("  [bold]1[/] - Download JLCPCB parts and create library")
+    console.print("  [bold]2[/] - Install existing libraries to KiCad")
+    choice = Prompt.ask("Select", choices=["1", "2"], default="1",
+                        show_choices=False)
+    if choice == "1":
+        cmd_add(root, [])
     else:
-        sys.exit("Invalid choice.")
+        install_libraries_to_kicad(root)
 
 
 def cmd_config(reset: bool) -> None:
@@ -780,10 +1016,11 @@ def cmd_config(reset: bool) -> None:
         save_config(cfg)
         return
     if not path.is_file():
-        print(f"No configuration yet (will be created at {path} on first run).")
+        say(f"No configuration yet (will be created at {escape(str(path))} "
+            "on first run).")
         return
-    print(f"Configuration file: {path}\n")
-    print(path.read_text(), end="")
+    say(f"Configuration file: {escape(str(path))}\n")
+    console.print(escape(path.read_text()), end="")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -823,7 +1060,7 @@ def main() -> None:
         return
 
     root = resolve_library_root(args.library_root)
-    print(f"→ Library repository: {root}")
+    say(f"Library repository: {escape(str(root))}")
 
     if args.command == "add":
         cmd_add(root, args.parts)
@@ -839,5 +1076,8 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n→ Interrupted.")
+        console.print("\n[dim]Interrupted.[/]")
         sys.exit(130)
+    except EOFError:
+        console.print("\n[dim]Input closed — exiting.[/]")
+        sys.exit(1)
