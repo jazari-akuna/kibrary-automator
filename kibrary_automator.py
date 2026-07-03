@@ -487,7 +487,7 @@ def _render_footprint(fp_file: Path, width: int, height: int) -> str:
     # A pad gets its number drawn only on cells it owns exclusively, so
     # dense footprints show clean pad bars instead of overlapping digits.
     labelled = set()
-    pin1_labelled = False
+    labelled_nums = set()
     for i, p in enumerate(pads):
         label = p["num"]
         c0, c1, r0, r1 = rects[i]
@@ -507,8 +507,57 @@ def _render_footprint(fp_file: Path, width: int, height: int) -> str:
         for (r, c), ch in zip(cells, label):
             grid[r][c] = ch
         labelled.update(cells)
-        if label == "1":
-            pin1_labelled = True
+        labelled_nums.add(label)
+
+    # Dense parts cannot fit numbers inside their pads; mark at least the
+    # first pins (1-4) in the free space next to them, so the start and
+    # direction of the numbering stay visible.
+    missing = [(i, p) for i, p in enumerate(pads)
+               if p["num"] in ("1", "2", "3", "4")
+               and p["num"] not in labelled_nums]
+    if missing:
+        grid.insert(0, [" "] * cols)
+        grid.append([" "] * cols)
+        mid_row = (len(grid) - 1) / 2
+        callout_cells = set()
+
+        def try_callout(num: str, spots: list, strict: bool) -> bool:
+            for r, c in spots:
+                if not (0 <= r < len(grid) and 0 <= c < cols):
+                    continue
+                if grid[r][c] != " ":
+                    continue
+                left  = grid[r][c - 1] if c > 0 else " "
+                right = grid[r][c + 1] if c < cols - 1 else " "
+                if strict and (left != " " or right != " "):
+                    continue
+                # never let two callout digits touch and read as one number
+                if (r, c - 1) in callout_cells or (r, c + 1) in callout_cells:
+                    continue
+                grid[r][c] = num
+                callout_cells.add((r, c))
+                return True
+            return False
+
+        for i, p in sorted(missing, key=lambda ip: int(ip[1]["num"])):
+            c0, c1, r0, r1 = rects[i]
+            r0, r1 = r0 + 1, r1 + 1            # account for the margin row
+            cp = (c0 + c1) // 2
+            outward = [(r0 - 1, cp), (r1 + 1, cp)]
+            if (r0 + r1) / 2 > mid_row:        # pad in bottom half → below first
+                outward.reverse()
+            spots = [(r, c + dc) for r, c in outward for dc in (0, -1, 1, -2, 2)]
+            if try_callout(p["num"], spots, True) \
+                    or try_callout(p["num"], spots, False):
+                labelled_nums.add(p["num"])
+
+    # drop margin rows that ended up unused
+    while grid and all(ch == " " for ch in grid[0]):
+        grid.pop(0)
+    while grid and all(ch == " " for ch in grid[-1]):
+        grid.pop()
+
+    pin1_labelled = "1" in labelled_nums
 
     footer = f"{len(pads)} pads · {span_x:.1f} × {span_y:.1f} mm"
     pin1 = next((p for p in pads if p["num"] == "1"), None)
