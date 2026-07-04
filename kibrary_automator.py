@@ -824,18 +824,55 @@ def symbol_property(sym_file: Path, name: str) -> str:
     return m.group(1) if m else ""
 
 
-def resolve_datasheet_url(part: str) -> str | None:
-    """Ask LCSC for the part's datasheet PDF."""
+_lcsc_cache: dict = {}
+
+
+def lcsc_detail(part: str) -> dict:
+    """Fetch (and cache) LCSC's product-detail record for a part."""
+    if part in _lcsc_cache:
+        return _lcsc_cache[part]
     import urllib.request
     req = urllib.request.Request(
         f"https://wmsc.lcsc.com/ftps/wm/product/detail?productCode={part}",
         headers={"User-Agent": "Mozilla/5.0"})
+    result = {}
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode())
-        return (data.get("result") or {}).get("pdfUrl") or None
+            result = (json.loads(resp.read().decode()).get("result") or {})
     except Exception:
-        return None
+        pass
+    _lcsc_cache[part] = result
+    return result
+
+
+def easyeda_description(part: str) -> str:
+    """EasyEDA's short description for a part (fallback source)."""
+    import urllib.request
+    req = urllib.request.Request(
+        f"https://easyeda.com/api/products/{part}/components?version=6.4.19.5",
+        headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return ((json.loads(resp.read().decode()).get("result") or {})
+                    .get("description") or "").strip()
+    except Exception:
+        return ""
+
+
+def resolve_description(part: str) -> str:
+    """Best human-readable description for a part (JLC2KiCadLib leaves it blank)."""
+    r = lcsc_detail(part)
+    for key in ("productIntroEn", "productDescEn", "productNameEn",
+                "productKeyAttributes"):
+        val = (r.get(key) or "").strip()
+        if val:
+            return val
+    return easyeda_description(part)
+
+
+def resolve_datasheet_url(part: str) -> str | None:
+    """Ask LCSC for the part's datasheet PDF."""
+    return lcsc_detail(part).get("pdfUrl") or None
 
 
 def url_ok(url: str) -> bool:
@@ -885,7 +922,7 @@ def ensure_datasheet(sym_file: Path, part: str | None = None) -> None:
         say(f"Datasheet: {escape(url)}")
 
 
-def edit_symbol_description(sym_file: Path) -> None:
+def edit_symbol_description(sym_file: Path, part: str | None = None) -> None:
     lines = sym_file.read_text().splitlines()
 
     curr = next(
@@ -894,6 +931,11 @@ def edit_symbol_description(sym_file: Path) -> None:
          if (m := re.match(r'\s*\(property\s+"Description"\s+"([^"]*)"', ln))),
         ""
     )
+    # JLC2KiCadLib leaves Description empty — pull one from the API as the default.
+    part = part or symbol_property(sym_file, "LCSC")
+    if not curr and part:
+        with console.status("Resolving description..."):
+            curr = resolve_description(part)
     ans = Prompt.ask("Component description", default=curr).strip() or curr
 
     # If a Description property exists, replace it in place.
@@ -1254,7 +1296,7 @@ def process_component(root: Path, comp: dict, part: str | None = None) -> None:
     """Interactive pipeline: preview, describe, designate, file into a library."""
     show_component_preview(comp)
     ensure_datasheet(comp["sym"], part)
-    edit_symbol_description(comp["sym"])
+    edit_symbol_description(comp["sym"], part)
     set_default_designator(comp["sym"])
     if not check_duplicate(root, comp):
         return
