@@ -254,8 +254,11 @@ git push
 
 ## 🛠️ Dependencies
 
-- **Python 3.8+** — everything else is installed automatically on first
-  launch into a private virtualenv:
+- **Python 3.8+** to launch — the private virtualenv is built with
+  **Python 3.10+** (required by JLC2KiCadLib); if the Python you launch with
+  is older, the tool finds a newer one on your system automatically and
+  rebuilds the environment with it. Everything else is installed on first
+  launch:
 - **Rich**: terminal interface (prompts, panels, component previews)
 - **JLC2KiCadLib**: component conversion tool
 - **KiCad**: Target installation for libraries

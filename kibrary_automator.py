@@ -29,6 +29,7 @@ from pathlib import Path
 
 APP_NAME    = "kibrary-automator"
 PYTHON_DEPS = ("rich", "JLC2KiCadLib")
+MIN_PY      = (3, 10)  # JLC2KiCadLib uses zip(strict=) / match — needs 3.10+
 
 # Defaults for the user-tunable settings; override them in the config file
 # (their YAML keys are in parentheses — see `kibrary_automator.py config`).
@@ -85,17 +86,70 @@ def _run_or_die(cmd: list[str], what: str) -> None:
         sys.exit(1)
 
 
+def _interpreter_version(exe: str) -> tuple | None:
+    try:
+        out = subprocess.run(
+            [exe, "-c", "import sys;print(sys.version_info[0],sys.version_info[1])"],
+            capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            return tuple(int(x) for x in out.stdout.split())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _find_python(min_ver: tuple) -> str | None:
+    """Locate a Python interpreter >= min_ver (the current one, else search PATH)."""
+    if sys.version_info[:2] >= min_ver:
+        return sys.executable
+    import shutil
+    names = [f"python3.{m}" for m in range(20, min_ver[1] - 1, -1)] + ["python3"]
+    prefixes = ["", "/opt/homebrew/bin/", "/usr/local/bin/",
+                "/opt/local/bin/", "/usr/bin/"]
+    seen, cands = set(), []
+    for name in names:
+        for pre in prefixes:
+            p = pre + name
+            resolved = shutil.which(p) or (p if os.path.isfile(p) else None)
+            if resolved and resolved not in seen:
+                seen.add(resolved)
+                cands.append(resolved)
+    for exe in cands:
+        v = _interpreter_version(exe)
+        if v and v >= min_ver:
+            return exe
+    return None
+
+
 def _install_environment(stamp: Path, want: str) -> None:
     venv = venv_dir()
-    python = venv_binary("python")
+    need = f"{MIN_PY[0]}.{MIN_PY[1]}"
+    base = _find_python(MIN_PY)
+    if not base:
+        hint = ("brew install python@3.12" if sys.platform == "darwin"
+                else "sudo apt install python3.12" if sys.platform.startswith("linux")
+                else "install a newer Python from python.org")
+        sys.exit(f"{APP_NAME} needs Python {need}+ (JLC2KiCadLib requires it), "
+                 f"but none was found.\nInstall one — e.g. `{hint}` — and retry.")
+
     print(f"First launch: setting up the {APP_NAME} environment.")
 
-    if not python.is_file():
-        print(f"→ Creating virtual environment at {venv} ...")
+    # Rebuild if the venv is missing or was built with a too-old Python.
+    existing = venv_binary("python")
+    cur = _interpreter_version(str(existing)) if existing.is_file() else None
+    if existing.is_file() and (cur is None or cur < MIN_PY):
+        old = f"{cur[0]}.{cur[1]}" if cur else "unknown"
+        print(f"→ Existing environment uses Python {old} (< {need}) — rebuilding.")
+        shutil.rmtree(venv, ignore_errors=True)
+
+    if not venv_binary("python").is_file():
+        print(f"→ Creating virtual environment at {venv} "
+              f"(Python {need}+ from {base}) ...")
         venv.parent.mkdir(parents=True, exist_ok=True)
-        _run_or_die([sys.executable, "-m", "venv", str(venv)],
+        _run_or_die([base, "-m", "venv", str(venv)],
                     "creating the virtual environment")
 
+    python = venv_binary("python")
     print("→ Ensuring pip is available...")
     subprocess.run([str(python), "-m", "ensurepip", "--upgrade"],
                    capture_output=True, text=True)
@@ -111,6 +165,16 @@ def _install_environment(stamp: Path, want: str) -> None:
     print("→ Environment ready!\n")
 
 
+def _venv_ready(stamp: Path, want: str) -> bool:
+    """The venv exists, has the wanted deps, and is a new-enough Python."""
+    python = venv_binary("python")
+    if not (python.is_file() and stamp.is_file()
+            and stamp.read_text().strip() == want):
+        return False
+    v = _interpreter_version(str(python))
+    return bool(v and v >= MIN_PY)
+
+
 def _bootstrap() -> None:
     """Make sure we are running inside the app venv with all dependencies."""
     if sys.version_info < (3, 8):
@@ -120,10 +184,9 @@ def _bootstrap() -> None:
 
     stamp = venv_dir() / ".deps"
     want = ",".join(PYTHON_DEPS)
-    python = venv_binary("python")
-    if not (python.is_file() and stamp.is_file()
-            and stamp.read_text().strip() == want):
+    if not _venv_ready(stamp, want):
         _install_environment(stamp, want)
+    python = venv_binary("python")
 
     env = dict(os.environ, KIBRARY_BOOTSTRAPPED="1")
     sys.stdout.flush()
