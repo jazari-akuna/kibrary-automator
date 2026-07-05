@@ -1,152 +1,82 @@
 # KiCad Library Automator
 
-**Transform JLCPCB parts into organized KiCad libraries with one command.**
+**Turn JLCPCB / LCSC part numbers into organized, installed KiCad libraries — from one terminal command.**
 
-A Python automation tool that converts JLCPCB component part numbers into properly structured KiCad libraries and seamlessly installs them into your KiCad installation.
+`kibrary_automator.py` downloads a part with [JLC2KiCadLib](https://github.com/TousstNicolas/JLC2KiCad_lib), shows you a preview of the symbol and footprint, fills in its description and datasheet from the LCSC API, files it into a `*_KSL` library (new or existing), and registers that library with your KiCad install — all in one interactive pass.
 
-## 🚀 Quick Start
+It is a single self-contained Python script. On first launch it builds its own private virtualenv (Rich + JLC2KiCadLib); there is nothing to `pip install` by hand.
 
-### Prerequisites
+---
+
+## Quick start
+
 ```bash
-# Clone this repository — that's it.
 git clone https://github.com/your-username/kibrary-automator.git
 
-# On first launch the script sets up everything it needs by itself:
-# a private virtualenv with Rich (interface) and JLC2KiCadLib (downloads).
+# Run it from anywhere. First launch sets up its environment, then asks
+# once where your KiCad library repository lives (remembered from then on).
+python3 kibrary-automator/kibrary_automator.py add C1525 C25804 R25604
 ```
 
-### Create Your First Library
-```bash
-# Run the automator from anywhere — on first run it asks where your
-# KiCad library repository lives and remembers it from then on
-python3 /path/to/kibrary-automator/kibrary_automator.py add C1525 C25804 R25604
+Part numbers can also be typed interactively if you omit them. Bare part numbers imply `add`, so `kibrary_automator.py C1525` works too.
 
-# Part numbers can also be entered interactively if omitted.
+For each part the tool:
 
-# For each part, a preview of the schematic symbol (pin names and
-# numbers) and the footprint (pad layout) is shown at the top of the
-# screen while you answer the prompts:
-# - Set component descriptions
-# - Choose reference designators  
-# - Create new library or merge into existing
-# When a component is done you can add another one or quit; your
-# libraries are then registered in KiCad automatically.
-```
+1. **Downloads** the symbol, footprint and 3D model.
+2. **Previews** them at the top of the screen — the schematic symbol with pin names/numbers on the left, the footprint pad layout on the right.
+3. **Fills in the description** (from the LCSC/EasyEDA API — JLC2KiCadLib leaves it blank) and **the datasheet link** (resolved to a real PDF and validated), offering both as editable defaults.
+4. Asks for a **reference designator** and whether to **create a new library or merge** into an existing one.
+5. When you're done, **installs the libraries into KiCad** automatically.
 
-### Install Existing Libraries to KiCad
-```bash
-# From anywhere
-python3 /path/to/kibrary-automator/kibrary_automator.py install
-```
+Between parts it asks *"Add another component?"* so you can process a whole batch in one run. Single-digit menus and y/n prompts respond to a single keypress — no Enter needed.
 
-### CLI Reference
+---
+
+## Commands
+
 ```
 kibrary_automator.py [--library-root PATH] [command]
 
-  add [PART ...]   download JLCPCB parts and add them to a library (default)
+  add [PART ...]   download JLCPCB/LCSC parts and add them to a library (default)
   install          register the repository's libraries in KiCad
   config           show the stored configuration (--reset to change the path)
 ```
 
-## 🎯 What It Does
+- `--library-root PATH` overrides the configured repository for a single run (not saved).
+- Running with no command drops into an interactive menu.
 
-### 1. **Component Generation**
-- Fetches JLCPCB parts using JLC2KiCadLib
-- Converts to KiCad symbols, footprints, and 3D models
-- Organizes files into proper KiCad library structure
+### Companion scripts
 
-### 2. **Smart Library Management**
-- Creates new libraries with proper naming (`ComponentType_KSL`)
-- Merges components into existing libraries
-- Handles duplicate detection
-- Generates KiCad Package Manager metadata
+```bash
+python3 fill_datasheets.py [--dry-run]   # backfill missing datasheet links across all libraries
+python3 uninstall.py [--yes]             # remove the venv, config, and this tool's KiCad table entries
+```
 
-### 3. **KiCad Integration**
-- Auto-detects KiCad installations (Flatpak, regular, multiple versions)
-- Adds libraries to symbol and footprint tables
-- Uses absolute paths for reliability
-- Creates automatic backups before modifications
+`fill_datasheets.py` sweeps every library in the repository and resolves any symbol whose datasheet field isn't a real PDF (validated before writing). New downloads already get this automatically; the script fixes up older libraries.
 
-### 4. **3D Model Handling**
-- Configures 3D model paths with the `${KSL_ROOT}` path variable
-  (changeable via `model_var` in the config file)
-- Maintains proper model references across library structures
+`uninstall.py` removes the private virtualenv, the config directory, and the library entries this tool added to KiCad's `sym-lib-table` / `fp-lib-table` (other entries are preserved). **Your library repository is never touched.**
 
-## 📁 Generated Library Structure
+---
+
+## What it produces
+
+Each library is a self-contained folder:
 
 ```
 YourLibrary_KSL/
-├── YourLibrary_KSL.kicad_sym          # Symbol definitions
-├── YourLibrary_KSL.pretty/            # Footprint files
-│   ├── Component1.kicad_mod
-│   └── Component2.kicad_mod
-├── YourLibrary_KSL.3dshapes/          # 3D models
-│   ├── Component1.step
-│   └── Component2.wrl
-├── metadata.json                       # Package manager data
-└── icon.png                          # Library icon
+├── YourLibrary_KSL.kicad_sym      # symbols (one file, multiple parts)
+├── YourLibrary_KSL.pretty/        # footprints (.kicad_mod)
+├── YourLibrary_KSL.3dshapes/      # 3D models (.step / .wrl)
+└── metadata.json                  # KiCad Package Manager metadata
 ```
 
-## 🔧 Usage Scenarios
+3D-model paths use the `${KSL_ROOT}` KiCad path variable so the library stays relocatable. Point `KSL_ROOT` at the folder holding your libraries in KiCad's *Preferences → Configure Paths*.
 
-### Creating a New Component Library
-1. Run `kibrary_automator.py add C1525 ...` (from anywhere)
-2. Follow interactive setup for descriptions and references
-3. Choose "Create new library"
-4. Libraries are installed to KiCad automatically when you're done
+---
 
-### Adding to Existing Library
-1. Run `kibrary_automator.py add` with new components
-2. Choose existing library from the list
-3. Components are merged automatically
+## Configuration
 
-### Installing Libraries
-```bash
-# Install all libraries from your configured library repository
-python3 kibrary_automator.py install
-
-# The script will:
-# ✓ Detect your KiCad installation (asking only if there are several)
-# ✓ Add libraries to sym-lib-table and fp-lib-table
-# ✓ Create backups of your configuration
-# ✓ Skip already installed libraries
-```
-
-### Backfilling Datasheets
-```bash
-# Check every symbol in every library and fill in missing datasheet
-# links (resolved and validated through LCSC; --dry-run to preview)
-python3 fill_datasheets.py [--dry-run]
-```
-New downloads get their datasheet link resolved automatically; this
-script fixes up libraries created before that feature existed.
-
-### Batch Operations
-```bash
-# Multiple part numbers in one go
-# Input: C1525 C25804 R25604 L5819 D4878
-
-# Creates organized library with:
-# - Capacitors, resistors, inductors, diodes
-# - Proper categorization
-# - Complete 3D models
-# - Ready for KiCad use
-```
-
-## 🖥️ Supported KiCad Installations
-
-| Installation Type | Configuration Path | Status |
-|------------------|-------------------|---------|
-| **Flatpak (Linux)** | `~/.var/app/org.kicad.KiCad/config/kicad/` | ✅ Supported |
-| **Regular Install (Linux)** | `~/.config/kicad/` | ✅ Supported |
-| **macOS** | `~/Library/Preferences/kicad/` | ✅ Supported |
-| **Multiple Versions** | Auto-detected | ✅ Choose target |
-| **Windows** | `%APPDATA%\kicad\` | 🔄 Planned |
-
-## 🎛️ Configuration
-
-The location of your library repository is stored in a human-readable YAML
-file, created on first run:
+Settings live in a human-readable YAML file, created on first run:
 
 | Platform | Config file |
 |----------|-------------|
@@ -157,133 +87,56 @@ file, created on first run:
 # kibrary-automator configuration
 # Edit freely — one `key: value` per line.
 
-# GitHub username used in package metadata
-github_user: your-username
+# Path to your KiCad library repository
+library_root: /home/you/kicad-shared-libs
 
 # Suffix appended to new library names
 lib_suffix: _KSL
 
-# Path to your KiCad library repository
-library_root: /home/you/kicad-shared-libs
+# GitHub username used in package metadata
+github_user: your-username
 
 # KiCad path variable used for 3D-model paths in footprints
 model_var: ${KSL_ROOT}
 ```
 
-Show it with `kibrary_automator.py config`, change the stored library path
-with `kibrary_automator.py config --reset` (or override it for a single run
-with `--library-root PATH`), and edit the other keys directly in the file —
-every setting is written there with its default so there is nothing to
-change in the script itself.
+Every setting is written to the file with its default, so there is nothing to edit in the script. View it with `config`, change the library path with `config --reset`.
 
-## 🔍 Interactive Features
+---
 
-### Component Preview
-After each part is downloaded, the schematic symbol (pin names and pin
-numbers, left) and the footprint (pad layout with pad numbers and
-dimensions, right) are rendered at the top of the screen:
+## KiCad integration
 
-```
- ┌ Schematic symbol ──────────────────┐  ┌ Footprint — SOIC-8 ─────────────┐
- │            ┌────────────┐          │  │  ▒▒▒▒1▒▒▒▒         ▒▒▒▒8▒▒▒▒    │
- │   1    GND ┤            ├ CTRL  5  │  │  ▒▒▒▒2▒▒▒▒         ▒▒▒▒7▒▒▒▒    │
- │   2   TRIG ┤  NE555DR   ├ THR   6  │  │  ▒▒▒▒3▒▒▒▒         ▒▒▒▒6▒▒▒▒    │
- │   3    OUT ┤            ├ DISCH 7  │  │  ▒▒▒▒4▒▒▒▒         ▒▒▒▒5▒▒▒▒    │
- │   4 ~RESET ┤            ├ VCC   8  │  │                                 │
- │            └────────────┘          │  │  6.6 × 4.4 mm                   │
- └────────────────────────────────────┘  └─────────────────────────────────┘
-```
+The tool auto-detects your KiCad settings directory and adds each library to both the symbol and footprint tables, backing them up first and skipping anything already registered.
 
-### Smart Menus
-- **No components found**: Choose between downloading new parts or installing existing libraries
-- **Multiple KiCad installs**: Select target installation
-- **Library selection**: Create new or merge into existing
+| Installation | Path | Status |
+|--------------|------|--------|
+| **macOS** | `~/Library/Preferences/kicad/<ver>/` | ✅ |
+| **Linux (regular)** | `~/.config/kicad/<ver>/` | ✅ |
+| **Linux (Flatpak)** | `~/.var/app/org.kicad.KiCad/config/kicad/<ver>/` | ✅ |
+| **Multiple versions** | auto-detected | ✅ pick one |
+| **Windows** | `%APPDATA%\kicad\` | 🔄 planned |
 
-### Safety Features
-- **Backup creation**: Automatic backups of library tables
-- **Duplicate detection**: Prevents conflicts with existing components
-- **Path validation**: Ensures library files exist before installation
-- **User confirmation**: Clear prompts for destructive operations
+Targets KiCad 9 library formats. Restart KiCad after an install to see new libraries.
 
-### Progress Feedback
-```
-→ Found 5 libraries: LED_KSL, MCU_KSL, Connector_KSL...
-→ Installing to Flatpak KiCad 9.0
-→ Backup created: sym-lib-table.backup
-→ Added 'LED_KSL' to sym-lib-table
-→ Installation complete! Added 5 libraries to KiCad.
-→ Restart KiCad to see the new libraries.
-```
+---
 
-## 🔄 Workflow Examples
+## Safety & robustness
 
-### Electronics Engineer Workflow
-```bash
-# 1. Research components on JLCPCB
-# 2. Copy part numbers: C1525 C25804 R25604
+- **Backups** of the library tables before any edit; installs are idempotent.
+- **Duplicate detection** — warns before adding a symbol name that already exists.
+- **Interrupted-download cleanup** — leftover or partial files are detected on the next launch (and on Ctrl+C) and you're asked to add or remove them, so they can't silently break future runs.
+- **Graceful exit** on Ctrl+C and closed input.
 
-# 3. Generate library (from anywhere — the library location is remembered)
-python3 ~/tools/kibrary_automator.py add C1525 C25804 R25604
+---
 
-# 4. Components automatically:
-#    - Downloaded and converted
-#    - Organized into library
-#    - Installed to KiCad
-#    - Ready for schematic design
-```
+## Requirements
 
-### Team Library Management
-```bash
-# Centralized library repository
-git clone https://github.com/team/kicad-shared-libs.git
-# Point the tool at it once
-python3 tools/kibrary_automator.py config --reset
+- **Python 3.8+** to launch. The private virtualenv is built with **Python 3.10+** (required by JLC2KiCadLib). If the interpreter you launch with is older, the tool finds a newer `python3.x` on your system and rebuilds the environment with it automatically.
+- Installed on first launch, into the private venv: **[Rich](https://github.com/Textualize/rich)** (interface) and **[JLC2KiCadLib](https://github.com/TousstNicolas/JLC2KiCad_lib)** (part conversion).
+- **KiCad** for the install step. Internet access for downloads and datasheet/description resolution.
 
-# Install all team libraries
-python3 tools/kibrary_automator.py install
+---
 
-# Add new components
-python3 tools/kibrary_automator.py add
-# Merge into existing team libraries
+## License
 
-# Share updates
-cd kicad-shared-libs/
-git add . && git commit -m "Add new components"
-git push
-```
-
-## 🛠️ Dependencies
-
-- **Python 3.8+** to launch — the private virtualenv is built with
-  **Python 3.10+** (required by JLC2KiCadLib); if the Python you launch with
-  is older, the tool finds a newer one on your system automatically and
-  rebuilds the environment with it. Everything else is installed on first
-  launch:
-- **Rich**: terminal interface (prompts, panels, component previews)
-- **JLC2KiCadLib**: component conversion tool
-- **KiCad**: Target installation for libraries
-
-## 🗑️ Uninstall
-
-```bash
-python3 /path/to/kibrary-automator/uninstall.py        # asks before each removal
-python3 /path/to/kibrary-automator/uninstall.py --yes  # no questions asked
-```
-
-The uninstaller deletes the tool's private virtualenv and configuration
-directory and removes the library entries it registered in KiCad's
-`sym-lib-table` / `fp-lib-table` files (other entries are preserved).
-Your KiCad library repository itself is **never** deleted — your
-libraries stay where they are.
-
-## 🤝 Contributing
-
-This tool is designed to work with your specific KiCad library workflow. Contributions welcome for:
-- Additional KiCad installation types
-- Enhanced component organization
-- Integration improvements
-- Cross-platform compatibility
-
-## 📝 License
-
-This project follows the same license as your KiCad libraries.
+See [LICENSE.md](LICENSE.md).
