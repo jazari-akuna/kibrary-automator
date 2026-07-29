@@ -1031,8 +1031,61 @@ def update_symbol_paths(sym_file: Path, lib_name: str, model_dir: Path | None) -
     sym_file.write_text("".join(out))
 
 
+def normalise_model_offset(text: str) -> tuple[str, str | None]:
+    """Turn JLC2KiCadLib's inch `(at (xyz ...))` into an explicit mm `(offset ...)`.
+
+    JLC2KiCadLib emits the legacy `(module ...)` format, where the 3D-model
+    placement node is `at` and KiCad reads it in INCHES -- see
+    PCB_PARSER::parse3DModel, which multiplies it by 25.4. In the modern
+    `(footprint ...)` format the same thing is spelled `offset` and read in
+    MILLIMETRES. The converter's inch value is usually right, so the download
+    renders correctly; the problem is that the file cannot say which unit it
+    meant, and the next person to nudge the number by hand types millimetres
+    and moves the model 25.4x too far. That is how a connector ended up 1.9 mm
+    below the surface of a 1.6 mm board with nothing in DRC, ERC or the netlist
+    to show for it.
+
+    Converting on the way in costs nothing (the rendered position is
+    identical, the value is just written in the unit it will be read in) and
+    the ambiguity can never reach the library. Returns the new text and a
+    human-readable note when something changed.
+    """
+    notes = []
+    pos = 0
+    while True:
+        start = text.find("(model", pos)
+        if start < 0:
+            break
+        depth, i = 0, start
+        while i < len(text):
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        block, end = text[start:i + 1], i + 1
+        at = re.search(r'\(at\s*\(xyz\s+([-\d.eE]+)\s+([-\d.eE]+)\s+([-\d.eE]+)\s*\)\s*\)',
+                       block)
+        if not at:
+            pos = end
+            continue
+        mm = tuple(float(v) * 25.4 for v in at.groups())
+        new = (block[:at.start()]
+               + "(offset (xyz {:.9g} {:.9g} {:.9g}))".format(*mm)
+               + block[at.end():])
+        notes.append("model offset (at (xyz {} {} {})) [inches] -> "
+                     "(offset (xyz {:.9g} {:.9g} {:.9g})) [mm]"
+                     .format(*at.groups(), *mm))
+        text = text[:start] + new + text[end:]
+        pos = start + len(new)
+    return text, ("; ".join(notes) if notes else None)
+
+
 def update_footprint_3d_paths(fp_dir: Path, model_dir: Path | None) -> None:
-    """Rewrite footprint 3D-model paths to use the MODEL_ENV_VAR root."""
+    """Rewrite footprint 3D-model paths to use the MODEL_ENV_VAR root, and
+    restate the model offset in millimetres (see normalise_model_offset)."""
     if not model_dir or not fp_dir.is_dir():
         return
     lib_folder = model_dir.parent.name
@@ -1050,7 +1103,10 @@ def update_footprint_3d_paths(fp_dir: Path, model_dir: Path | None) -> None:
                     ln = (f"{indent}(model {MODEL_ENV_VAR}/{lib_folder}/"
                           f"{base3d}/{model_name}\n")
             out.append(ln)
-        fp.write_text("".join(out))
+        text, note = normalise_model_offset("".join(out))
+        fp.write_text(text)
+        if note:
+            console.print(f"[dim]{fp.name}: {note}[/dim]")
 
 
 # ---------------------------------------------------------------------------
